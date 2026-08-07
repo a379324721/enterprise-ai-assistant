@@ -1,0 +1,59 @@
+[project]
+name = "enterprise-ai-assistant"
+version = "0.1.0"
+description = "Production-oriented enterprise multi-agent assistant built with FastAPI and LangGraph"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "asyncpg>=0.30,<1",
+  "fastapi>=0.116,<1",
+  "langchain-openai>=0.3,<2",
+  "langgraph>=0.6,<2",
+  "langgraph-checkpoint-postgres>=2,<4",
+  "langsmith>=0.4,<1",
+  "pydantic-settings>=2.10,<3",
+  "pymilvus==2.4.15",
+  "psycopg[binary,pool]>=3.2,<4",
+  "redis>=6,<8",
+  # PyMilvus 2.4 imports pkg_resources, removed from setuptools 81+.
+  "setuptools>=75,<81",
+  "structlog>=25,<26",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28,<1",
+  "mypy>=1.17,<2",
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+  "ruff>=0.12,<1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/enterprise_ai_assistant"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["enterprise_ai_assistant"]
+
+[[tool.mypy.overrides]]
+module = ["asyncpg", "pymilvus"]
+ignore_missing_imports = true
