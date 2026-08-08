@@ -135,6 +135,31 @@ curl -X POST http://localhost:8000/api/v1/chat \
   -d '{"message":"查询差旅住宿标准"}'
 ```
 
+### SSE 流式响应
+
+前端默认调用 `POST /api/v1/chat/stream`，通过 streaming fetch 消费 SSE。服务端会推送以下事件：
+
+| 事件 | 内容 |
+|---|---|
+| `metadata` | 会话 ID |
+| `progress` | Understanding、Planner、Supervisor 和领域 Agent 的执行进度 |
+| `answer_start` | 最终回答即将开始 |
+| `token` | 用户可见回答的字符增量 |
+| `done` | 完整任务、slots、工具结果和确认状态 |
+| `error` | 流建立后的执行错误 |
+
+命令行验证：
+
+```bash
+curl -N -X POST http://localhost:8000/api/v1/chat/stream \
+  -H 'Content-Type: application/json' \
+  -H 'X-User-ID: u-1001' \
+  -d '{"message":"查询差旅住宿标准"}'
+```
+
+高风险操作确认后的剩余任务通过
+`POST /api/v1/conversations/{conversation_id}/confirm/stream` 继续流式执行。Nginx 已关闭该路径的代理缓冲。
+
 确认高风险操作：
 
 ```bash
