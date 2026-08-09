@@ -51,7 +51,7 @@ async def test_response_hides_confirmation_without_a_real_interrupt() -> None:
         payload={"destination": "北京"},
     )
     snapshot = SimpleNamespace(
-        next=(),
+        next=("select_task",),
         values={
             "user_id": "u-1",
             "messages": [HumanMessage(content="明天出差")],

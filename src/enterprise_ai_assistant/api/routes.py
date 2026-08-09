@@ -142,12 +142,15 @@ async def _response(request: Request, conversation_id: UUID, user_id: str) -> As
     if not values or values.get("user_id") != user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
     has_confirmation_interrupt = "confirm" in snapshot.next
-    pending = values.get("pending_confirmation") if has_confirmation_interrupt else None
+    stored_pending = values.get("pending_confirmation")
+    pending = stored_pending if has_confirmation_interrupt else None
     tasks = values.get("tasks", [])
-    if not snapshot.next:
+    orphaned_confirmation = stored_pending is not None and not has_confirmation_interrupt
+    if not snapshot.next or orphaned_confirmation:
         tasks = [
             task.model_copy(update={"status": TaskStatus.FAILED})
             if task.status in {TaskStatus.RUNNING, TaskStatus.WAITING_CONFIRMATION}
+            and (not orphaned_confirmation or task.id == stored_pending.task_id)
             else task
             for task in tasks
         ]
