@@ -249,6 +249,30 @@ async def test_reject_cancels_dependent_task_without_writing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_rejected_action_can_request_confirmation_again() -> None:
+    graph, actions = make_graph()
+    config = {"configurable": {"thread_id": "thread-confirm-again"}}
+    await graph.ainvoke(initial_state(), config)
+    await graph.ainvoke(Command(resume={"approved": False}), config)
+
+    await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="点错了，还是申请上海差旅")],
+            "user_id": "u-1",
+            "last_answer": "",
+            "pending_confirmation": None,
+        },
+        config,
+    )
+    paused = await graph.aget_state(config)
+
+    assert "confirm" in paused.next
+    assert paused.values["pending_confirmation"] is not None
+    assert paused.values["tasks"][0].status.value == "waiting_confirmation"
+    assert actions.records == {}
+
+
+@pytest.mark.asyncio
 async def test_greeting_returns_direct_answer_without_tasks() -> None:
     graph, actions = make_graph(GreetingPlanningService())
     state = initial_state()

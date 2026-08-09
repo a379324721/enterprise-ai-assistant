@@ -3,8 +3,10 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from langchain_core.messages import HumanMessage
 
-from enterprise_ai_assistant.api.routes import _conversation_title, list_conversations
+from enterprise_ai_assistant.api.routes import _conversation_title, _response, list_conversations
+from enterprise_ai_assistant.core.models import PendingConfirmation, PlannedTask, TaskStatus
 
 
 def test_conversation_title_normalizes_whitespace_and_truncates() -> None:
@@ -37,3 +39,44 @@ async def test_conversation_list_is_loaded_for_current_user() -> None:
 
     assert result[0].conversation_id == conversation_id
     assert result[0].title == "上海差旅申请"
+
+
+@pytest.mark.asyncio
+async def test_response_hides_confirmation_without_a_real_interrupt() -> None:
+    conversation_id = uuid4()
+    pending = PendingConfirmation(
+        task_id="task-1",
+        action="travel.application.submit",
+        summary="提交差旅申请",
+        payload={"destination": "北京"},
+    )
+    snapshot = SimpleNamespace(
+        next=(),
+        values={
+            "user_id": "u-1",
+            "messages": [HumanMessage(content="明天出差")],
+            "user_goal": "创建差旅申请",
+            "tasks": [
+                PlannedTask(
+                    id="task-1",
+                    title="创建差旅申请",
+                    operation="submit",
+                    required_capabilities=["travel.application.write"],
+                    status=TaskStatus.RUNNING,
+                )
+            ],
+            "pending_confirmation": pending,
+        },
+    )
+
+    class Graph:
+        async def aget_state(self, config: object) -> object:
+            return snapshot
+
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(graph=Graph())))
+
+    response = await _response(request, conversation_id, "u-1")  # type: ignore[arg-type]
+
+    assert response.status == "failed"
+    assert response.pending_confirmation is None
+    assert response.tasks[0].status == TaskStatus.FAILED

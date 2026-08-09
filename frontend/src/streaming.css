@@ -19,6 +19,11 @@
   color: #b27211;
 }
 
+.task > span.failed {
+  border-color: #c65b56;
+  color: #a83e39;
+}
+
 .taskRun + .taskRun {
   margin-top: 18px;
   padding-top: 2px;

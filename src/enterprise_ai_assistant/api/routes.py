@@ -141,11 +141,22 @@ async def _response(request: Request, conversation_id: UUID, user_id: str) -> As
     values = snapshot.values
     if not values or values.get("user_id") != user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
-    pending = values.get("pending_confirmation")
-    if pending and "confirm" in snapshot.next:
+    has_confirmation_interrupt = "confirm" in snapshot.next
+    pending = values.get("pending_confirmation") if has_confirmation_interrupt else None
+    tasks = values.get("tasks", [])
+    if not snapshot.next:
+        tasks = [
+            task.model_copy(update={"status": TaskStatus.FAILED})
+            if task.status in {TaskStatus.RUNNING, TaskStatus.WAITING_CONFIRMATION}
+            else task
+            for task in tasks
+        ]
+    if pending:
         workflow_status = "waiting_confirmation"
-    elif any(task.status == TaskStatus.WAITING_INPUT for task in values.get("tasks", [])):
+    elif any(task.status == TaskStatus.WAITING_INPUT for task in tasks):
         workflow_status = "waiting_input"
+    elif any(task.status == TaskStatus.FAILED for task in tasks):
+        workflow_status = "failed"
     else:
         workflow_status = "completed"
     return AssistantResponse(
@@ -153,7 +164,7 @@ async def _response(request: Request, conversation_id: UUID, user_id: str) -> As
         status=workflow_status,
         answer=values.get("last_answer", ""),
         user_goal=values.get("user_goal", ""),
-        tasks=values.get("tasks", []),
+        tasks=tasks,
         task_history=values.get("task_history", []),
         messages=_conversation_messages(values.get("messages", [])),
         slots=values.get("slots", {}),

@@ -194,7 +194,16 @@ function App() {
       await consumeSse(response, handleStreamEvent);
     } catch (error) {
       const message = error instanceof Error ? error.message : "系统异常";
-      setMessages((old) => old.map((item, index) => index === old.length - 1 ? {...item, text: item.text || message} : item));
+      if (conversationId) {
+        try {
+          applyConversation(await fetchConversation(conversationId));
+          setMessages((old) => [...old, {role: "assistant", text: message}]);
+        } catch {
+          setMessages((old) => old.map((item, index) => index === old.length - 1 ? {...item, text: item.text || message} : item));
+        }
+      } else {
+        setMessages((old) => old.map((item, index) => index === old.length - 1 ? {...item, text: item.text || message} : item));
+      }
     } finally { setBusy(false); setProgress(""); }
   }
 
@@ -207,7 +216,12 @@ function App() {
       await consumeSse(response, handleStreamEvent);
     } catch (error) {
       const message = error instanceof Error ? error.message : "系统异常";
-      setMessages((old) => old.map((item, index) => index === old.length - 1 ? {...item, text: item.text || message} : item));
+      try {
+        applyConversation(await fetchConversation(result.conversation_id));
+        setMessages((old) => [...old, {role: "assistant", text: message}]);
+      } catch {
+        setMessages((old) => old.map((item, index) => index === old.length - 1 ? {...item, text: item.text || message} : item));
+      }
     } finally { setBusy(false); setProgress(""); }
   }
 
@@ -229,7 +243,7 @@ function App() {
       </div>
       <aside><div className="asideHead"><span>任务执行</span>{result && result.tasks.length > 0 && <small>{`当前 ${result.tasks.filter(task => task.status === "completed").length}/${result.tasks.length}`}</small>}</div>
         {visibleTaskRuns.length === 0 && <div className="empty"><i>⌁</i><p>发送业务请求后，这里会展示 AI 拆解出的任务及执行进度。</p></div>}
-        {visibleTaskRuns.map((run, runIndex) => <div className="taskRun" key={`${runIndex}-${run.user_goal}`}><div className="goal"><small>{runIndex < taskHistory.length ? "历史目标" : "当前目标"}</small><p>{run.user_goal}</p></div><div className="taskList">{run.tasks.map((task, taskIndex) => <div className="task" key={`${runIndex}-${task.id}`}><span className={task.status}>{task.status === "completed" ? "✓" : taskIndex + 1}</span><div><strong>{task.title}</strong><small>{task.required_capabilities.map(capability => capabilityLabels[capability] || capability).join(" · ")}</small></div><em>{({completed:"已完成",running:"执行中",waiting_input:"待补充",waiting_confirmation:"待确认",pending:"等待中",rejected:"已取消"} as Record<string,string>)[task.status] || task.status}</em></div>)}</div></div>)}
+        {visibleTaskRuns.map((run, runIndex) => <div className="taskRun" key={`${runIndex}-${run.user_goal}`}><div className="goal"><small>{runIndex < taskHistory.length ? "历史目标" : "当前目标"}</small><p>{run.user_goal}</p></div><div className="taskList">{run.tasks.map((task, taskIndex) => <div className="task" key={`${runIndex}-${task.id}`}><span className={task.status}>{task.status === "completed" ? "✓" : taskIndex + 1}</span><div><strong>{task.title}</strong><small>{task.required_capabilities.map(capability => capabilityLabels[capability] || capability).join(" · ")}</small></div><em>{({completed:"已完成",running:"执行中",waiting_input:"待补充",waiting_confirmation:"待确认",pending:"等待中",rejected:"已取消",failed:"执行失败"} as Record<string,string>)[task.status] || task.status}</em></div>)}</div></div>)}
       </aside>
     </section>
   </main>;
