@@ -18,6 +18,7 @@ from enterprise_ai_assistant.core.models import (
     AgentName,
     GoalUnderstanding,
     PlannedTask,
+    TaskRun,
     TaskStatus,
 )
 from enterprise_ai_assistant.graph.state import AssistantState
@@ -77,6 +78,12 @@ class Workflow:
             "tasks": plan.tasks,
             "slots": {**state.get("slots", {}), **plan.extracted_slots},
         }
+        previous_tasks = state.get("tasks", [])
+        if previous_tasks:
+            update["task_history"] = [
+                *state.get("task_history", []),
+                TaskRun(user_goal=state.get("user_goal", ""), tasks=previous_tasks),
+            ]
         if not plan.tasks:
             answer = plan.direct_answer.strip() or (
                 "我暂时没有识别到需要办理的企业事务。你可以告诉我需要处理的差旅、"

@@ -5,7 +5,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 from starlette.responses import StreamingResponse
 
@@ -13,6 +13,7 @@ from enterprise_ai_assistant.api.schemas import (
     AssistantResponse,
     ChatRequest,
     ConfirmationRequest,
+    ConversationMessage,
     HealthResponse,
 )
 from enterprise_ai_assistant.core.models import TaskStatus
@@ -50,6 +51,7 @@ def _initial_state(payload: ChatRequest, user_id: str) -> dict[str, Any]:
         "user_id": user_id,
         "user_goal": "",
         "tasks": [],
+        "task_history": [],
         "slots": {},
         "tool_results": [],
         "current_agent": None,
@@ -81,6 +83,30 @@ def _encode_sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {payload}\n\n"
 
 
+def _conversation_messages(messages: list[Any]) -> list[ConversationMessage]:
+    """每轮只保留用户输入和最终助手回答，隐藏工作流内部中间消息。"""
+    transcript: list[ConversationMessage] = []
+    current_user: str | None = None
+    final_answer: str | None = None
+
+    def append_turn() -> None:
+        if current_user is None:
+            return
+        transcript.append(ConversationMessage(role="user", text=current_user))
+        if final_answer:
+            transcript.append(ConversationMessage(role="assistant", text=final_answer))
+
+    for message in messages:
+        if isinstance(message, HumanMessage):
+            append_turn()
+            current_user = str(message.content)
+            final_answer = None
+        elif isinstance(message, AIMessage) and current_user is not None:
+            final_answer = str(message.content)
+    append_turn()
+    return transcript
+
+
 async def _response(request: Request, conversation_id: UUID, user_id: str) -> AssistantResponse:
     snapshot = await request.app.state.graph.aget_state(_config(conversation_id, user_id))
     values = snapshot.values
@@ -99,6 +125,8 @@ async def _response(request: Request, conversation_id: UUID, user_id: str) -> As
         answer=values.get("last_answer", ""),
         user_goal=values.get("user_goal", ""),
         tasks=values.get("tasks", []),
+        task_history=values.get("task_history", []),
+        messages=_conversation_messages(values.get("messages", [])),
         slots=values.get("slots", {}),
         tool_results=values.get("tool_results", []),
         pending_confirmation=pending,

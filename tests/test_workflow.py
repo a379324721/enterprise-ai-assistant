@@ -138,6 +138,7 @@ def initial_state() -> dict[str, Any]:
         "user_id": "u-1",
         "user_goal": "",
         "tasks": [],
+        "task_history": [],
         "slots": {},
         "tool_results": [],
         "current_agent": None,
@@ -202,13 +203,26 @@ async def test_greeting_returns_direct_answer_without_tasks() -> None:
 @pytest.mark.asyncio
 async def test_missing_information_keeps_task_waiting_for_input() -> None:
     graph, actions = make_graph(MissingTravelPlanningService())
+    config = {"configurable": {"thread_id": "thread-missing-input"}}
 
-    final = await graph.ainvoke(
-        initial_state(), {"configurable": {"thread_id": "thread-missing-input"}}
+    first = await graph.ainvoke(initial_state(), config)
+
+    assert first["tasks"][0].status.value == "waiting_input"
+    assert first["last_answer"] == "创建差旅申请前还需要补充：出差地点、返回日期、出差事由。"
+
+    second = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="出差地点是上海")],
+            "user_id": "u-1",
+            "last_answer": "",
+            "pending_confirmation": None,
+        },
+        config,
     )
 
-    assert final["tasks"][0].status.value == "waiting_input"
-    assert final["last_answer"] == "创建差旅申请前还需要补充：出差地点、返回日期、出差事由。"
+    assert len(second["task_history"]) == 1
+    assert second["task_history"][0].user_goal == "创建差旅申请"
+    assert second["task_history"][0].tasks[0].status.value == "waiting_input"
     assert actions.records == {}
 
 

@@ -58,6 +58,11 @@ class TaskPlan(BaseModel):
         return self
 
 
+class TaskRun(BaseModel):
+    user_goal: str
+    tasks: list[PlannedTask]
+
+
 class GoalUnderstanding(BaseModel):
     normalized_goal: str
     explicit_constraints: list[str] = Field(default_factory=list)

@@ -1,4 +1,4 @@
-import React, {FormEvent, useMemo, useState} from "react";
+import React, {FormEvent, useEffect, useMemo, useState} from "react";
 import {createRoot} from "react-dom/client";
 import "./styles.css";
 import "./streaming.css";
@@ -7,13 +7,15 @@ type Task = {id: string; title: string; operation: string; status: string; requi
 type Confirmation = {summary: string; action: string; payload: Record<string, unknown>};
 type Result = {
   conversation_id: string; status: string; answer: string; user_goal: string;
-  tasks: Task[]; slots: Record<string, unknown>; pending_confirmation?: Confirmation | null;
+  tasks: Task[]; task_history: TaskRun[]; messages: Message[];
+  slots: Record<string, unknown>; pending_confirmation?: Confirmation | null;
 };
 type Message = {role: "user" | "assistant"; text: string};
 type SseMessage = {event: string; data: unknown};
 type TaskRun = {user_goal: string; tasks: Task[]};
 
 const examples = ["下周去上海出差，帮我申请，回来提醒报销", "我还有多少年假？下周五请一天年假", "查询差旅住宿标准"];
+const conversationStorageKey = "enterprise-assistant.current-conversation";
 const capabilityLabels: Record<string, string> = {
   "travel.policy.read": "查询差旅制度",
   "travel.application.write": "提交差旅申请",
@@ -67,13 +69,54 @@ function App() {
   const [result, setResult] = useState<Result | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [progress, setProgress] = useState("");
-  const [conversationId, setConversationId] = useState<string | null>(null);
+  const savedConversationId = useMemo(() => localStorage.getItem(conversationStorageKey), []);
+  const [conversationId, setConversationId] = useState<string | null>(savedConversationId);
   const [taskHistory, setTaskHistory] = useState<TaskRun[]>([]);
   const userId = useMemo(() => "demo-user", []);
 
+  function rememberConversation(id: string) {
+    localStorage.setItem(conversationStorageKey, id);
+    setConversationId(id);
+  }
+
+  useEffect(() => {
+    if (!savedConversationId) return;
+    const controller = new AbortController();
+    setBusy(true);
+    setProgress("正在恢复历史会话");
+    void fetch(`/api/v1/conversations/${savedConversationId}`, {
+      headers: {"X-User-ID": userId},
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) {
+        if (response.status === 404) {
+          localStorage.removeItem(conversationStorageKey);
+          setConversationId(null);
+          return null;
+        }
+        throw new Error(`恢复历史会话失败（HTTP ${response.status}）`);
+      }
+      return response.json() as Promise<Result>;
+    }).then((restored) => {
+      if (!restored) return;
+      setResult(restored);
+      setTaskHistory(restored.task_history);
+      setMessages(restored.messages);
+    }).catch((error: unknown) => {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setMessages([{role: "assistant", text: error instanceof Error ? error.message : "恢复历史会话失败"}]);
+    }).finally(() => {
+      if (!controller.signal.aborted) {
+        setBusy(false);
+        setProgress("");
+      }
+    });
+    return () => controller.abort();
+  }, [savedConversationId, userId]);
+
   function handleStreamEvent({event, data}: SseMessage) {
     if (event === "metadata") {
-      setConversationId((data as {conversation_id: string}).conversation_id);
+      rememberConversation((data as {conversation_id: string}).conversation_id);
     } else if (event === "progress") {
       setProgress((data as {message: string}).message);
     } else if (event === "token") {
@@ -81,8 +124,9 @@ function App() {
       setMessages((old) => old.map((message, index) => index === old.length - 1 ? {...message, text: message.text + token} : message));
     } else if (event === "done") {
       const completed = data as Result;
-      setConversationId(completed.conversation_id);
+      rememberConversation(completed.conversation_id);
       setResult(completed);
+      setTaskHistory(completed.task_history);
       setMessages((old) => old.map((message, index) => index === old.length - 1 && !message.text ? {...message, text: completed.answer || "暂时无法生成回答，请换一种方式描述。"} : message));
     } else if (event === "error") {
       throw new Error((data as {message: string}).message);
@@ -93,10 +137,6 @@ function App() {
     event.preventDefault();
     if (!input.trim() || busy) return;
     const text = input.trim(); setInput(""); setBusy(true); setProgress("正在连接智能助手");
-    if (result?.tasks.length) {
-      setTaskHistory((old) => [...old, {user_goal: result.user_goal, tasks: result.tasks}]);
-    }
-    setResult(null);
     setMessages((old) => [...old, {role: "user", text}, {role: "assistant", text: ""}]);
     try {
       const response = await fetch("/api/v1/chat/stream", {method: "POST", headers: {"Content-Type": "application/json", "X-User-ID": userId}, body: JSON.stringify({message: text, ...(conversationId ? {conversation_id: conversationId} : {})})});

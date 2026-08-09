@@ -2,7 +2,12 @@ from typing import Annotated, Any, NotRequired, TypedDict
 
 from langgraph.graph.message import add_messages
 
-from enterprise_ai_assistant.core.models import PendingConfirmation, PlannedTask, ToolResult
+from enterprise_ai_assistant.core.models import (
+    PendingConfirmation,
+    PlannedTask,
+    TaskRun,
+    ToolResult,
+)
 
 
 class AssistantState(TypedDict):
@@ -12,6 +17,7 @@ class AssistantState(TypedDict):
     user_id: str
     user_goal: str
     tasks: list[PlannedTask]
+    task_history: list[TaskRun]
     slots: dict[str, Any]
     tool_results: list[ToolResult]
     current_agent: str | None

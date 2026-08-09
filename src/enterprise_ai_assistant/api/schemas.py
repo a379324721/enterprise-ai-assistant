@@ -1,9 +1,14 @@
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
-from enterprise_ai_assistant.core.models import PendingConfirmation, PlannedTask, ToolResult
+from enterprise_ai_assistant.core.models import (
+    PendingConfirmation,
+    PlannedTask,
+    TaskRun,
+    ToolResult,
+)
 
 
 class ChatRequest(BaseModel):
@@ -16,12 +21,19 @@ class ConfirmationRequest(BaseModel):
     comment: str | None = Field(default=None, max_length=500)
 
 
+class ConversationMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    text: str
+
+
 class AssistantResponse(BaseModel):
     conversation_id: UUID
     status: str
     answer: str
     user_goal: str
     tasks: list[PlannedTask]
+    task_history: list[TaskRun]
+    messages: list[ConversationMessage]
     slots: dict[str, Any]
     tool_results: list[ToolResult]
     pending_confirmation: PendingConfirmation | None = None
