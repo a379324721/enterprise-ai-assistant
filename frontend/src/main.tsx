@@ -11,6 +11,7 @@ type Result = {
 };
 type Message = {role: "user" | "assistant"; text: string};
 type SseMessage = {event: string; data: unknown};
+type TaskRun = {user_goal: string; tasks: Task[]};
 
 const examples = ["下周去上海出差，帮我申请，回来提醒报销", "我还有多少年假？下周五请一天年假", "查询差旅住宿标准"];
 const capabilityLabels: Record<string, string> = {
@@ -67,6 +68,7 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [progress, setProgress] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [taskHistory, setTaskHistory] = useState<TaskRun[]>([]);
   const userId = useMemo(() => "demo-user", []);
 
   function handleStreamEvent({event, data}: SseMessage) {
@@ -90,7 +92,11 @@ function App() {
   async function send(event: FormEvent) {
     event.preventDefault();
     if (!input.trim() || busy) return;
-    const text = input.trim(); setInput(""); setBusy(true); setResult(null); setProgress("正在连接智能助手");
+    const text = input.trim(); setInput(""); setBusy(true); setProgress("正在连接智能助手");
+    if (result?.tasks.length) {
+      setTaskHistory((old) => [...old, {user_goal: result.user_goal, tasks: result.tasks}]);
+    }
+    setResult(null);
     setMessages((old) => [...old, {role: "user", text}, {role: "assistant", text: ""}]);
     try {
       const response = await fetch("/api/v1/chat/stream", {method: "POST", headers: {"Content-Type": "application/json", "X-User-ID": userId}, body: JSON.stringify({message: text, ...(conversationId ? {conversation_id: conversationId} : {})})});
@@ -114,6 +120,12 @@ function App() {
     } finally { setBusy(false); setProgress(""); }
   }
 
+  const visibleTaskRuns = [
+    ...taskHistory,
+    ...(result?.tasks.length ? [{user_goal: result.user_goal, tasks: result.tasks}] : []),
+  ];
+  const visibleTasks = visibleTaskRuns.flatMap((run) => run.tasks);
+
   return <main>
     <header><div className="brandMark">E</div><div><h1>Enterprise AI Assistant</h1><p>企业事务，一个对话完成</p></div><span className="online">● 系统在线</span></header>
     <section className="layout">
@@ -124,9 +136,9 @@ function App() {
         {result?.pending_confirmation && <div className="confirmCard"><div className="risk">需要你的确认</div><strong>{result.pending_confirmation.summary}</strong><p>系统只会在你确认后执行该操作。</p><div><button className="cancel" disabled={busy} onClick={() => confirm(false)}>取消</button><button className="approve" disabled={busy} onClick={() => confirm(true)}>确认执行</button></div></div>}
         <form onSubmit={send}><textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="描述你想办理的事情…" rows={2}/><button disabled={busy}>发送</button></form>
       </div>
-      <aside><div className="asideHead"><span>任务执行</span>{result && result.tasks.length > 0 && <small>{`${result.tasks.filter(t => t.status === "completed").length}/${result.tasks.length}`}</small>}</div>
-        {(!result || result.tasks.length === 0) && <div className="empty"><i>⌁</i><p>发送业务请求后，这里会展示 AI 拆解出的任务及执行进度。</p></div>}
-        {result && result.tasks.length > 0 && <><div className="goal"><small>理解到的目标</small><p>{result.user_goal}</p></div><div className="taskList">{result.tasks.map((task, index) => <div className="task" key={task.id}><span className={task.status}>{task.status === "completed" ? "✓" : index + 1}</span><div><strong>{task.title}</strong><small>{task.required_capabilities.map(capability => capabilityLabels[capability] || capability).join(" · ")}</small></div><em>{({completed:"已完成",running:"执行中",waiting_input:"待补充",waiting_confirmation:"待确认",pending:"等待中",rejected:"已取消"} as Record<string,string>)[task.status] || task.status}</em></div>)}</div></>}
+      <aside><div className="asideHead"><span>任务执行</span>{visibleTasks.length > 0 && <small>{`${visibleTasks.filter(task => task.status === "completed").length}/${visibleTasks.length}`}</small>}</div>
+        {visibleTaskRuns.length === 0 && <div className="empty"><i>⌁</i><p>发送业务请求后，这里会展示 AI 拆解出的任务及执行进度。</p></div>}
+        {visibleTaskRuns.map((run, runIndex) => <div className="taskRun" key={`${runIndex}-${run.user_goal}`}><div className="goal"><small>{runIndex < taskHistory.length ? "历史目标" : "当前目标"}</small><p>{run.user_goal}</p></div><div className="taskList">{run.tasks.map((task, taskIndex) => <div className="task" key={`${runIndex}-${task.id}`}><span className={task.status}>{task.status === "completed" ? "✓" : taskIndex + 1}</span><div><strong>{task.title}</strong><small>{task.required_capabilities.map(capability => capabilityLabels[capability] || capability).join(" · ")}</small></div><em>{({completed:"已完成",running:"执行中",waiting_input:"待补充",waiting_confirmation:"待确认",pending:"等待中",rejected:"已取消"} as Record<string,string>)[task.status] || task.status}</em></div>)}</div></div>)}
       </aside>
     </section>
   </main>;

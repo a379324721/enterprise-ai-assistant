@@ -18,3 +18,9 @@
   border-color: #d1912c;
   color: #b27211;
 }
+
+.taskRun + .taskRun {
+  margin-top: 18px;
+  padding-top: 2px;
+  border-top: 1px dashed #dfe5df;
+}
