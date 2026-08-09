@@ -13,6 +13,16 @@ type Message = {role: "user" | "assistant"; text: string};
 type SseMessage = {event: string; data: unknown};
 
 const examples = ["下周去上海出差，帮我申请，回来提醒报销", "我还有多少年假？下周五请一天年假", "查询差旅住宿标准"];
+const capabilityLabels: Record<string, string> = {
+  "travel.policy.read": "查询差旅制度",
+  "travel.application.write": "提交差旅申请",
+  "expense.policy.read": "查询报销制度",
+  "expense.claim.write": "提交报销单",
+  "expense.reminder.write": "设置报销提醒",
+  "hr.leave.read": "查询休假信息",
+  "hr.leave.write": "提交请假申请",
+  "policy.search": "查询企业制度",
+};
 
 async function consumeSse(
   response: Response,
@@ -112,7 +122,7 @@ function App() {
       </div>
       <aside><div className="asideHead"><span>任务执行</span>{result && result.tasks.length > 0 && <small>{`${result.tasks.filter(t => t.status === "completed").length}/${result.tasks.length}`}</small>}</div>
         {(!result || result.tasks.length === 0) && <div className="empty"><i>⌁</i><p>发送业务请求后，这里会展示 AI 拆解出的任务及执行进度。</p></div>}
-        {result && result.tasks.length > 0 && <><div className="goal"><small>理解到的目标</small><p>{result.user_goal}</p></div><div className="taskList">{result.tasks.map((task, index) => <div className="task" key={task.id}><span className={task.status}>{task.status === "completed" ? "✓" : index + 1}</span><div><strong>{task.title}</strong><small>{task.required_capabilities.join(" · ")}</small></div><em>{({completed:"已完成",running:"执行中",waiting_confirmation:"待确认",pending:"等待中",rejected:"已取消"} as Record<string,string>)[task.status] || task.status}</em></div>)}</div></>}
+        {result && result.tasks.length > 0 && <><div className="goal"><small>理解到的目标</small><p>{result.user_goal}</p></div><div className="taskList">{result.tasks.map((task, index) => <div className="task" key={task.id}><span className={task.status}>{task.status === "completed" ? "✓" : index + 1}</span><div><strong>{task.title}</strong><small>{task.required_capabilities.map(capability => capabilityLabels[capability] || capability).join(" · ")}</small></div><em>{({completed:"已完成",running:"执行中",waiting_confirmation:"待确认",pending:"等待中",rejected:"已取消"} as Record<string,string>)[task.status] || task.status}</em></div>)}</div></>}
       </aside>
     </section>
   </main>;

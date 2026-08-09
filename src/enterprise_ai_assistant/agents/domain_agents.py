@@ -7,6 +7,21 @@ from enterprise_ai_assistant.core.models import PendingConfirmation, PlannedTask
 from enterprise_ai_assistant.repositories.actions import ActionRepository
 from enterprise_ai_assistant.repositories.policies import PolicyRepository
 
+_SLOT_LABELS = {
+    "destination": "出差地点",
+    "start_date": "出发日期",
+    "end_date": "返回日期",
+    "purpose": "出差事由",
+    "leave_type": "请假类型",
+    "leave_start": "请假开始日期",
+    "leave_end": "请假结束日期",
+}
+
+
+def _missing_slot_message(prefix: str, fields: tuple[str, ...], slots: dict[str, Any]) -> str:
+    missing = [_SLOT_LABELS[field] for field in fields if field not in slots]
+    return f"{prefix}还需要补充：{'、'.join(missing)}。"
+
 
 class TravelAgent:
     def __init__(self, policies: PolicyRepository, actions: ActionRepository) -> None:
@@ -23,11 +38,10 @@ class TravelAgent:
                     task_id=task.id, tool="policy_search", success=True, data={"items": policies}
                 ),
             )
-        required = {"destination", "start_date", "end_date", "purpose"}
-        missing = sorted(required - slots.keys())
-        if missing:
-            return AgentOutcome(answer=f"创建差旅申请前还需要：{', '.join(missing)}。")
-        payload = {name: slots[name] for name in sorted(required)}
+        required = ("destination", "start_date", "end_date", "purpose")
+        if any(name not in slots for name in required):
+            return AgentOutcome(answer=_missing_slot_message("创建差旅申请前", required, slots))
+        payload = {name: slots[name] for name in required}
         return AgentOutcome(
             answer="差旅申请已准备，等待确认。",
             confirmation=PendingConfirmation(
@@ -137,10 +151,9 @@ class HRAgent:
                     data={"balance_days": 8, "policies": policies},
                 ),
             )
-        required = {"leave_type", "leave_start", "leave_end"}
-        missing = sorted(required - slots.keys())
-        if missing:
-            return AgentOutcome(answer=f"提交请假前还需要：{', '.join(missing)}。")
+        required = ("leave_type", "leave_start", "leave_end")
+        if any(key not in slots for key in required):
+            return AgentOutcome(answer=_missing_slot_message("提交请假前", required, slots))
         payload = {key: slots[key] for key in required}
         return AgentOutcome(
             answer="请假申请已准备，等待确认。",
