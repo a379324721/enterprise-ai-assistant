@@ -25,6 +25,12 @@ from enterprise_ai_assistant.core.models import (
 from enterprise_ai_assistant.graph.state import AssistantState
 
 
+def _relative_date(user_text: str) -> str | None:
+    offsets = (("后天", 2), ("明天", 1), ("今天", 0))
+    offset = next((days for phrase, days in offsets if phrase in user_text), None)
+    return (date.today() + timedelta(days=offset)).isoformat() if offset is not None else None
+
+
 def _single_day_leave_slots(
     user_text: str,
     understanding: GoalUnderstanding,
@@ -38,11 +44,9 @@ def _single_day_leave_slots(
     ) or any("hr.leave.write" in task.required_capabilities for task in tasks)
     if not leave_context:
         return {}
-    offsets = (("后天", 2), ("明天", 1), ("今天", 0))
-    offset = next((days for phrase, days in offsets if phrase in user_text), None)
-    if offset is None:
+    leave_date = _relative_date(user_text)
+    if leave_date is None:
         return {}
-    leave_date = (date.today() + timedelta(days=offset)).isoformat()
     return {"leave_start": leave_date, "leave_end": leave_date}
 
 
@@ -51,6 +55,28 @@ def _travel_mode_slots(user_text: str) -> dict[str, bool]:
         return {"is_one_way": True}
     if any(phrase in user_text for phrase in ("往返", "会返回", "有返程")):
         return {"is_one_way": False}
+    return {}
+
+
+def _travel_follow_up_date_slots(
+    user_text: str,
+    slots: dict[str, Any],
+    tasks: list[PlannedTask],
+) -> dict[str, str]:
+    supplied_date = _relative_date(user_text)
+    if supplied_date is None:
+        return {}
+    is_travel_application = any(
+        "travel.application.write" in task.required_capabilities for task in tasks
+    )
+    if not is_travel_application:
+        return {}
+    start_date = slots.get("start_date")
+    end_date = slots.get("end_date")
+    if start_date and not end_date:
+        return {"end_date": supplied_date}
+    if not start_date and end_date:
+        return {"start_date": supplied_date}
     return {}
 
 
@@ -94,10 +120,19 @@ class Workflow:
         understanding = await self.supervisor.understand(
             user_text, "\n".join(history_lines)
         )
+        model_slots = dict(understanding.inferred_slots)
+        travel_date_slots = _travel_follow_up_date_slots(
+            user_text, state.get("slots", {}), state.get("tasks", [])
+        )
+        if "end_date" in travel_date_slots and not any(
+            phrase in user_text for phrase in ("出发", "开始", "启程")
+        ):
+            model_slots.pop("start_date", None)
         inferred_slots = {
-            **understanding.inferred_slots,
+            **model_slots,
             **_single_day_leave_slots(user_text, understanding, state.get("tasks", [])),
             **_travel_mode_slots(user_text),
+            **travel_date_slots,
         }
         understanding = understanding.model_copy(update={"inferred_slots": inferred_slots})
         return {

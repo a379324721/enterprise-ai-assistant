@@ -142,6 +142,37 @@ class SingleDayLeavePlanningService:
         )
 
 
+class FollowUpTravelDatePlanningService:
+    async def understand(
+        self, user_text: str, conversation_history: str = ""
+    ) -> GoalUnderstanding:
+        if "北京" in user_text:
+            return GoalUnderstanding(
+                normalized_goal="创建北京单程差旅申请",
+                inferred_slots={
+                    "destination": "北京",
+                    "start_date": (date.today() + timedelta(days=1)).isoformat(),
+                    "purpose": "开会",
+                },
+            )
+        return GoalUnderstanding(normalized_goal="补充差旅行程结束日期")
+
+    async def plan(self, understanding: GoalUnderstanding) -> TaskPlan:
+        return TaskPlan(
+            user_goal=understanding.normalized_goal,
+            tasks=[
+                PlannedTask(
+                    id="task-1",
+                    title="创建差旅申请",
+                    operation="submit",
+                    required_capabilities=["travel.application.write"],
+                    risk="high",
+                )
+            ],
+            extracted_slots=understanding.inferred_slots,
+        )
+
+
 def make_graph(
     planning: PlanningService | None = None,
 ) -> tuple[Any, InMemoryActionRepository]:
@@ -301,4 +332,33 @@ async def test_full_day_leave_uses_same_start_and_end_date() -> None:
     assert paused.values["slots"]["leave_end"] == expected_date
     assert paused.values["pending_confirmation"].payload["leave_start"] == expected_date
     assert paused.values["pending_confirmation"].payload["leave_end"] == expected_date
+    assert actions.records == {}
+
+
+@pytest.mark.asyncio
+async def test_relative_date_fills_the_only_missing_travel_date() -> None:
+    graph, actions = make_graph(FollowUpTravelDatePlanningService())
+    config = {"configurable": {"thread_id": "thread-travel-end-date"}}
+    state = initial_state()
+    state["messages"] = [HumanMessage(content="明天去北京开会，单程")]
+
+    await graph.ainvoke(state, config)
+    first = await graph.aget_state(config)
+    assert first.values["tasks"][0].status.value == "waiting_input"
+
+    await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="后天")],
+            "user_id": "u-1",
+            "last_answer": "",
+            "pending_confirmation": None,
+        },
+        config,
+    )
+    paused = await graph.aget_state(config)
+    expected_end_date = (date.today() + timedelta(days=2)).isoformat()
+
+    assert "confirm" in paused.next
+    assert paused.values["slots"]["end_date"] == expected_end_date
+    assert paused.values["pending_confirmation"].payload["end_date"] == expected_end_date
     assert actions.records == {}
