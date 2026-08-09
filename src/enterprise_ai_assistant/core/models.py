@@ -3,7 +3,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class TaskStatus(StrEnum):
@@ -38,10 +38,24 @@ class PlannedTask(BaseModel):
     status: TaskStatus = TaskStatus.PENDING
 
 
+class ExtractedSlots(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    destination: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    purpose: str | None = None
+    is_one_way: bool | None = None
+    leave_type: str | None = None
+    leave_start: str | None = None
+    leave_end: str | None = None
+    expense_amount: float | None = None
+
+
 class TaskPlan(BaseModel):
     user_goal: str
     tasks: list[PlannedTask]
-    extracted_slots: dict[str, Any] = Field(default_factory=dict)
+    extracted_slots: ExtractedSlots = Field(default_factory=ExtractedSlots)
     direct_answer: str = Field(
         default="",
         description="无需创建业务任务时，直接回复用户的自然语言内容",
@@ -66,8 +80,8 @@ class TaskRun(BaseModel):
 class GoalUnderstanding(BaseModel):
     normalized_goal: str
     explicit_constraints: list[str] = Field(default_factory=list)
-    inferred_slots: dict[str, Any] = Field(
-        default_factory=dict,
+    inferred_slots: ExtractedSlots = Field(
+        default_factory=ExtractedSlots,
         description=(
             "使用规范槽位名：差旅使用 destination、start_date、end_date、purpose；"
             "单程标记使用 is_one_way；请假使用 leave_type、leave_start、leave_end；"

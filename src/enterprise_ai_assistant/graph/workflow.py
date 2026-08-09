@@ -17,6 +17,7 @@ from enterprise_ai_assistant.agents.domain_agents import (
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.core.models import (
     AgentName,
+    ExtractedSlots,
     GoalUnderstanding,
     PlannedTask,
     TaskRun,
@@ -29,6 +30,17 @@ def _relative_date(user_text: str) -> str | None:
     offsets = (("后天", 2), ("明天", 1), ("今天", 0))
     offset = next((days for phrase, days in offsets if phrase in user_text), None)
     return (date.today() + timedelta(days=offset)).isoformat() if offset is not None else None
+
+
+def _explicit_travel_date_slots(user_text: str) -> dict[str, str]:
+    slots: dict[str, str] = {}
+    for phrase, offset in (("今天", 0), ("明天", 1), ("后天", 2)):
+        value = (date.today() + timedelta(days=offset)).isoformat()
+        if any(f"{phrase}{verb}" in user_text for verb in ("出发", "启程", "开始")):
+            slots["start_date"] = value
+        if any(f"{phrase}{verb}" in user_text for verb in ("回来", "返回", "返程", "结束")):
+            slots["end_date"] = value
+    return slots
 
 
 def _single_day_leave_slots(
@@ -120,7 +132,7 @@ class Workflow:
         understanding = await self.supervisor.understand(
             user_text, "\n".join(history_lines)
         )
-        model_slots = dict(understanding.inferred_slots)
+        model_slots = understanding.inferred_slots.model_dump(exclude_none=True)
         travel_date_slots = _travel_follow_up_date_slots(
             user_text, state.get("slots", {}), state.get("tasks", [])
         )
@@ -130,11 +142,14 @@ class Workflow:
             model_slots.pop("start_date", None)
         inferred_slots = {
             **model_slots,
+            **_explicit_travel_date_slots(user_text),
             **_single_day_leave_slots(user_text, understanding, state.get("tasks", [])),
             **_travel_mode_slots(user_text),
             **travel_date_slots,
         }
-        understanding = understanding.model_copy(update={"inferred_slots": inferred_slots})
+        understanding = understanding.model_copy(
+            update={"inferred_slots": ExtractedSlots.model_validate(inferred_slots)}
+        )
         return {
             "user_goal": understanding.normalized_goal,
             "understanding": understanding.model_dump(mode="json"),
@@ -147,7 +162,10 @@ class Workflow:
         update: dict[str, Any] = {
             "user_goal": plan.user_goal,
             "tasks": plan.tasks,
-            "slots": {**state.get("slots", {}), **plan.extracted_slots},
+            "slots": {
+                **state.get("slots", {}),
+                **plan.extracted_slots.model_dump(exclude_none=True),
+            },
         }
         previous_tasks = state.get("tasks", [])
         if previous_tasks:

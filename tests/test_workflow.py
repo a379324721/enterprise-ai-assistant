@@ -5,6 +5,7 @@ import pytest
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
+from pydantic import ValidationError
 
 from enterprise_ai_assistant.agents.domain_agents import (
     ExpenseAgent,
@@ -14,7 +15,12 @@ from enterprise_ai_assistant.agents.domain_agents import (
 )
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.core.models import GoalUnderstanding, PlannedTask, TaskPlan
-from enterprise_ai_assistant.graph.workflow import Workflow, _travel_mode_slots, build_graph
+from enterprise_ai_assistant.graph.workflow import (
+    Workflow,
+    _explicit_travel_date_slots,
+    _travel_mode_slots,
+    build_graph,
+)
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
 from enterprise_ai_assistant.services.capabilities import CapabilityRegistry
@@ -208,6 +214,15 @@ def initial_state() -> dict[str, Any]:
 def test_travel_mode_slots_understand_one_way_corrections() -> None:
     assert _travel_mode_slots("我不返回，补充什么？") == {"is_one_way": True}
     assert _travel_mode_slots("还是改成往返吧") == {"is_one_way": False}
+
+
+def test_explicit_travel_dates_are_normalized_and_slot_names_are_strict() -> None:
+    assert _explicit_travel_date_slots("北京开会，明天出发，后天回来") == {
+        "start_date": (date.today() + timedelta(days=1)).isoformat(),
+        "end_date": (date.today() + timedelta(days=2)).isoformat(),
+    }
+    with pytest.raises(ValidationError):
+        GoalUnderstanding(normalized_goal="出差", inferred_slots={"reason": "开会"})
 
 
 @pytest.mark.asyncio
