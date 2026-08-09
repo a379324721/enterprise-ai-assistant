@@ -14,7 +14,7 @@ from enterprise_ai_assistant.agents.domain_agents import (
 )
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.core.models import GoalUnderstanding, PlannedTask, TaskPlan
-from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
+from enterprise_ai_assistant.graph.workflow import Workflow, _travel_mode_slots, build_graph
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
 from enterprise_ai_assistant.services.capabilities import CapabilityRegistry
@@ -174,6 +174,11 @@ def initial_state() -> dict[str, Any]:
     }
 
 
+def test_travel_mode_slots_understand_one_way_corrections() -> None:
+    assert _travel_mode_slots("我不返回，补充什么？") == {"is_one_way": True}
+    assert _travel_mode_slots("还是改成往返吧") == {"is_one_way": False}
+
+
 @pytest.mark.asyncio
 async def test_compound_workflow_interrupt_resume_and_shared_state() -> None:
     graph, actions = make_graph()
@@ -234,7 +239,7 @@ async def test_missing_information_keeps_task_waiting_for_input() -> None:
     first = await graph.ainvoke(initial_state(), config)
 
     assert first["tasks"][0].status.value == "waiting_input"
-    assert first["last_answer"] == "创建差旅申请前还需要补充：出差地点、返回日期、出差事由。"
+    assert first["last_answer"] == "创建差旅申请前还需要补充：出差地点、行程结束日期、出差事由。"
 
     second = await graph.ainvoke(
         {

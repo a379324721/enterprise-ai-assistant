@@ -15,7 +15,7 @@ from enterprise_ai_assistant.repositories.policies import PolicyRepository
 _SLOT_LABELS = {
     "destination": "出差地点",
     "start_date": "出发日期",
-    "end_date": "返回日期",
+    "end_date": "行程结束日期",
     "purpose": "出差事由",
     "leave_type": "请假类型",
     "leave_start": "请假开始日期",
@@ -45,6 +45,16 @@ class TravelAgent:
             )
         required = ("destination", "start_date", "end_date", "purpose")
         if any(name not in slots for name in required):
+            if slots.get("is_one_way") and all(
+                name in slots for name in ("destination", "start_date", "purpose")
+            ):
+                return AgentOutcome(
+                    answer=(
+                        "单程不需要填写返程交通，但差旅申请仍需填写行程结束日期，"
+                        "也就是本次出差预计结束的日期。请补充预计结束日期。"
+                    ),
+                    task_status=TaskStatus.WAITING_INPUT,
+                )
             return AgentOutcome(
                 answer=_missing_slot_message("创建差旅申请前", required, slots),
                 task_status=TaskStatus.WAITING_INPUT,

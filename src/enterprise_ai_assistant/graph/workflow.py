@@ -46,6 +46,14 @@ def _single_day_leave_slots(
     return {"leave_start": leave_date, "leave_end": leave_date}
 
 
+def _travel_mode_slots(user_text: str) -> dict[str, bool]:
+    if any(phrase in user_text for phrase in ("单程", "不返回", "不返程", "不回程")):
+        return {"is_one_way": True}
+    if any(phrase in user_text for phrase in ("往返", "会返回", "有返程")):
+        return {"is_one_way": False}
+    return {}
+
+
 class Workflow:
     def __init__(
         self,
@@ -89,6 +97,7 @@ class Workflow:
         inferred_slots = {
             **understanding.inferred_slots,
             **_single_day_leave_slots(user_text, understanding, state.get("tasks", [])),
+            **_travel_mode_slots(user_text),
         }
         understanding = understanding.model_copy(update={"inferred_slots": inferred_slots})
         return {

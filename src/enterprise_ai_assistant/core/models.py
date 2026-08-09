@@ -70,7 +70,8 @@ class GoalUnderstanding(BaseModel):
         default_factory=dict,
         description=(
             "使用规范槽位名：差旅使用 destination、start_date、end_date、purpose；"
-            "请假使用 leave_type、leave_start、leave_end；报销金额使用 expense_amount"
+            "单程标记使用 is_one_way；请假使用 leave_type、leave_start、leave_end；"
+            "报销金额使用 expense_amount"
         ),
     )
     ambiguities: list[str] = Field(default_factory=list)
