@@ -19,8 +19,10 @@ class SupervisorAgent:
         self._capabilities = capabilities
 
     @traceable(name="supervisor-understand", run_type="chain")
-    async def understand(self, user_text: str) -> GoalUnderstanding:
-        return await self._planning.understand(user_text)
+    async def understand(
+        self, user_text: str, conversation_history: str = ""
+    ) -> GoalUnderstanding:
+        return await self._planning.understand(user_text, conversation_history)
 
     @traceable(name="supervisor-plan", run_type="chain")
     async def plan(self, understanding: GoalUnderstanding) -> TaskPlan:

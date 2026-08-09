@@ -59,6 +59,22 @@ def _initial_state(payload: ChatRequest, user_id: str) -> dict[str, Any]:
     }
 
 
+async def _chat_input(request: Request, payload: ChatRequest, user_id: str) -> dict[str, Any]:
+    snapshot = await request.app.state.graph.aget_state(_config(payload.conversation_id, user_id))
+    if not snapshot.values:
+        return _initial_state(payload, user_id)
+    if snapshot.values.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if snapshot.next:
+        raise HTTPException(status_code=409, detail="当前会话有待处理操作，请先完成或取消")
+    return {
+        "messages": [HumanMessage(content=payload.message)],
+        "user_id": user_id,
+        "last_answer": "",
+        "pending_confirmation": None,
+    }
+
+
 def _encode_sse(event: str, data: Any) -> str:
     """编码一条带类型的 SSE 事件；JSON 可明确表示换行符和 Unicode 字符。"""
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
@@ -141,7 +157,7 @@ async def chat(
     request: Request,
     user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
 ) -> AssistantResponse:
-    initial = _initial_state(payload, user_id)
+    initial = await _chat_input(request, payload, user_id)
     try:
         await request.app.state.graph.ainvoke(initial, _config(payload.conversation_id, user_id))
     except Exception as exc:
@@ -159,10 +175,11 @@ async def chat_stream(
     user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
 ) -> StreamingResponse:
     """聊天输入使用 POST，因此该 SSE 接口由流式 fetch 消费。"""
+    graph_input = await _chat_input(request, payload, user_id)
     return StreamingResponse(
         _stream_graph(
             request,
-            _initial_state(payload, user_id),
+            graph_input,
             payload.conversation_id,
             user_id,
         ),

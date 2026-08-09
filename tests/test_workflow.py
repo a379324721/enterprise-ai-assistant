@@ -21,7 +21,9 @@ from enterprise_ai_assistant.services.planning import PlanningService
 
 
 class StubPlanningService:
-    async def understand(self, user_text: str) -> GoalUnderstanding:
+    async def understand(
+        self, user_text: str, conversation_history: str = ""
+    ) -> GoalUnderstanding:
         assert "上海" in user_text
         return GoalUnderstanding(
             normalized_goal="申请上海差旅并在返程后提醒报销",
@@ -57,7 +59,9 @@ class StubPlanningService:
 
 
 class GreetingPlanningService:
-    async def understand(self, user_text: str) -> GoalUnderstanding:
+    async def understand(
+        self, user_text: str, conversation_history: str = ""
+    ) -> GoalUnderstanding:
         assert user_text == "你好"
         return GoalUnderstanding(normalized_goal="问候")
 
@@ -70,7 +74,9 @@ class GreetingPlanningService:
 
 
 class MissingTravelPlanningService:
-    async def understand(self, user_text: str) -> GoalUnderstanding:
+    async def understand(
+        self, user_text: str, conversation_history: str = ""
+    ) -> GoalUnderstanding:
         return GoalUnderstanding(
             normalized_goal="创建差旅申请",
             inferred_slots={"start_date": "2026-08-11"},
@@ -89,6 +95,24 @@ class MissingTravelPlanningService:
                 )
             ],
             extracted_slots=understanding.inferred_slots,
+        )
+
+
+class HistoryPlanningService:
+    def __init__(self) -> None:
+        self.histories: list[str] = []
+
+    async def understand(
+        self, user_text: str, conversation_history: str = ""
+    ) -> GoalUnderstanding:
+        self.histories.append(conversation_history)
+        return GoalUnderstanding(normalized_goal=user_text)
+
+    async def plan(self, understanding: GoalUnderstanding) -> TaskPlan:
+        return TaskPlan(
+            user_goal=understanding.normalized_goal,
+            tasks=[],
+            direct_answer=f"收到：{understanding.normalized_goal}",
         )
 
 
@@ -186,3 +210,28 @@ async def test_missing_information_keeps_task_waiting_for_input() -> None:
     assert final["tasks"][0].status.value == "waiting_input"
     assert final["last_answer"] == "创建差旅申请前还需要补充：出差地点、返回日期、出差事由。"
     assert actions.records == {}
+
+
+@pytest.mark.asyncio
+async def test_follow_up_turn_passes_recent_conversation_to_understanding() -> None:
+    planning = HistoryPlanningService()
+    graph, _ = make_graph(planning)
+    config = {"configurable": {"thread_id": "thread-history"}}
+    state = initial_state()
+    state["messages"] = [HumanMessage(content="我明天要出差")]
+
+    await graph.ainvoke(state, config)
+    final = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="改成后天")],
+            "user_id": "u-1",
+            "last_answer": "",
+            "pending_confirmation": None,
+        },
+        config,
+    )
+
+    assert planning.histories[0] == ""
+    assert "用户：我明天要出差" in planning.histories[1]
+    assert "助手：收到：我明天要出差" in planning.histories[1]
+    assert final["messages"][-1].content == "收到：改成后天"

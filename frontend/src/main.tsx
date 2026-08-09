@@ -66,16 +66,20 @@ function App() {
   const [result, setResult] = useState<Result | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [progress, setProgress] = useState("");
+  const [conversationId, setConversationId] = useState<string | null>(null);
   const userId = useMemo(() => "demo-user", []);
 
   function handleStreamEvent({event, data}: SseMessage) {
-    if (event === "progress") {
+    if (event === "metadata") {
+      setConversationId((data as {conversation_id: string}).conversation_id);
+    } else if (event === "progress") {
       setProgress((data as {message: string}).message);
     } else if (event === "token") {
       const token = (data as {content: string}).content;
       setMessages((old) => old.map((message, index) => index === old.length - 1 ? {...message, text: message.text + token} : message));
     } else if (event === "done") {
       const completed = data as Result;
+      setConversationId(completed.conversation_id);
       setResult(completed);
       setMessages((old) => old.map((message, index) => index === old.length - 1 && !message.text ? {...message, text: completed.answer || "暂时无法生成回答，请换一种方式描述。"} : message));
     } else if (event === "error") {
@@ -89,7 +93,7 @@ function App() {
     const text = input.trim(); setInput(""); setBusy(true); setResult(null); setProgress("正在连接智能助手");
     setMessages((old) => [...old, {role: "user", text}, {role: "assistant", text: ""}]);
     try {
-      const response = await fetch("/api/v1/chat/stream", {method: "POST", headers: {"Content-Type": "application/json", "X-User-ID": userId}, body: JSON.stringify({message: text})});
+      const response = await fetch("/api/v1/chat/stream", {method: "POST", headers: {"Content-Type": "application/json", "X-User-ID": userId}, body: JSON.stringify({message: text, ...(conversationId ? {conversation_id: conversationId} : {})})});
       await consumeSse(response, handleStreamEvent);
     } catch (error) {
       const message = error instanceof Error ? error.message : "系统异常";

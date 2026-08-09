@@ -1,7 +1,7 @@
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from langsmith import traceable
@@ -54,8 +54,15 @@ class Workflow:
 
     async def understand(self, state: AssistantState) -> dict[str, Any]:
         # 只有这一边界会读取聊天历史；领域 Agent 接收的是状态投影。
-        user_text = str(state["messages"][-1].content)
-        understanding = await self.supervisor.understand(user_text)
+        messages = state["messages"]
+        user_text = str(messages[-1].content)
+        history_lines = []
+        for message in messages[-13:-1]:
+            role = "用户" if isinstance(message, HumanMessage) else "助手"
+            history_lines.append(f"{role}：{message.content}")
+        understanding = await self.supervisor.understand(
+            user_text, "\n".join(history_lines)
+        )
         return {
             "user_goal": understanding.normalized_goal,
             "understanding": understanding.model_dump(mode="json"),
