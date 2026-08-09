@@ -65,11 +65,19 @@ class Workflow:
     async def plan(self, state: AssistantState) -> dict[str, Any]:
         understanding = GoalUnderstanding.model_validate(state["understanding"])
         plan = await self.supervisor.plan(understanding)
-        return {
+        update: dict[str, Any] = {
             "user_goal": plan.user_goal,
             "tasks": plan.tasks,
             "slots": {**state.get("slots", {}), **plan.extracted_slots},
         }
+        if not plan.tasks:
+            answer = plan.direct_answer.strip() or (
+                "我暂时没有识别到需要办理的企业事务。你可以告诉我需要处理的差旅、"
+                "报销、请假或制度查询。"
+            )
+            update["last_answer"] = answer
+            update["messages"] = [AIMessage(content=answer)]
+        return update
 
     async def select_task(self, state: AssistantState) -> dict[str, Any]:
         task = self.supervisor.next_runnable(state["tasks"])

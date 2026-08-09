@@ -41,6 +41,10 @@ class TaskPlan(BaseModel):
     user_goal: str
     tasks: list[PlannedTask]
     extracted_slots: dict[str, Any] = Field(default_factory=dict)
+    direct_answer: str = Field(
+        default="",
+        description="无需创建业务任务时，直接回复用户的自然语言内容",
+    )
 
     @model_validator(mode="after")
     def validate_dependencies(self) -> "TaskPlan":

@@ -40,6 +40,8 @@ expense.claim.write、expense.reminder.write、hr.leave.read、hr.leave.write、
 只有无法归入上述领域的通用或跨领域制度查询才使用 policy.search。
 复合请求必须拆成多个任务。“出差回来提醒报销”是依赖差旅任务的 expense.reminder.write 任务。
 提交申请、报销单、请假单属于高风险；制度读取属于低风险。
+如果用户只是问候、致谢或没有提出企业事务，则 tasks 返回空列表，并在 direct_answer 中自然回复用户；
+存在业务任务时 direct_answer 返回空字符串。
 使用 task-1 形式的稳定短 ID，保留任务依赖。不得增加用户没有要求的写操作。""",
                 ),
                 ("human", "规范化目标及依据：\n{understanding}"),

@@ -17,6 +17,7 @@ from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
 from enterprise_ai_assistant.services.capabilities import CapabilityRegistry
+from enterprise_ai_assistant.services.planning import PlanningService
 
 
 class StubPlanningService:
@@ -55,10 +56,25 @@ class StubPlanningService:
         )
 
 
-def make_graph() -> tuple[Any, InMemoryActionRepository]:
+class GreetingPlanningService:
+    async def understand(self, user_text: str) -> GoalUnderstanding:
+        assert user_text == "你好"
+        return GoalUnderstanding(normalized_goal="问候")
+
+    async def plan(self, understanding: GoalUnderstanding) -> TaskPlan:
+        return TaskPlan(
+            user_goal=understanding.normalized_goal,
+            tasks=[],
+            direct_answer="你好！有什么企业事务需要我协助吗？",
+        )
+
+
+def make_graph(
+    planning: PlanningService | None = None,
+) -> tuple[Any, InMemoryActionRepository]:
     policies = InMemoryPolicyRepository()
     actions = InMemoryActionRepository()
-    supervisor = SupervisorAgent(StubPlanningService(), CapabilityRegistry())
+    supervisor = SupervisorAgent(planning or StubPlanningService(), CapabilityRegistry())
     workflow = Workflow(
         supervisor,
         TravelAgent(policies, actions),
@@ -118,4 +134,18 @@ async def test_reject_cancels_dependent_task_without_writing() -> None:
     await graph.ainvoke(initial_state(), config)
     final = await graph.ainvoke(Command(resume={"approved": False}), config)
     assert [task.status.value for task in final["tasks"]] == ["rejected", "rejected"]
+    assert actions.records == {}
+
+
+@pytest.mark.asyncio
+async def test_greeting_returns_direct_answer_without_tasks() -> None:
+    graph, actions = make_graph(GreetingPlanningService())
+    state = initial_state()
+    state["messages"] = [HumanMessage(content="你好")]
+
+    final = await graph.ainvoke(state, {"configurable": {"thread_id": "thread-greeting"}})
+
+    assert final["tasks"] == []
+    assert final["last_answer"] == "你好！有什么企业事务需要我协助吗？"
+    assert final["messages"][-1].content == final["last_answer"]
     assert actions.records == {}

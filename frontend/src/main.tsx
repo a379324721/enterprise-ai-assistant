@@ -67,7 +67,7 @@ function App() {
     } else if (event === "done") {
       const completed = data as Result;
       setResult(completed);
-      setMessages((old) => old.map((message, index) => index === old.length - 1 && !message.text ? {...message, text: completed.answer || "任务已完成。"} : message));
+      setMessages((old) => old.map((message, index) => index === old.length - 1 && !message.text ? {...message, text: completed.answer || "暂时无法生成回答，请换一种方式描述。"} : message));
     } else if (event === "error") {
       throw new Error((data as {message: string}).message);
     }
@@ -76,7 +76,7 @@ function App() {
   async function send(event: FormEvent) {
     event.preventDefault();
     if (!input.trim() || busy) return;
-    const text = input.trim(); setInput(""); setBusy(true); setProgress("正在连接智能助手");
+    const text = input.trim(); setInput(""); setBusy(true); setResult(null); setProgress("正在连接智能助手");
     setMessages((old) => [...old, {role: "user", text}, {role: "assistant", text: ""}]);
     try {
       const response = await fetch("/api/v1/chat/stream", {method: "POST", headers: {"Content-Type": "application/json", "X-User-ID": userId}, body: JSON.stringify({message: text})});
@@ -110,9 +110,9 @@ function App() {
         {result?.pending_confirmation && <div className="confirmCard"><div className="risk">需要你的确认</div><strong>{result.pending_confirmation.summary}</strong><p>系统只会在你确认后执行该操作。</p><div><button className="cancel" disabled={busy} onClick={() => confirm(false)}>取消</button><button className="approve" disabled={busy} onClick={() => confirm(true)}>确认执行</button></div></div>}
         <form onSubmit={send}><textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="描述你想办理的事情…" rows={2}/><button disabled={busy}>发送</button></form>
       </div>
-      <aside><div className="asideHead"><span>任务执行</span><small>{result ? `${result.tasks.filter(t => t.status === "completed").length}/${result.tasks.length}` : "0/0"}</small></div>
-        {!result && <div className="empty"><i>⌁</i><p>发送请求后，这里会展示 AI 拆解出的任务及执行进度。</p></div>}
-        {result && <><div className="goal"><small>理解到的目标</small><p>{result.user_goal}</p></div><div className="taskList">{result.tasks.map((task, index) => <div className="task" key={task.id}><span className={task.status}>{task.status === "completed" ? "✓" : index + 1}</span><div><strong>{task.title}</strong><small>{task.required_capabilities.join(" · ")}</small></div><em>{({completed:"已完成",running:"执行中",waiting_confirmation:"待确认",pending:"等待中",rejected:"已取消"} as Record<string,string>)[task.status] || task.status}</em></div>)}</div></>}
+      <aside><div className="asideHead"><span>任务执行</span>{result && result.tasks.length > 0 && <small>{`${result.tasks.filter(t => t.status === "completed").length}/${result.tasks.length}`}</small>}</div>
+        {(!result || result.tasks.length === 0) && <div className="empty"><i>⌁</i><p>发送业务请求后，这里会展示 AI 拆解出的任务及执行进度。</p></div>}
+        {result && result.tasks.length > 0 && <><div className="goal"><small>理解到的目标</small><p>{result.user_goal}</p></div><div className="taskList">{result.tasks.map((task, index) => <div className="task" key={task.id}><span className={task.status}>{task.status === "completed" ? "✓" : index + 1}</span><div><strong>{task.title}</strong><small>{task.required_capabilities.join(" · ")}</small></div><em>{({completed:"已完成",running:"执行中",waiting_confirmation:"待确认",pending:"等待中",rejected:"已取消"} as Record<string,string>)[task.status] || task.status}</em></div>)}</div></>}
       </aside>
     </section>
   </main>;
