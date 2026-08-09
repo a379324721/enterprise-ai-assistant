@@ -10,9 +10,9 @@ class AgentCapability:
 
 
 class CapabilityRegistry:
-    """Routes planner requirements to the best capability provider.
+    """将规划器的能力需求路由给最合适的能力提供方。
 
-    This deliberately knows nothing about raw user text or intent keywords.
+    此处刻意不感知用户原始文本或意图关键词。
     """
 
     def __init__(self) -> None:
@@ -29,8 +29,8 @@ class CapabilityRegistry:
         )
 
     def select(self, task: PlannedTask) -> AgentName:
-        # The API schema uses a list for broad provider compatibility; routing
-        # converts it to a set to preserve exact capability-set semantics.
+        # API Schema 使用列表以兼容更多模型服务商；路由时将其转成集合，
+        # 以保留精确的能力集合语义。
         required = set(task.required_capabilities)
         ranked = sorted(
             ((len(required & item.capabilities), item.agent) for item in self._providers),

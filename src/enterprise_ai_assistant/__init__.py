@@ -1,3 +1,3 @@
-"""Enterprise AI Assistant package."""
+"""企业 AI 助手软件包。"""
 
 __version__ = "0.1.0"

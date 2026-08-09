@@ -11,7 +11,7 @@ T = TypeVar("T")
 @lru_cache
 def build_chat_model() -> ChatOpenAI:
     settings = get_settings()
-    # ChatOpenAI supports OpenAI-compatible /chat/completions endpoints via base_url.
+    # ChatOpenAI 可通过 base_url 连接兼容 OpenAI 的 /chat/completions 接口。
     return ChatOpenAI(
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
@@ -28,10 +28,10 @@ def build_embeddings(settings: Settings | None = None) -> OpenAIEmbeddings:
         api_key=config.openai_api_key,
         base_url=config.openai_base_url,
         model=config.openai_embedding_model,
-        # Many OpenAI-compatible providers (including DashScope) accept only
-        # raw strings for embeddings, while LangChain otherwise sends token IDs.
+        # 许多兼容 OpenAI 的服务商（包括 DashScope）仅接受原始字符串作为嵌入输入，
+        # 而 LangChain 默认可能发送词元 ID。
         check_embedding_ctx_length=False,
-        # Request JSON float vectors explicitly; base64 is not universally supported.
+        # 明确请求 JSON 浮点向量，因为并非所有服务都支持 base64。
         model_kwargs={"encoding_format": "float"},
         max_retries=3,
     )

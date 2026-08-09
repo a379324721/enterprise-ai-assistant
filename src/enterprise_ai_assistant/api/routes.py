@@ -59,7 +59,7 @@ def _initial_state(payload: ChatRequest, user_id: str) -> dict[str, Any]:
 
 
 def _encode_sse(event: str, data: Any) -> str:
-    """Encode one typed SSE event; JSON keeps newlines and Unicode unambiguous."""
+    """编码一条带类型的 SSE 事件；JSON 可明确表示换行符和 Unicode 字符。"""
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     return f"event: {event}\ndata: {payload}\n\n"
 
@@ -91,11 +91,11 @@ async def _stream_graph(
     conversation_id: UUID,
     user_id: str,
 ) -> AsyncIterator[str]:
-    """Stream durable graph progress, answer deltas and the final state snapshot.
+    """流式发送持久化工作流进度、回答增量和最终状态快照。
 
-    Planner structured output is intentionally not exposed as model tokens. Clients
-    receive stable workflow events, while only the user-facing answer is emitted as
-    deltas. The final `done` event remains the source of truth for tasks and slots.
+    规划器的结构化输出不会作为模型词元暴露。客户端接收稳定的工作流事件，
+    只有面向用户的回答会以增量形式发送。最终的 `done` 事件仍是任务和槽位的
+    权威数据来源。
     """
     yield _encode_sse("metadata", {"conversation_id": str(conversation_id)})
     try:
@@ -115,8 +115,8 @@ async def _stream_graph(
             if await request.is_disconnected():
                 return
             yield _encode_sse("token", {"content": character})
-            # A short delay makes small deterministic tool answers visibly stream.
-            # LLM-generated answer nodes can later forward native token timing here.
+            # 短暂延迟可让较短且确定的工具回答呈现出可见的流式效果。
+            # 后续可在此处透传 LLM 回答节点原生的词元输出时序。
             await asyncio.sleep(0.012)
         yield _encode_sse("done", response.model_dump(mode="json"))
     except asyncio.CancelledError:
@@ -154,7 +154,7 @@ async def chat_stream(
     request: Request,
     user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
 ) -> StreamingResponse:
-    """SSE endpoint consumed with streaming fetch because chat input uses POST."""
+    """聊天输入使用 POST，因此该 SSE 接口由流式 fetch 消费。"""
     return StreamingResponse(
         _stream_graph(
             request,
@@ -197,7 +197,7 @@ async def confirm_stream(
     request: Request,
     user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
 ) -> StreamingResponse:
-    """Resume a durable human-confirmation interrupt and stream remaining tasks."""
+    """恢复持久化的人工确认中断，并流式发送剩余任务。"""
     snapshot = await request.app.state.graph.aget_state(_config(conversation_id, user_id))
     if not snapshot.values or snapshot.values.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="会话不存在")

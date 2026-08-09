@@ -24,13 +24,13 @@ class AgentName(StrEnum):
 
 
 class PlannedTask(BaseModel):
-    """Planner output. Routing depends on capabilities, not an intent label."""
+    """规划器输出；路由依据能力，而不是意图标签。"""
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     title: str
     operation: str
-    # Keep the provider-facing JSON Schema simple. Some OpenAI-compatible APIs
-    # reject Pydantic's `uniqueItems` keyword emitted for Python sets.
+    # 保持面向模型服务商的 JSON Schema 简单。部分 OpenAI 兼容 API
+    # 不接受 Pydantic 为 Python 集合生成的 `uniqueItems` 关键字。
     required_capabilities: list[str]
     depends_on: list[str] = Field(default_factory=list)
     risk: str = Field(default="low", pattern="^(low|medium|high)$")

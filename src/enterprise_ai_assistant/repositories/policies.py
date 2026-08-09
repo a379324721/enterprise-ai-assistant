@@ -13,7 +13,7 @@ class PolicyRepository(Protocol):
 
 
 class CachedMilvusPolicyRepository:
-    """Semantic policy retrieval with Redis query cache and Milvus vector storage."""
+    """使用 Redis 查询缓存和 Milvus 向量存储进行制度语义检索。"""
 
     def __init__(
         self,
@@ -50,7 +50,7 @@ class CachedMilvusPolicyRepository:
 async def bootstrap_policy_collection(
     client: MilvusClient, embeddings: OpenAIEmbeddings, collection: str = "enterprise_policies"
 ) -> None:
-    """Create a minimal searchable corpus. Replace these records with the policy ingestion pipeline."""
+    """创建最小可检索语料库；生产环境应通过制度摄取管道替换这些记录。"""
     exists = await asyncio.to_thread(client.has_collection, collection_name=collection)
     if exists:
         return

@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Validated runtime configuration; secrets are never assigned default values."""
+    """经过校验的运行时配置；敏感信息绝不设置默认值。"""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

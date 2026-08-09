@@ -23,7 +23,7 @@ async function consumeSse(
     let detail = "";
     try {
       detail = (JSON.parse(body) as {detail?: string}).detail ?? "";
-    } catch { /* The proxy may return plain text or an empty body. */ }
+    } catch { /* 代理可能返回纯文本或空响应体。 */ }
     throw new Error(detail || body || `流式请求失败（HTTP ${response.status}）`);
   }
   if (!response.body) throw new Error("浏览器没有收到可读取的响应流");

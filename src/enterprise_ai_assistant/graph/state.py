@@ -6,7 +6,7 @@ from enterprise_ai_assistant.core.models import PendingConfirmation, PlannedTask
 
 
 class AssistantState(TypedDict):
-    """The only contract shared by agents; agent prompts never receive `messages`."""
+    """Agent 之间共享的唯一契约；Agent 提示词永远不会接收 `messages`。"""
 
     messages: Annotated[list[Any], add_messages]
     user_id: str

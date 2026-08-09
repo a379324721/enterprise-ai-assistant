@@ -14,7 +14,7 @@ class PlanningService(Protocol):
 
 
 class LLMPlanningService:
-    """Two-stage LLM reasoning prevents routing from collapsing into keyword intent matching."""
+    """通过两阶段 LLM 推理，避免路由退化为关键词意图匹配。"""
 
     def __init__(self, model: ChatOpenAI) -> None:
         self._understander = ChatPromptTemplate.from_messages(

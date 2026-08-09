@@ -53,7 +53,7 @@ class Workflow:
         return task
 
     async def understand(self, state: AssistantState) -> dict[str, Any]:
-        # Only this boundary reads chat history. Domain agents receive state projections instead.
+        # 只有这一边界会读取聊天历史；领域 Agent 接收的是状态投影。
         user_text = str(state["messages"][-1].content)
         understanding = await self.supervisor.understand(user_text)
         return {
@@ -162,7 +162,7 @@ class Workflow:
             if item.id == active_id and item.status == TaskStatus.RUNNING:
                 item = item.model_copy(update={"status": TaskStatus.COMPLETED})
             tasks.append(item)
-        # Cancel tasks whose prerequisites were rejected, avoiding a deadlocked DAG.
+        # 取消前置任务已被拒绝的任务，避免 DAG 陷入死锁。
         rejected = {
             item.id for item in tasks if item.status in {TaskStatus.REJECTED, TaskStatus.FAILED}
         }

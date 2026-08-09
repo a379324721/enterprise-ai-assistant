@@ -12,7 +12,7 @@ from enterprise_ai_assistant.services.planning import PlanningService
 
 
 class SupervisorAgent:
-    """Owns understanding, decomposition and delegation; it does not execute domain writes."""
+    """负责理解、拆解和委派任务，但不执行领域写操作。"""
 
     def __init__(self, planning: PlanningService, capabilities: CapabilityRegistry) -> None:
         self._planning = planning

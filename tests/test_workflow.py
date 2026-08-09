@@ -100,7 +100,7 @@ async def test_compound_workflow_interrupt_resume_and_shared_state() -> None:
     assert final["slots"]["expense_reminder"]["travel_reference"] == "u-1:task-1"
     assert len(actions.records) == 1
 
-    # Repository idempotency also protects against tool retries.
+    # 仓储层的幂等性也能防止工具重试造成重复写入。
     first = next(iter(actions.records.values()))
     repeated = await actions.execute_once(
         idempotency_key="u-1:task-1",
