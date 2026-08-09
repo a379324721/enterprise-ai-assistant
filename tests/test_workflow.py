@@ -69,6 +69,29 @@ class GreetingPlanningService:
         )
 
 
+class MissingTravelPlanningService:
+    async def understand(self, user_text: str) -> GoalUnderstanding:
+        return GoalUnderstanding(
+            normalized_goal="创建差旅申请",
+            inferred_slots={"start_date": "2026-08-11"},
+        )
+
+    async def plan(self, understanding: GoalUnderstanding) -> TaskPlan:
+        return TaskPlan(
+            user_goal=understanding.normalized_goal,
+            tasks=[
+                PlannedTask(
+                    id="task-1",
+                    title="创建差旅申请",
+                    operation="submit",
+                    required_capabilities=["travel.application.write"],
+                    risk="high",
+                )
+            ],
+            extracted_slots=understanding.inferred_slots,
+        )
+
+
 def make_graph(
     planning: PlanningService | None = None,
 ) -> tuple[Any, InMemoryActionRepository]:
@@ -109,6 +132,7 @@ async def test_compound_workflow_interrupt_resume_and_shared_state() -> None:
     assert "confirm" in paused.next
     assert paused.values["pending_confirmation"].action == "travel.application.submit"
     assert [task.id for task in paused.values["tasks"]] == ["task-1", "task-2"]
+    assert paused.values["tasks"][0].status.value == "waiting_confirmation"
 
     final = await graph.ainvoke(Command(resume={"approved": True}), config)
     assert [task.status.value for task in final["tasks"]] == ["completed", "completed"]
@@ -148,4 +172,17 @@ async def test_greeting_returns_direct_answer_without_tasks() -> None:
     assert final["tasks"] == []
     assert final["last_answer"] == "你好！有什么企业事务需要我协助吗？"
     assert final["messages"][-1].content == final["last_answer"]
+    assert actions.records == {}
+
+
+@pytest.mark.asyncio
+async def test_missing_information_keeps_task_waiting_for_input() -> None:
+    graph, actions = make_graph(MissingTravelPlanningService())
+
+    final = await graph.ainvoke(
+        initial_state(), {"configurable": {"thread_id": "thread-missing-input"}}
+    )
+
+    assert final["tasks"][0].status.value == "waiting_input"
+    assert final["last_answer"] == "创建差旅申请前还需要补充：出差地点、返回日期、出差事由。"
     assert actions.records == {}

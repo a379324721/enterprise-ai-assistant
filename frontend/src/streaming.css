@@ -12,3 +12,9 @@
   background: #39775a;
   animation: assistant-cursor-blink 0.8s infinite;
 }
+
+.task > span.waiting_input,
+.task > span.waiting_confirmation {
+  border-color: #d1912c;
+  color: #b27211;
+}

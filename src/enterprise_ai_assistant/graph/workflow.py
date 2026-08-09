@@ -118,7 +118,13 @@ class Workflow:
         decision = interrupt(pending.model_dump(mode="json"))
         approved = bool(decision.get("approved")) if isinstance(decision, Mapping) else False
         if approved:
-            return {"confirmation_approved": True}
+            tasks = [
+                item.model_copy(update={"status": TaskStatus.RUNNING})
+                if item.id == pending.task_id
+                else item
+                for item in state["tasks"]
+            ]
+            return {"tasks": tasks, "confirmation_approved": True}
         tasks = [
             item.model_copy(update={"status": TaskStatus.REJECTED})
             if item.id == pending.task_id
@@ -197,6 +203,16 @@ class Workflow:
         }
         if outcome.tool_result:
             update["tool_results"] = [*state["tool_results"], outcome.tool_result]
+        task_status = outcome.task_status
+        if task_status is None and outcome.confirmation is not None:
+            task_status = TaskStatus.WAITING_CONFIRMATION
+        if task_status is not None:
+            update["tasks"] = [
+                item.model_copy(update={"status": task_status})
+                if item.id == state["active_task_id"]
+                else item
+                for item in state["tasks"]
+            ]
         return update
 
 

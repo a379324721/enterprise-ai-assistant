@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, model_validator
 class TaskStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
+    WAITING_INPUT = "waiting_input"
     WAITING_CONFIRMATION = "waiting_confirmation"
     COMPLETED = "completed"
     REJECTED = "rejected"

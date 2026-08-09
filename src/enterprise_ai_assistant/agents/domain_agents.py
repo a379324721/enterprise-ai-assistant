@@ -3,7 +3,12 @@ from typing import Any
 from langsmith import traceable
 
 from enterprise_ai_assistant.agents.base import AgentOutcome
-from enterprise_ai_assistant.core.models import PendingConfirmation, PlannedTask, ToolResult
+from enterprise_ai_assistant.core.models import (
+    PendingConfirmation,
+    PlannedTask,
+    TaskStatus,
+    ToolResult,
+)
 from enterprise_ai_assistant.repositories.actions import ActionRepository
 from enterprise_ai_assistant.repositories.policies import PolicyRepository
 
@@ -40,7 +45,10 @@ class TravelAgent:
             )
         required = ("destination", "start_date", "end_date", "purpose")
         if any(name not in slots for name in required):
-            return AgentOutcome(answer=_missing_slot_message("创建差旅申请前", required, slots))
+            return AgentOutcome(
+                answer=_missing_slot_message("创建差旅申请前", required, slots),
+                task_status=TaskStatus.WAITING_INPUT,
+            )
         payload = {name: slots[name] for name in required}
         return AgentOutcome(
             answer="差旅申请已准备，等待确认。",
@@ -89,7 +97,10 @@ class ExpenseAgent:
         if "expense.reminder.write" in task.required_capabilities:
             travel = slots.get("travel_application")
             if not travel:
-                return AgentOutcome(answer="差旅尚未创建，暂时无法安排报销提醒。")
+                return AgentOutcome(
+                    answer="差旅尚未创建，暂时无法安排报销提醒。",
+                    task_status=TaskStatus.WAITING_INPUT,
+                )
             reminder = {
                 "trigger_date": travel["end_date"],
                 "travel_reference": travel["reference_id"],
@@ -103,7 +114,10 @@ class ExpenseAgent:
             )
         amount = slots.get("expense_amount")
         if amount is None:
-            return AgentOutcome(answer="提交报销前还需要报销金额和票据信息。")
+            return AgentOutcome(
+                answer="提交报销前还需要报销金额和票据信息。",
+                task_status=TaskStatus.WAITING_INPUT,
+            )
         payload = {"amount": amount, "travel_application": slots.get("travel_application")}
         return AgentOutcome(
             answer="报销单已准备，等待确认。",
@@ -153,7 +167,10 @@ class HRAgent:
             )
         required = ("leave_type", "leave_start", "leave_end")
         if any(key not in slots for key in required):
-            return AgentOutcome(answer=_missing_slot_message("提交请假前", required, slots))
+            return AgentOutcome(
+                answer=_missing_slot_message("提交请假前", required, slots),
+                task_status=TaskStatus.WAITING_INPUT,
+            )
         payload = {key: slots[key] for key in required}
         return AgentOutcome(
             answer="请假申请已准备，等待确认。",

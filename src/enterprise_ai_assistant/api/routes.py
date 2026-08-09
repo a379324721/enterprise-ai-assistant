@@ -15,6 +15,7 @@ from enterprise_ai_assistant.api.schemas import (
     ConfirmationRequest,
     HealthResponse,
 )
+from enterprise_ai_assistant.core.models import TaskStatus
 
 router = APIRouter(prefix="/api/v1")
 
@@ -70,9 +71,12 @@ async def _response(request: Request, conversation_id: UUID, user_id: str) -> As
     if not values or values.get("user_id") != user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
     pending = values.get("pending_confirmation")
-    workflow_status = (
-        "waiting_confirmation" if pending and "confirm" in snapshot.next else "completed"
-    )
+    if pending and "confirm" in snapshot.next:
+        workflow_status = "waiting_confirmation"
+    elif any(task.status == TaskStatus.WAITING_INPUT for task in values.get("tasks", [])):
+        workflow_status = "waiting_input"
+    else:
+        workflow_status = "completed"
     return AssistantResponse(
         conversation_id=conversation_id,
         status=workflow_status,
