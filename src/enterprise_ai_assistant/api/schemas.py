@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -24,6 +25,13 @@ class ConfirmationRequest(BaseModel):
 class ConversationMessage(BaseModel):
     role: Literal["user", "assistant"]
     text: str
+
+
+class ConversationSummary(BaseModel):
+    conversation_id: UUID
+    title: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class AssistantResponse(BaseModel):

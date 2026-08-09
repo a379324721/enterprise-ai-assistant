@@ -13,6 +13,7 @@ type Result = {
 type Message = {role: "user" | "assistant"; text: string};
 type SseMessage = {event: string; data: unknown};
 type TaskRun = {user_goal: string; tasks: Task[]};
+type ConversationSummary = {conversation_id: string; title: string; created_at: string; updated_at: string};
 
 const examples = ["下周去上海出差，帮我申请，回来提醒报销", "我还有多少年假？下周五请一天年假", "查询差旅住宿标准"];
 const conversationStorageKey = "enterprise-assistant.current-conversation";
@@ -26,6 +27,10 @@ const capabilityLabels: Record<string, string> = {
   "hr.leave.write": "提交请假申请",
   "policy.search": "查询企业制度",
 };
+
+function formatConversationTime(value: string): string {
+  return new Date(value).toLocaleString("zh-CN", {month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit"});
+}
 
 async function consumeSse(
   response: Response,
@@ -72,6 +77,7 @@ function App() {
   const savedConversationId = useMemo(() => localStorage.getItem(conversationStorageKey), []);
   const [conversationId, setConversationId] = useState<string | null>(savedConversationId);
   const [taskHistory, setTaskHistory] = useState<TaskRun[]>([]);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const userId = useMemo(() => "demo-user", []);
 
   function rememberConversation(id: string) {
@@ -79,30 +85,54 @@ function App() {
     setConversationId(id);
   }
 
+  function applyConversation(restored: Result) {
+    rememberConversation(restored.conversation_id);
+    setResult(restored);
+    setTaskHistory(restored.task_history);
+    setMessages(restored.messages);
+  }
+
+  async function refreshConversationList(signal?: AbortSignal) {
+    const response = await fetch("/api/v1/conversations", {
+      headers: {"X-User-ID": userId},
+      signal,
+    });
+    if (!response.ok) throw new Error(`加载历史会话失败（HTTP ${response.status}）`);
+    const items = await response.json() as ConversationSummary[];
+    setConversations(items);
+    return items;
+  }
+
+  async function fetchConversation(id: string, signal?: AbortSignal) {
+    const response = await fetch(`/api/v1/conversations/${id}`, {
+      headers: {"X-User-ID": userId},
+      signal,
+    });
+    if (!response.ok) throw new Error(`加载会话失败（HTTP ${response.status}）`);
+    return response.json() as Promise<Result>;
+  }
+
   useEffect(() => {
-    if (!savedConversationId) return;
     const controller = new AbortController();
     setBusy(true);
     setProgress("正在恢复历史会话");
-    void fetch(`/api/v1/conversations/${savedConversationId}`, {
-      headers: {"X-User-ID": userId},
-      signal: controller.signal,
-    }).then(async (response) => {
-      if (!response.ok) {
-        if (response.status === 404) {
+    void (async () => {
+      let restoredSavedConversation = false;
+      if (savedConversationId) {
+        try {
+          applyConversation(await fetchConversation(savedConversationId, controller.signal));
+          restoredSavedConversation = true;
+        } catch (error) {
+          if (error instanceof DOMException && error.name === "AbortError") throw error;
           localStorage.removeItem(conversationStorageKey);
           setConversationId(null);
-          return null;
         }
-        throw new Error(`恢复历史会话失败（HTTP ${response.status}）`);
       }
-      return response.json() as Promise<Result>;
-    }).then((restored) => {
-      if (!restored) return;
-      setResult(restored);
-      setTaskHistory(restored.task_history);
-      setMessages(restored.messages);
-    }).catch((error: unknown) => {
+      const items = await refreshConversationList(controller.signal);
+      if (!restoredSavedConversation && items[0]) {
+        applyConversation(await fetchConversation(items[0].conversation_id, controller.signal));
+      }
+    })().catch((error: unknown) => {
       if (error instanceof DOMException && error.name === "AbortError") return;
       setMessages([{role: "assistant", text: error instanceof Error ? error.message : "恢复历史会话失败"}]);
     }).finally(() => {
@@ -113,6 +143,26 @@ function App() {
     });
     return () => controller.abort();
   }, [savedConversationId, userId]);
+
+  async function selectConversation(id: string) {
+    if (busy || id === conversationId) return;
+    setBusy(true); setProgress("正在加载历史会话");
+    try {
+      applyConversation(await fetchConversation(id));
+    } catch (error) {
+      setMessages([{role: "assistant", text: error instanceof Error ? error.message : "加载会话失败"}]);
+    } finally { setBusy(false); setProgress(""); }
+  }
+
+  function startNewConversation() {
+    if (busy) return;
+    localStorage.removeItem(conversationStorageKey);
+    setConversationId(null);
+    setResult(null);
+    setTaskHistory([]);
+    setMessages([]);
+    setInput("");
+  }
 
   function handleStreamEvent({event, data}: SseMessage) {
     if (event === "metadata") {
@@ -127,6 +177,7 @@ function App() {
       rememberConversation(completed.conversation_id);
       setResult(completed);
       setTaskHistory(completed.task_history);
+      void refreshConversationList();
       setMessages((old) => old.map((message, index) => index === old.length - 1 && !message.text ? {...message, text: completed.answer || "暂时无法生成回答，请换一种方式描述。"} : message));
     } else if (event === "error") {
       throw new Error((data as {message: string}).message);
@@ -169,6 +220,7 @@ function App() {
   return <main>
     <header><div className="brandMark">E</div><div><h1>Enterprise AI Assistant</h1><p>企业事务，一个对话完成</p></div><span className="online">● 系统在线</span></header>
     <section className="layout">
+      <nav className="historyPanel"><div className="historyHead"><strong>历史会话</strong><button disabled={busy} onClick={startNewConversation}>＋ 新建</button></div><div className="conversationList">{conversations.length === 0 && <p className="noConversations">暂无历史会话</p>}{conversations.map((conversation) => <button className={conversation.conversation_id === conversationId ? "active" : ""} disabled={busy} key={conversation.conversation_id} onClick={() => selectConversation(conversation.conversation_id)}><strong>{conversation.title}</strong><small>{formatConversationTime(conversation.updated_at)}</small></button>)}</div></nav>
       <div className="chatPanel">
         <div className="intro"><span>AI</span><div><strong>你好，我是企业智能助手</strong><p>我可以协助差旅、报销、请假和制度查询。涉及提交的操作会先请你确认。</p></div></div>
         {messages.length === 0 && <div className="examples">{examples.map((item) => <button key={item} onClick={() => setInput(item)}>{item}<b>↗</b></button>)}</div>}

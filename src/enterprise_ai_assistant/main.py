@@ -22,6 +22,7 @@ from enterprise_ai_assistant.core.logging import configure_logging
 from enterprise_ai_assistant.db.postgres import create_pool
 from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
 from enterprise_ai_assistant.repositories.actions import PostgresActionRepository
+from enterprise_ai_assistant.repositories.conversations import PostgresConversationRepository
 from enterprise_ai_assistant.repositories.policies import (
     CachedMilvusPolicyRepository,
     bootstrap_policy_collection,
@@ -44,6 +45,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await bootstrap_policy_collection(milvus, embeddings)
     policies = CachedMilvusPolicyRepository(milvus, redis, embeddings)
     actions = PostgresActionRepository(db_pool)
+    conversations = PostgresConversationRepository(db_pool)
     supervisor = SupervisorAgent(LLMPlanningService(build_chat_model()), CapabilityRegistry())
     workflow = Workflow(
         supervisor,
@@ -56,6 +58,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await checkpointer.setup()
         app.state.graph = build_graph(workflow, checkpointer)
         app.state.db_pool = db_pool
+        app.state.conversations = conversations
         app.state.redis = redis
         app.state.milvus = milvus
         app.state.logger = logger

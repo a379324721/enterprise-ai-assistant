@@ -14,6 +14,7 @@ from enterprise_ai_assistant.api.schemas import (
     ChatRequest,
     ConfirmationRequest,
     ConversationMessage,
+    ConversationSummary,
     HealthResponse,
 )
 from enterprise_ai_assistant.core.models import TaskStatus
@@ -83,6 +84,34 @@ def _encode_sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {payload}\n\n"
 
 
+def _conversation_title(message: str, max_length: int = 32) -> str:
+    title = " ".join(message.split())
+    return title if len(title) <= max_length else f"{title[:max_length]}…"
+
+
+async def _index_conversation(
+    request: Request,
+    conversation_id: UUID,
+    user_id: str,
+    title_source: str | None = None,
+) -> None:
+    try:
+        if title_source is None:
+            await request.app.state.conversations.touch(
+                conversation_id=conversation_id, user_id=user_id
+            )
+        else:
+            await request.app.state.conversations.upsert(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                title=_conversation_title(title_source),
+            )
+    except Exception:
+        request.app.state.logger.exception(
+            "conversation_index_failed", conversation_id=str(conversation_id)
+        )
+
+
 def _conversation_messages(messages: list[Any]) -> list[ConversationMessage]:
     """每轮只保留用户输入和最终助手回答，隐藏工作流内部中间消息。"""
     transcript: list[ConversationMessage] = []
@@ -138,6 +167,7 @@ async def _stream_graph(
     graph_input: dict[str, Any] | Command[Any],
     conversation_id: UUID,
     user_id: str,
+    title_source: str | None = None,
 ) -> AsyncIterator[str]:
     """流式发送持久化工作流进度、回答增量和最终状态快照。
 
@@ -158,6 +188,7 @@ async def _stream_graph(
                     yield _encode_sse("progress", {"node": node_name, "message": message})
 
         response = await _response(request, conversation_id, user_id)
+        await _index_conversation(request, conversation_id, user_id, title_source)
         yield _encode_sse("answer_start", {})
         for character in response.answer:
             if await request.is_disconnected():
@@ -193,7 +224,9 @@ async def chat(
             "graph_invocation_failed", conversation_id=str(payload.conversation_id)
         )
         raise HTTPException(status_code=502, detail="智能助手执行失败，请稍后重试") from exc
-    return await _response(request, payload.conversation_id, user_id)
+    response = await _response(request, payload.conversation_id, user_id)
+    await _index_conversation(request, payload.conversation_id, user_id, payload.message)
+    return response
 
 
 @router.post("/chat/stream")
@@ -210,6 +243,7 @@ async def chat_stream(
             graph_input,
             payload.conversation_id,
             user_id,
+            payload.message,
         ),
         media_type="text/event-stream",
         headers={
@@ -236,7 +270,9 @@ async def confirm(
         Command(resume={"approved": payload.approved, "comment": payload.comment}),
         _config(conversation_id, user_id),
     )
-    return await _response(request, conversation_id, user_id)
+    response = await _response(request, conversation_id, user_id)
+    await _index_conversation(request, conversation_id, user_id)
+    return response
 
 
 @router.post("/conversations/{conversation_id}/confirm/stream")
@@ -266,13 +302,32 @@ async def confirm_stream(
     )
 
 
+@router.get("/conversations", response_model=list[ConversationSummary])
+async def list_conversations(
+    request: Request,
+    user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
+) -> list[ConversationSummary]:
+    records = await request.app.state.conversations.list_for_user(user_id)
+    return [ConversationSummary.model_validate(record) for record in records]
+
+
 @router.get("/conversations/{conversation_id}", response_model=AssistantResponse)
 async def get_conversation(
     conversation_id: UUID,
     request: Request,
     user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
 ) -> AssistantResponse:
-    return await _response(request, conversation_id, user_id)
+    response = await _response(request, conversation_id, user_id)
+    first_user_message = next(
+        (message.text for message in response.messages if message.role == "user"),
+        "新会话",
+    )
+    await request.app.state.conversations.ensure(
+        conversation_id=conversation_id,
+        user_id=user_id,
+        title=_conversation_title(first_user_message),
+    )
+    return response
 
 
 @router.get("/health", response_model=HealthResponse)

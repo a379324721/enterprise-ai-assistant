@@ -24,3 +24,121 @@
   padding-top: 2px;
   border-top: 1px dashed #dfe5df;
 }
+
+main {
+  max-width: 1660px;
+}
+
+.layout {
+  grid-template-columns: 230px minmax(0, 1.7fr) minmax(310px, .65fr);
+}
+
+.historyPanel {
+  min-width: 0;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid #dfe5df;
+  border-radius: 17px;
+  box-shadow: 0 12px 36px #2e483b0b;
+}
+
+.historyHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  border-bottom: 1px solid #edf0ed;
+  font-size: 13px;
+}
+
+.historyHead button {
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 7px;
+  color: #276445;
+  background: #e8f1eb;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.historyHead button:disabled,
+.conversationList button:disabled {
+  cursor: default;
+  opacity: .65;
+}
+
+.conversationList {
+  height: calc(100% - 54px);
+  padding: 8px;
+  overflow: auto;
+}
+
+.conversationList button {
+  display: block;
+  width: 100%;
+  margin-bottom: 5px;
+  padding: 10px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: #435048;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.conversationList button:hover,
+.conversationList button.active {
+  border-color: #dce8df;
+  background: #f0f5f1;
+}
+
+.conversationList button strong,
+.conversationList button small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversationList button strong {
+  font-size: 12px;
+}
+
+.conversationList button small {
+  margin-top: 4px;
+  color: #8a958e;
+  font-size: 10px;
+}
+
+.noConversations {
+  padding: 16px 8px;
+  color: #8a958e;
+  font-size: 11px;
+  text-align: center;
+}
+
+@media (max-width: 1100px) {
+  .layout {
+    grid-template-columns: 210px minmax(0, 1fr);
+  }
+
+  aside {
+    grid-column: 1 / -1;
+    min-height: 300px;
+  }
+}
+
+@media (max-width: 800px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .historyPanel {
+    max-height: 230px;
+  }
+
+  aside {
+    grid-column: auto;
+  }
+}
