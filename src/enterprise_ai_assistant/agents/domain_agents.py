@@ -23,8 +23,17 @@ _SLOT_LABELS = {
 }
 
 
+def _has_slot(slots: dict[str, Any], field: str) -> bool:
+    value = slots.get(field)
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "none", "null", "unknown", "未知", "未提供"}
+    return True
+
+
 def _missing_slot_message(prefix: str, fields: tuple[str, ...], slots: dict[str, Any]) -> str:
-    missing = [_SLOT_LABELS[field] for field in fields if field not in slots]
+    missing = [_SLOT_LABELS[field] for field in fields if not _has_slot(slots, field)]
     return f"{prefix}还需要补充：{'、'.join(missing)}。"
 
 
@@ -44,9 +53,9 @@ class TravelAgent:
                 ),
             )
         required = ("destination", "start_date", "end_date", "purpose")
-        if any(name not in slots for name in required):
+        if any(not _has_slot(slots, name) for name in required):
             if slots.get("is_one_way") and all(
-                name in slots for name in ("destination", "start_date", "purpose")
+                _has_slot(slots, name) for name in ("destination", "start_date", "purpose")
             ):
                 return AgentOutcome(
                     answer=(
@@ -176,7 +185,7 @@ class HRAgent:
                 ),
             )
         required = ("leave_type", "leave_start", "leave_end")
-        if any(key not in slots for key in required):
+        if any(not _has_slot(slots, key) for key in required):
             return AgentOutcome(
                 answer=_missing_slot_message("提交请假前", required, slots),
                 task_status=TaskStatus.WAITING_INPUT,

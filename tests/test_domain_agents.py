@@ -22,6 +22,30 @@ async def test_travel_agent_uses_chinese_labels_for_missing_slots() -> None:
 
 
 @pytest.mark.asyncio
+async def test_travel_agent_rejects_null_and_blank_required_slots() -> None:
+    agent = TravelAgent(InMemoryPolicyRepository(), InMemoryActionRepository())
+    task = PlannedTask(
+        title="创建差旅申请",
+        operation="submit",
+        required_capabilities=["travel.application.write"],
+    )
+
+    outcome = await agent.prepare(
+        task,
+        {
+            "destination": None,
+            "start_date": "2026-08-11",
+            "end_date": "null",
+            "purpose": "  ",
+        },
+    )
+
+    assert outcome.answer == "创建差旅申请前还需要补充：出差地点、行程结束日期、出差事由。"
+    assert outcome.confirmation is None
+    assert outcome.task_status == TaskStatus.WAITING_INPUT
+
+
+@pytest.mark.asyncio
 async def test_one_way_travel_explains_the_required_end_date() -> None:
     agent = TravelAgent(InMemoryPolicyRepository(), InMemoryActionRepository())
     task = PlannedTask(
@@ -59,4 +83,23 @@ async def test_hr_agent_uses_chinese_labels_for_missing_slots() -> None:
     outcome = await agent.prepare(task, {})
 
     assert outcome.answer == "提交请假前还需要补充：请假类型、请假开始日期、请假结束日期。"
+    assert outcome.task_status == TaskStatus.WAITING_INPUT
+
+
+@pytest.mark.asyncio
+async def test_hr_agent_rejects_null_required_slots() -> None:
+    agent = HRAgent(InMemoryPolicyRepository(), InMemoryActionRepository())
+    task = PlannedTask(
+        title="提交请假申请",
+        operation="submit",
+        required_capabilities=["hr.leave.write"],
+    )
+
+    outcome = await agent.prepare(
+        task,
+        {"leave_type": "事假", "leave_start": None, "leave_end": None},
+    )
+
+    assert outcome.answer == "提交请假前还需要补充：请假开始日期、请假结束日期。"
+    assert outcome.confirmation is None
     assert outcome.task_status == TaskStatus.WAITING_INPUT
