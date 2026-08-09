@@ -215,7 +215,6 @@ function App() {
     ...taskHistory,
     ...(result?.tasks.length ? [{user_goal: result.user_goal, tasks: result.tasks}] : []),
   ];
-  const visibleTasks = visibleTaskRuns.flatMap((run) => run.tasks);
 
   return <main>
     <header><div className="brandMark">E</div><div><h1>Enterprise AI Assistant</h1><p>企业事务，一个对话完成</p></div><span className="online">● 系统在线</span></header>
@@ -228,7 +227,7 @@ function App() {
         {result?.pending_confirmation && <div className="confirmCard"><div className="risk">需要你的确认</div><strong>{result.pending_confirmation.summary}</strong><p>系统只会在你确认后执行该操作。</p><div><button className="cancel" disabled={busy} onClick={() => confirm(false)}>取消</button><button className="approve" disabled={busy} onClick={() => confirm(true)}>确认执行</button></div></div>}
         <form onSubmit={send}><textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="描述你想办理的事情…" rows={2}/><button disabled={busy}>发送</button></form>
       </div>
-      <aside><div className="asideHead"><span>任务执行</span>{visibleTasks.length > 0 && <small>{`${visibleTasks.filter(task => task.status === "completed").length}/${visibleTasks.length}`}</small>}</div>
+      <aside><div className="asideHead"><span>任务执行</span>{result && result.tasks.length > 0 && <small>{`当前 ${result.tasks.filter(task => task.status === "completed").length}/${result.tasks.length}`}</small>}</div>
         {visibleTaskRuns.length === 0 && <div className="empty"><i>⌁</i><p>发送业务请求后，这里会展示 AI 拆解出的任务及执行进度。</p></div>}
         {visibleTaskRuns.map((run, runIndex) => <div className="taskRun" key={`${runIndex}-${run.user_goal}`}><div className="goal"><small>{runIndex < taskHistory.length ? "历史目标" : "当前目标"}</small><p>{run.user_goal}</p></div><div className="taskList">{run.tasks.map((task, taskIndex) => <div className="task" key={`${runIndex}-${task.id}`}><span className={task.status}>{task.status === "completed" ? "✓" : taskIndex + 1}</span><div><strong>{task.title}</strong><small>{task.required_capabilities.map(capability => capabilityLabels[capability] || capability).join(" · ")}</small></div><em>{({completed:"已完成",running:"执行中",waiting_input:"待补充",waiting_confirmation:"待确认",pending:"等待中",rejected:"已取消"} as Record<string,string>)[task.status] || task.status}</em></div>)}</div></div>)}
       </aside>
