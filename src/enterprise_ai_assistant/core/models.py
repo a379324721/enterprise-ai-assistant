@@ -66,7 +66,13 @@ class TaskRun(BaseModel):
 class GoalUnderstanding(BaseModel):
     normalized_goal: str
     explicit_constraints: list[str] = Field(default_factory=list)
-    inferred_slots: dict[str, Any] = Field(default_factory=dict)
+    inferred_slots: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "使用规范槽位名：差旅使用 destination、start_date、end_date、purpose；"
+            "请假使用 leave_type、leave_start、leave_end；报销金额使用 expense_amount"
+        ),
+    )
     ambiguities: list[str] = Field(default_factory=list)
 
 

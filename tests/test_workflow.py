@@ -1,3 +1,4 @@
+from datetime import date, timedelta
 from typing import Any
 
 import pytest
@@ -113,6 +114,31 @@ class HistoryPlanningService:
             user_goal=understanding.normalized_goal,
             tasks=[],
             direct_answer=f"收到：{understanding.normalized_goal}",
+        )
+
+
+class SingleDayLeavePlanningService:
+    async def understand(
+        self, user_text: str, conversation_history: str = ""
+    ) -> GoalUnderstanding:
+        return GoalUnderstanding(
+            normalized_goal="申请事假",
+            inferred_slots={"leave_type": "事假"},
+        )
+
+    async def plan(self, understanding: GoalUnderstanding) -> TaskPlan:
+        return TaskPlan(
+            user_goal=understanding.normalized_goal,
+            tasks=[
+                PlannedTask(
+                    id="task-1",
+                    title="提交事假申请",
+                    operation="submit",
+                    required_capabilities=["hr.leave.write"],
+                    risk="high",
+                )
+            ],
+            extracted_slots=understanding.inferred_slots,
         )
 
 
@@ -249,3 +275,25 @@ async def test_follow_up_turn_passes_recent_conversation_to_understanding() -> N
     assert "用户：我明天要出差" in planning.histories[1]
     assert "助手：收到：我明天要出差" in planning.histories[1]
     assert final["messages"][-1].content == "收到：改成后天"
+
+
+@pytest.mark.asyncio
+async def test_full_day_leave_uses_same_start_and_end_date() -> None:
+    graph, actions = make_graph(SingleDayLeavePlanningService())
+    state = initial_state()
+    state["messages"] = [HumanMessage(content="事假，后天一整天")]
+    expected_date = (date.today() + timedelta(days=2)).isoformat()
+
+    await graph.ainvoke(
+        state, {"configurable": {"thread_id": "thread-single-day-leave"}}
+    )
+    paused = await graph.aget_state(
+        {"configurable": {"thread_id": "thread-single-day-leave"}}
+    )
+
+    assert "confirm" in paused.next
+    assert paused.values["slots"]["leave_start"] == expected_date
+    assert paused.values["slots"]["leave_end"] == expected_date
+    assert paused.values["pending_confirmation"].payload["leave_start"] == expected_date
+    assert paused.values["pending_confirmation"].payload["leave_end"] == expected_date
+    assert actions.records == {}

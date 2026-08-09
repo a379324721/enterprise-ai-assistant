@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+from datetime import date, timedelta
 from typing import Any, Literal
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -22,6 +23,27 @@ from enterprise_ai_assistant.core.models import (
     TaskStatus,
 )
 from enterprise_ai_assistant.graph.state import AssistantState
+
+
+def _single_day_leave_slots(
+    user_text: str,
+    understanding: GoalUnderstanding,
+    tasks: list[PlannedTask],
+) -> dict[str, str]:
+    if not any(phrase in user_text for phrase in ("一天", "全天", "一整天")):
+        return {}
+    leave_context = any(
+        phrase in f"{user_text}{understanding.normalized_goal}"
+        for phrase in ("请假", "年假", "事假", "病假", "调休")
+    ) or any("hr.leave.write" in task.required_capabilities for task in tasks)
+    if not leave_context:
+        return {}
+    offsets = (("后天", 2), ("明天", 1), ("今天", 0))
+    offset = next((days for phrase, days in offsets if phrase in user_text), None)
+    if offset is None:
+        return {}
+    leave_date = (date.today() + timedelta(days=offset)).isoformat()
+    return {"leave_start": leave_date, "leave_end": leave_date}
 
 
 class Workflow:
@@ -64,10 +86,15 @@ class Workflow:
         understanding = await self.supervisor.understand(
             user_text, "\n".join(history_lines)
         )
+        inferred_slots = {
+            **understanding.inferred_slots,
+            **_single_day_leave_slots(user_text, understanding, state.get("tasks", [])),
+        }
+        understanding = understanding.model_copy(update={"inferred_slots": inferred_slots})
         return {
             "user_goal": understanding.normalized_goal,
             "understanding": understanding.model_dump(mode="json"),
-            "slots": {**state.get("slots", {}), **understanding.inferred_slots},
+            "slots": {**state.get("slots", {}), **inferred_slots},
         }
 
     async def plan(self, state: AssistantState) -> dict[str, Any]:
