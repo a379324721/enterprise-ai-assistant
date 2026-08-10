@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Any
 
 from langsmith import traceable
@@ -35,6 +36,13 @@ def _has_slot(slots: dict[str, Any], field: str) -> bool:
 def _missing_slot_message(prefix: str, fields: tuple[str, ...], slots: dict[str, Any]) -> str:
     missing = [_SLOT_LABELS[field] for field in fields if not _has_slot(slots, field)]
     return f"{prefix}还需要补充：{'、'.join(missing)}。"
+
+
+def _leave_duration(start: str, end: str) -> int | None:
+    try:
+        return (date.fromisoformat(end) - date.fromisoformat(start)).days + 1
+    except (TypeError, ValueError):
+        return None
 
 
 class TravelAgent:
@@ -81,10 +89,15 @@ class TravelAgent:
 
     @traceable(name="travel-agent-execute", run_type="tool")
     async def execute(
-        self, task: PlannedTask, user_id: str, payload: dict[str, Any]
+        self,
+        task: PlannedTask,
+        user_id: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str,
     ) -> AgentOutcome:
         result = await self._actions.execute_once(
-            idempotency_key=f"{user_id}:{task.id}",
+            idempotency_key=idempotency_key,
             action_type="travel",
             user_id=user_id,
             payload=payload,
@@ -150,10 +163,15 @@ class ExpenseAgent:
 
     @traceable(name="expense-agent-execute", run_type="tool")
     async def execute(
-        self, task: PlannedTask, user_id: str, payload: dict[str, Any]
+        self,
+        task: PlannedTask,
+        user_id: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str,
     ) -> AgentOutcome:
         result = await self._actions.execute_once(
-            idempotency_key=f"{user_id}:{task.id}",
+            idempotency_key=idempotency_key,
             action_type="expense",
             user_id=user_id,
             payload=payload,
@@ -175,13 +193,14 @@ class HRAgent:
     async def prepare(self, task: PlannedTask, slots: dict[str, Any]) -> AgentOutcome:
         if "hr.leave.read" in task.required_capabilities:
             policies = await self._policies.search(task.title, "hr")
+            balance_days = 8
             return AgentOutcome(
-                answer=policies[0]["content"],
+                answer=f"当前可用年假余额为 {balance_days} 天。{policies[0]['content']}",
                 tool_result=ToolResult(
                     task_id=task.id,
                     tool="leave_query",
                     success=True,
-                    data={"balance_days": 8, "policies": policies},
+                    data={"balance_days": balance_days, "policies": policies},
                 ),
             )
         required = ("leave_type", "leave_start", "leave_end")
@@ -191,22 +210,33 @@ class HRAgent:
                 task_status=TaskStatus.WAITING_INPUT,
             )
         payload = {key: slots[key] for key in required}
+        duration = _leave_duration(payload["leave_start"], payload["leave_end"])
+        duration_text = f"，共 {duration} 天" if duration is not None else ""
+        summary = (
+            f"提交 {payload['leave_start']} 至 {payload['leave_end']} 的"
+            f"{payload['leave_type']}申请{duration_text}"
+        )
         return AgentOutcome(
-            answer="请假申请已准备，等待确认。",
+            answer=f"请假申请已准备：{summary}。请确认是否提交。",
             confirmation=PendingConfirmation(
                 task_id=task.id,
                 action="hr.leave.submit",
-                summary=f"提交 {payload['leave_start']} 至 {payload['leave_end']} 的{payload['leave_type']}申请",
+                summary=summary,
                 payload=payload,
             ),
         )
 
     @traceable(name="hr-agent-execute", run_type="tool")
     async def execute(
-        self, task: PlannedTask, user_id: str, payload: dict[str, Any]
+        self,
+        task: PlannedTask,
+        user_id: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str,
     ) -> AgentOutcome:
         result = await self._actions.execute_once(
-            idempotency_key=f"{user_id}:{task.id}",
+            idempotency_key=idempotency_key,
             action_type="leave",
             user_id=user_id,
             payload=payload,

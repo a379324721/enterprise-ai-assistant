@@ -103,3 +103,43 @@ async def test_hr_agent_rejects_null_required_slots() -> None:
     assert outcome.answer == "提交请假前还需要补充：请假开始日期、请假结束日期。"
     assert outcome.confirmation is None
     assert outcome.task_status == TaskStatus.WAITING_INPUT
+
+
+@pytest.mark.asyncio
+async def test_hr_balance_answer_includes_the_available_days() -> None:
+    agent = HRAgent(InMemoryPolicyRepository(), InMemoryActionRepository())
+    task = PlannedTask(
+        title="查询年假余额",
+        operation="read",
+        required_capabilities=["hr.leave.read"],
+    )
+
+    outcome = await agent.prepare(task, {})
+
+    assert "可用年假余额为 8 天" in outcome.answer
+    assert outcome.tool_result is not None
+    assert outcome.tool_result.data["balance_days"] == 8
+
+
+@pytest.mark.asyncio
+async def test_hr_confirmation_repeats_dates_and_duration() -> None:
+    agent = HRAgent(InMemoryPolicyRepository(), InMemoryActionRepository())
+    task = PlannedTask(
+        title="提交年假申请",
+        operation="submit",
+        required_capabilities=["hr.leave.write"],
+    )
+
+    outcome = await agent.prepare(
+        task,
+        {
+            "leave_type": "年假",
+            "leave_start": "2026-08-21",
+            "leave_end": "2026-08-21",
+        },
+    )
+
+    assert "2026-08-21 至 2026-08-21" in outcome.answer
+    assert "共 1 天" in outcome.answer
+    assert outcome.confirmation is not None
+    assert "共 1 天" in outcome.confirmation.summary

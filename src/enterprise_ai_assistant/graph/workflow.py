@@ -1,3 +1,4 @@
+import re
 from collections.abc import Mapping
 from datetime import date, timedelta
 from typing import Any, Literal
@@ -27,6 +28,11 @@ from enterprise_ai_assistant.graph.state import AssistantState
 
 
 def _relative_date(user_text: str) -> str | None:
+    weekday_match = re.search(r"下(?:周|星期)([一二三四五六日天])", user_text)
+    if weekday_match:
+        weekday = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
+        next_monday = date.today() + timedelta(days=7 - date.today().weekday())
+        return (next_monday + timedelta(days=weekday[weekday_match.group(1)])).isoformat()
     offsets = (("后天", 2), ("明天", 1), ("今天", 0))
     offset = next((days for phrase, days in offsets if phrase in user_text), None)
     return (date.today() + timedelta(days=offset)).isoformat() if offset is not None else None
@@ -267,7 +273,10 @@ class Workflow:
         if pending is None:
             raise RuntimeError("execute node entered without a confirmed action")
         outcome = await self.write_agents[agent_name].execute(
-            self._active_task(state), state["user_id"], pending.payload
+            self._active_task(state),
+            state["user_id"],
+            pending.payload,
+            idempotency_key=f"{pending.action}:{pending.confirmation_id}",
         )
         update = self._outcome_update(state, outcome)
         update["pending_confirmation"] = None

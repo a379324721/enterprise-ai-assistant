@@ -24,5 +24,10 @@ class DomainAgent(Protocol):
 
 class WritableDomainAgent(DomainAgent, Protocol):
     async def execute(
-        self, task: PlannedTask, user_id: str, payload: dict[str, Any]
+        self,
+        task: PlannedTask,
+        user_id: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str,
     ) -> AgentOutcome: ...

@@ -18,6 +18,7 @@ from enterprise_ai_assistant.core.models import GoalUnderstanding, PlannedTask, 
 from enterprise_ai_assistant.graph.workflow import (
     Workflow,
     _explicit_travel_date_slots,
+    _relative_date,
     _travel_mode_slots,
     build_graph,
 )
@@ -236,6 +237,15 @@ def test_travel_mode_slots_understand_one_way_corrections() -> None:
     assert _travel_mode_slots("还是改成往返吧") == {"is_one_way": False}
 
 
+def test_next_weekday_is_resolved_in_the_following_calendar_week() -> None:
+    today = date.today()
+    next_monday = today + timedelta(days=7 - today.weekday())
+
+    assert _relative_date("下周五请一天年假") == (
+        next_monday + timedelta(days=4)
+    ).isoformat()
+
+
 def test_explicit_travel_dates_are_normalized_and_slot_names_are_strict() -> None:
     assert _explicit_travel_date_slots("北京开会，明天出发，后天回来") == {
         "start_date": (date.today() + timedelta(days=1)).isoformat(),
@@ -259,18 +269,36 @@ async def test_compound_workflow_interrupt_resume_and_shared_state() -> None:
     final = await graph.ainvoke(Command(resume={"approved": True}), config)
     assert [task.status.value for task in final["tasks"]] == ["completed", "completed"]
     assert final["slots"]["travel_application"]["destination"] == "上海"
-    assert final["slots"]["expense_reminder"]["travel_reference"] == "u-1:task-1"
+    assert final["slots"]["expense_reminder"]["travel_reference"].startswith("TRAVEL-")
     assert len(actions.records) == 1
 
     # 仓储层的幂等性也能防止工具重试造成重复写入。
     first = next(iter(actions.records.values()))
+    first_key = next(iter(actions.records))
     repeated = await actions.execute_once(
-        idempotency_key="u-1:task-1",
+        idempotency_key=first_key,
         action_type="travel",
         user_id="u-1",
-        payload={"destination": "错误覆盖"},
+        payload={
+            "destination": "上海",
+            "start_date": "2026-08-10",
+            "end_date": "2026-08-14",
+            "purpose": "客户交流",
+        },
     )
     assert repeated == first
+
+
+@pytest.mark.asyncio
+async def test_same_planner_task_id_in_two_confirmations_creates_distinct_actions() -> None:
+    graph, actions = make_graph()
+    for thread_id in ("thread-action-1", "thread-action-2"):
+        config = {"configurable": {"thread_id": thread_id}}
+        await graph.ainvoke(initial_state(), config)
+        await graph.ainvoke(Command(resume={"approved": True}), config)
+
+    assert len(actions.records) == 2
+    assert len({record["reference_id"] for record in actions.records.values()}) == 2
 
 
 @pytest.mark.asyncio
