@@ -35,7 +35,12 @@ class PostgresActionRepository:
                 json.dumps(payload, ensure_ascii=False),
                 json.dumps(result, ensure_ascii=False),
             )
-        return dict(row["result"])
+        stored_result = row["result"]
+        if isinstance(stored_result, str):
+            stored_result = json.loads(stored_result)
+        if not isinstance(stored_result, dict):
+            raise TypeError("workflow action result must be a JSON object")
+        return stored_result
 
 
 class InMemoryActionRepository:
