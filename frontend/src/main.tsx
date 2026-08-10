@@ -1,4 +1,4 @@
-import React, {FormEvent, useEffect, useMemo, useState} from "react";
+import {FormEvent, useEffect, useMemo, useState} from "react";
 import {createRoot} from "react-dom/client";
 import "./styles.css";
 import "./streaming.css";
@@ -249,4 +249,4 @@ function App() {
   </main>;
 }
 
-createRoot(document.getElementById("root")!).render(<React.StrictMode><App/></React.StrictMode>);
+createRoot(document.getElementById("root")!).render(<App/>);
