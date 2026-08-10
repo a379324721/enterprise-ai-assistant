@@ -154,14 +154,39 @@ function App() {
     } finally { setBusy(false); setProgress(""); }
   }
 
-  function startNewConversation() {
-    if (busy) return;
+  function clearCurrentConversation() {
     localStorage.removeItem(conversationStorageKey);
     setConversationId(null);
     setResult(null);
     setTaskHistory([]);
     setMessages([]);
     setInput("");
+  }
+
+  function startNewConversation() {
+    if (busy) return;
+    clearCurrentConversation();
+  }
+
+  async function deleteConversation(id: string, title: string) {
+    if (busy || !window.confirm(`确定删除会话“${title}”吗？删除后无法恢复。`)) return;
+    setBusy(true); setProgress("正在删除历史会话");
+    try {
+      const response = await fetch(`/api/v1/conversations/${id}`, {
+        method: "DELETE",
+        headers: {"X-User-ID": userId},
+      });
+      if (!response.ok) throw new Error(`删除会话失败（HTTP ${response.status}）`);
+
+      const remaining = conversations.filter((conversation) => conversation.conversation_id !== id);
+      setConversations(remaining);
+      if (id === conversationId) {
+        clearCurrentConversation();
+        if (remaining[0]) applyConversation(await fetchConversation(remaining[0].conversation_id));
+      }
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "删除会话失败");
+    } finally { setBusy(false); setProgress(""); }
   }
 
   function handleStreamEvent({event, data}: SseMessage) {
@@ -233,7 +258,7 @@ function App() {
   return <main>
     <header><div className="brandMark">E</div><div><h1>Enterprise AI Assistant</h1><p>企业事务，一个对话完成</p></div><span className="online">● 系统在线</span></header>
     <section className="layout">
-      <nav className="historyPanel"><div className="historyHead"><strong>历史会话</strong><button disabled={busy} onClick={startNewConversation}>＋ 新建</button></div><div className="conversationList">{conversations.length === 0 && <p className="noConversations">暂无历史会话</p>}{conversations.map((conversation) => <button className={conversation.conversation_id === conversationId ? "active" : ""} disabled={busy} key={conversation.conversation_id} onClick={() => selectConversation(conversation.conversation_id)}><strong>{conversation.title}</strong><small>{formatConversationTime(conversation.updated_at)}</small></button>)}</div></nav>
+      <nav className="historyPanel"><div className="historyHead"><strong>历史会话</strong><button disabled={busy} onClick={startNewConversation}>＋ 新建</button></div><div className="conversationList">{conversations.length === 0 && <p className="noConversations">暂无历史会话</p>}{conversations.map((conversation) => <div className={`conversationEntry ${conversation.conversation_id === conversationId ? "active" : ""}`} key={conversation.conversation_id}><button className="conversationSelect" disabled={busy} onClick={() => selectConversation(conversation.conversation_id)}><strong>{conversation.title}</strong><small>{formatConversationTime(conversation.updated_at)}</small></button><button className="deleteConversation" disabled={busy} title="删除会话" aria-label={`删除会话：${conversation.title}`} onClick={() => deleteConversation(conversation.conversation_id, conversation.title)}>删除</button></div>)}</div></nav>
       <div className="chatPanel">
         <div className="intro"><span>AI</span><div><strong>你好，我是企业智能助手</strong><p>我可以协助差旅、报销、请假和制度查询。涉及提交的操作会先请你确认。</p></div></div>
         {messages.length === 0 && <div className="examples">{examples.map((item) => <button key={item} onClick={() => setInput(item)}>{item}<b>↗</b></button>)}</div>}

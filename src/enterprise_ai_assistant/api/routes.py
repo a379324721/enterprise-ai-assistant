@@ -344,6 +344,32 @@ async def get_conversation(
     return response
 
 
+@router.delete(
+    "/conversations/{conversation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_conversation(
+    conversation_id: UUID,
+    request: Request,
+    user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
+) -> None:
+    """删除当前用户的会话索引及其全部 LangGraph 检查点。"""
+    owns_conversation = await request.app.state.conversations.belongs_to_user(
+        conversation_id=conversation_id,
+        user_id=user_id,
+    )
+    if not owns_conversation:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    await request.app.state.graph.checkpointer.adelete_thread(str(conversation_id))
+    deleted = await request.app.state.conversations.delete(
+        conversation_id=conversation_id,
+        user_id=user_id,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health(request: Request) -> HealthResponse:
     services: dict[str, str] = {}

@@ -67,7 +67,7 @@ main {
 }
 
 .historyHead button:disabled,
-.conversationList button:disabled {
+.conversationEntry button:disabled {
   cursor: default;
   opacity: .65;
 }
@@ -78,42 +78,70 @@ main {
   overflow: auto;
 }
 
-.conversationList button {
-  display: block;
-  width: 100%;
+.conversationEntry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   margin-bottom: 5px;
-  padding: 10px;
   overflow: hidden;
   border: 1px solid transparent;
   border-radius: 9px;
+}
+
+.conversationSelect {
+  display: block;
+  min-width: 0;
+  padding: 10px;
+  border: 0;
   color: #435048;
   background: transparent;
   cursor: pointer;
   text-align: left;
 }
 
-.conversationList button:hover,
-.conversationList button.active {
+.conversationEntry:hover,
+.conversationEntry.active {
   border-color: #dce8df;
   background: #f0f5f1;
 }
 
-.conversationList button strong,
-.conversationList button small {
+.conversationSelect strong,
+.conversationSelect small {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.conversationList button strong {
+.conversationSelect strong {
   font-size: 12px;
 }
 
-.conversationList button small {
+.conversationSelect small {
   margin-top: 4px;
   color: #8a958e;
   font-size: 10px;
+}
+
+.deleteConversation {
+  margin-right: 7px;
+  padding: 5px;
+  border: 0;
+  border-radius: 6px;
+  color: #a35c5c;
+  background: transparent;
+  cursor: pointer;
+  font-size: 10px;
+  opacity: .55;
+}
+
+.conversationEntry:hover .deleteConversation,
+.conversationEntry:focus-within .deleteConversation {
+  opacity: 1;
+}
+
+.deleteConversation:hover {
+  background: #f8e8e8;
 }
 
 .noConversations {

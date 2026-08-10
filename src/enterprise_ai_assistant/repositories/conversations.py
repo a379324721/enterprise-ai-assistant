@@ -17,6 +17,10 @@ class ConversationRepository(Protocol):
 
     async def list_for_user(self, user_id: str, limit: int = 50) -> list[dict[str, object]]: ...
 
+    async def belongs_to_user(self, *, conversation_id: UUID, user_id: str) -> bool: ...
+
+    async def delete(self, *, conversation_id: UUID, user_id: str) -> bool: ...
+
 
 class PostgresConversationRepository:
     def __init__(self, pool: asyncpg.Pool) -> None:
@@ -72,3 +76,29 @@ class PostgresConversationRepository:
             limit,
         )
         return [dict(row) for row in rows]
+
+    async def belongs_to_user(self, *, conversation_id: UUID, user_id: str) -> bool:
+        return bool(
+            await self._pool.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                      FROM assistant_conversations
+                     WHERE conversation_id = $1 AND user_id = $2
+                )
+                """,
+                conversation_id,
+                user_id,
+            )
+        )
+
+    async def delete(self, *, conversation_id: UUID, user_id: str) -> bool:
+        result = await self._pool.execute(
+            """
+            DELETE FROM assistant_conversations
+             WHERE conversation_id = $1 AND user_id = $2
+            """,
+            conversation_id,
+            user_id,
+        )
+        return result == "DELETE 1"
