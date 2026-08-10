@@ -68,14 +68,26 @@ async def _chat_input(request: Request, payload: ChatRequest, user_id: str) -> d
         return _initial_state(payload, user_id)
     if snapshot.values.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="会话不存在")
-    if snapshot.next:
-        raise HTTPException(status_code=409, detail="当前会话有待处理操作，请先完成或取消")
-    return {
+    if "confirm" in snapshot.next:
+        raise HTTPException(status_code=409, detail="当前会话有待确认操作，请先确认或取消")
+    chat_input: dict[str, Any] = {
         "messages": [HumanMessage(content=payload.message)],
         "user_id": user_id,
         "last_answer": "",
         "pending_confirmation": None,
     }
+    if snapshot.next:
+        # 普通节点异常会留下 next，但不应把整个会话永久锁死。新一轮开始前，
+        # 将上一轮尚未结束的任务标记失败，plan 节点会把它们归入历史目标。
+        chat_input.update(
+            {
+                "tasks": _fail_incomplete_tasks(snapshot.values.get("tasks", [])),
+                "active_task_id": None,
+                "current_agent": None,
+                "confirmation_approved": False,
+            }
+        )
+    return chat_input
 
 
 def _encode_sse(event: str, data: Any) -> str:
@@ -136,6 +148,20 @@ def _conversation_messages(messages: list[Any]) -> list[ConversationMessage]:
     return transcript
 
 
+def _fail_incomplete_tasks(tasks: list[Any]) -> list[Any]:
+    incomplete = {
+        TaskStatus.PENDING,
+        TaskStatus.RUNNING,
+        TaskStatus.WAITING_CONFIRMATION,
+    }
+    return [
+        task.model_copy(update={"status": TaskStatus.FAILED})
+        if task.status in incomplete
+        else task
+        for task in tasks
+    ]
+
+
 async def _response(request: Request, conversation_id: UUID, user_id: str) -> AssistantResponse:
     snapshot = await request.app.state.graph.aget_state(_config(conversation_id, user_id))
     values = snapshot.values
@@ -146,14 +172,9 @@ async def _response(request: Request, conversation_id: UUID, user_id: str) -> As
     pending = stored_pending if has_confirmation_interrupt else None
     tasks = values.get("tasks", [])
     orphaned_confirmation = stored_pending is not None and not has_confirmation_interrupt
-    if not snapshot.next or orphaned_confirmation:
-        tasks = [
-            task.model_copy(update={"status": TaskStatus.FAILED})
-            if task.status in {TaskStatus.RUNNING, TaskStatus.WAITING_CONFIRMATION}
-            and (not orphaned_confirmation or task.id == stored_pending.task_id)
-            else task
-            for task in tasks
-        ]
+    interrupted_outside_confirmation = bool(snapshot.next) and not has_confirmation_interrupt
+    if not snapshot.next or orphaned_confirmation or interrupted_outside_confirmation:
+        tasks = _fail_incomplete_tasks(tasks)
     if pending:
         workflow_status = "waiting_confirmation"
     elif any(task.status == TaskStatus.WAITING_INPUT for task in tasks):

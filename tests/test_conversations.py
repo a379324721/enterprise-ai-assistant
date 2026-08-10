@@ -7,11 +7,13 @@ from fastapi import HTTPException
 from langchain_core.messages import HumanMessage
 
 from enterprise_ai_assistant.api.routes import (
+    _chat_input,
     _conversation_title,
     _response,
     delete_conversation,
     list_conversations,
 )
+from enterprise_ai_assistant.api.schemas import ChatRequest
 from enterprise_ai_assistant.core.models import PendingConfirmation, PlannedTask, TaskStatus
 
 
@@ -86,6 +88,57 @@ async def test_response_hides_confirmation_without_a_real_interrupt() -> None:
     assert response.status == "failed"
     assert response.pending_confirmation is None
     assert response.tasks[0].status == TaskStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_chat_can_continue_after_a_non_confirmation_node_failed() -> None:
+    conversation_id = uuid4()
+    snapshot = SimpleNamespace(
+        next=("select_task",),
+        values={
+            "user_id": "u-1",
+            "tasks": [
+                PlannedTask(
+                    id="task-1",
+                    title="查询差旅申请",
+                    operation="travel.application.read",
+                    required_capabilities=["travel.application.read"],
+                )
+            ],
+        },
+    )
+
+    class Graph:
+        async def aget_state(self, config: object) -> object:
+            return snapshot
+
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(graph=Graph())))
+    payload = ChatRequest(conversation_id=conversation_id, message="那算了")
+
+    chat_input = await _chat_input(request, payload, "u-1")  # type: ignore[arg-type]
+
+    assert chat_input["messages"][0].content == "那算了"
+    assert chat_input["tasks"][0].status == TaskStatus.FAILED
+    assert chat_input["active_task_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_chat_still_requires_a_real_confirmation_to_be_resolved() -> None:
+    conversation_id = uuid4()
+    snapshot = SimpleNamespace(next=("confirm",), values={"user_id": "u-1"})
+
+    class Graph:
+        async def aget_state(self, config: object) -> object:
+            return snapshot
+
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(graph=Graph())))
+    payload = ChatRequest(conversation_id=conversation_id, message="继续")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _chat_input(request, payload, "u-1")  # type: ignore[arg-type]
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "当前会话有待确认操作，请先确认或取消"
 
 
 @pytest.mark.asyncio
