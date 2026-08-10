@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     milvus_uri: str = "http://localhost:19530"
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    log_file: str | None = "logs/enterprise-assistant.log"
+    log_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024)
+    log_backup_count: int = Field(default=5, ge=1)
 
 
 @lru_cache

@@ -31,7 +31,12 @@ from enterprise_ai_assistant.services.capabilities import CapabilityRegistry
 from enterprise_ai_assistant.services.llm import build_chat_model, build_embeddings
 from enterprise_ai_assistant.services.planning import LLMPlanningService
 
-configure_logging()
+_settings = get_settings()
+configure_logging(
+    log_file=_settings.log_file,
+    max_bytes=_settings.log_max_bytes,
+    backup_count=_settings.log_backup_count,
+)
 
 
 @asynccontextmanager
