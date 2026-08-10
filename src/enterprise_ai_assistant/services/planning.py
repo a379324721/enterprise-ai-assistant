@@ -49,6 +49,9 @@ expense.claim.write、expense.reminder.write、hr.leave.read、hr.leave.write、
 领域制度查询必须使用对应读取能力：差旅、住宿、交通标准使用 travel.policy.read；
 报销、发票规则使用 expense.policy.read；假期余额和休假制度使用 hr.leave.read。
 只有无法归入上述领域的通用或跨领域制度查询才使用 policy.search。
+不得输出列表之外的能力。当前系统不支持查询已提交的差旅、报销或请假申请；
+用户询问在哪里查看、申请状态或申请详情时，tasks 返回空列表，并在 direct_answer 中明确说明
+暂不支持申请记录查询，提交结果和编号可在当前对话的助手回复中查看。
 复合请求必须拆成多个任务。“出差回来提醒报销”是依赖差旅任务的 expense.reminder.write 任务。
 提交申请、报销单、请假单属于高风险；制度读取属于低风险。
 如果用户只是问候、致谢或没有提出企业事务，则 tasks 返回空列表，并在 direct_answer 中自然回复用户；

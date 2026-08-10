@@ -32,7 +32,13 @@ class PlannedTask(BaseModel):
     operation: str
     # 保持面向模型服务商的 JSON Schema 简单。部分 OpenAI 兼容 API
     # 不接受 Pydantic 为 Python 集合生成的 `uniqueItems` 关键字。
-    required_capabilities: list[str]
+    required_capabilities: list[str] = Field(
+        description=(
+            "只能使用以下能力：travel.policy.read、travel.application.write、"
+            "expense.policy.read、expense.claim.write、expense.reminder.write、"
+            "hr.leave.read、hr.leave.write、policy.search"
+        )
+    )
     depends_on: list[str] = Field(default_factory=list)
     risk: str = Field(default="low", pattern="^(low|medium|high)$")
     status: TaskStatus = TaskStatus.PENDING

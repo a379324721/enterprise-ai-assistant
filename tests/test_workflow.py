@@ -14,7 +14,7 @@ from enterprise_ai_assistant.agents.domain_agents import (
     TravelAgent,
 )
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
-from enterprise_ai_assistant.core.models import GoalUnderstanding, PlannedTask, TaskPlan
+from enterprise_ai_assistant.core.models import GoalUnderstanding, PlannedTask, TaskPlan, TaskStatus
 from enterprise_ai_assistant.graph.workflow import (
     Workflow,
     _explicit_travel_date_slots,
@@ -179,6 +179,26 @@ class FollowUpTravelDatePlanningService:
         )
 
 
+class UnsupportedCapabilityPlanningService:
+    async def understand(
+        self, user_text: str, conversation_history: str = ""
+    ) -> GoalUnderstanding:
+        return GoalUnderstanding(normalized_goal="查询已提交的差旅申请")
+
+    async def plan(self, understanding: GoalUnderstanding) -> TaskPlan:
+        return TaskPlan(
+            user_goal=understanding.normalized_goal,
+            tasks=[
+                PlannedTask(
+                    id="task-1",
+                    title="查询已提交的差旅申请",
+                    operation="travel.application.read",
+                    required_capabilities=["travel.application.read"],
+                )
+            ],
+        )
+
+
 def make_graph(
     planning: PlanningService | None = None,
 ) -> tuple[Any, InMemoryActionRepository]:
@@ -324,6 +344,24 @@ async def test_missing_information_keeps_task_waiting_for_input() -> None:
     assert len(second["task_history"]) == 1
     assert second["task_history"][0].user_goal == "创建差旅申请"
     assert second["task_history"][0].tasks[0].status.value == "waiting_input"
+    assert actions.records == {}
+
+
+@pytest.mark.asyncio
+async def test_unsupported_planner_capability_returns_explanation_instead_of_crashing() -> None:
+    graph, actions = make_graph(UnsupportedCapabilityPlanningService())
+    state = initial_state()
+    state["messages"] = [HumanMessage(content="我咋看不见")]
+
+    final = await graph.ainvoke(
+        state,
+        {"configurable": {"thread_id": "thread-unsupported-capability"}},
+    )
+
+    assert final["tasks"][0].status == TaskStatus.FAILED
+    assert "当前系统暂不支持" in final["last_answer"]
+    assert "当前对话" in final["last_answer"]
+    assert final["messages"][-1].content == final["last_answer"]
     assert actions.records == {}
 
 

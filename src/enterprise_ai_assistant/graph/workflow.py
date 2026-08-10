@@ -186,7 +186,27 @@ class Workflow:
         task = self.supervisor.next_runnable(state["tasks"])
         if task is None:
             return {"active_task_id": None, "current_agent": None}
-        agent = self.supervisor.route(task)
+        try:
+            agent = self.supervisor.route(task)
+        except ValueError:
+            capabilities = "、".join(task.required_capabilities)
+            answer = (
+                f"当前系统暂不支持“{task.title}”（{capabilities}）。"
+                "如果你是在查询刚提交的申请，提交结果和编号可在当前对话的助手回复中查看。"
+            )
+            tasks = [
+                item.model_copy(update={"status": TaskStatus.FAILED})
+                if item.id == task.id
+                else item
+                for item in state["tasks"]
+            ]
+            return {
+                "tasks": tasks,
+                "active_task_id": None,
+                "current_agent": None,
+                "last_answer": answer,
+                "messages": [AIMessage(content=answer)],
+            }
         tasks = [
             item.model_copy(update={"status": TaskStatus.RUNNING}) if item.id == task.id else item
             for item in state["tasks"]
