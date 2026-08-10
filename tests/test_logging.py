@@ -14,7 +14,12 @@ import structlog
 
 from enterprise_ai_assistant.core.logging import configure_logging
 
-configure_logging(os.environ["TEST_LOG_FILE"], max_bytes=1024, backup_count=1)
+configure_logging(
+    os.environ["TEST_LOG_FILE"],
+    max_bytes=1024,
+    backup_count=1,
+    environment="development",
+)
 try:
     raise ValueError("测试异常")
 except ValueError:
@@ -29,10 +34,12 @@ except ValueError:
         env=environment,
     )
 
-    console_record = json.loads(completed.stdout.strip())
     file_record = json.loads(log_file.read_text(encoding="utf-8").strip())
-    for record in (console_record, file_record):
-        assert record["event"] == "test_failure"
-        assert "ValueError: 测试异常" in record["exception"]
-        assert "Traceback (most recent call last)" in record["exception"]
-        assert "exc_info" not in record
+    assert "test_failure" in completed.stdout
+    assert "ValueError: 测试异常" in completed.stdout
+    assert "Traceback (most recent call last)" in completed.stdout
+    assert "\\n" not in completed.stdout
+    assert file_record["event"] == "test_failure"
+    assert "ValueError: 测试异常" in file_record["exception"]
+    assert "Traceback (most recent call last)" in file_record["exception"]
+    assert "exc_info" not in file_record

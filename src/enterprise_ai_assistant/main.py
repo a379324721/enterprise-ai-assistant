@@ -36,6 +36,7 @@ configure_logging(
     log_file=_settings.log_file,
     max_bytes=_settings.log_max_bytes,
     backup_count=_settings.log_backup_count,
+    environment=_settings.app_env,
 )
 
 
