@@ -1,5 +1,7 @@
 import React, {FormEvent, useMemo, useRef, useState} from "react";
 import {createRoot} from "react-dom/client";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import "./styles.css";
 import "./streaming.css";
 
@@ -13,6 +15,15 @@ type Message = {role: "user" | "assistant"; text: string};
 type SseMessage = {event: string; data: unknown};
 
 const examples = ["下周去上海出差，帮我申请，回来提醒报销", "我还有多少年假？下周五请一天年假", "查询差旅住宿标准"];
+
+function MarkdownMessage({text}: {text: string}) {
+  return <ReactMarkdown
+    remarkPlugins={[remarkGfm]}
+    components={{
+      a: ({href, children}) => <a href={href} target="_blank" rel="noreferrer noopener">{children}</a>,
+    }}
+  >{text}</ReactMarkdown>;
+}
 
 async function consumeSse(
   response: Response,
@@ -113,7 +124,7 @@ function App() {
       <div className="chatPanel">
         <div className="intro"><span>AI</span><div><strong>你好，我是企业智能助手</strong><p>我可以协助差旅、报销、请假和制度查询。涉及提交的操作会先请你确认。</p></div></div>
         {messages.length === 0 && <div className="examples">{examples.map((item) => <button key={item} onClick={() => setInput(item)}>{item}<b>↗</b></button>)}</div>}
-        <div className="messages">{messages.map((message, index) => <div key={index} className={`message ${message.role}`}>{message.text}{busy && index === messages.length - 1 && message.role === "assistant" && <span className="cursor"/>}</div>)}{busy && <div className="thinking">{progress || "正在处理…"}</div>}</div>
+        <div className="messages">{messages.map((message, index) => <div key={index} className={`message ${message.role}`}>{message.role === "assistant" ? <MarkdownMessage text={message.text}/> : message.text}{busy && index === messages.length - 1 && message.role === "assistant" && <span className="cursor"/>}</div>)}{busy && <div className="thinking">{progress || "正在处理…"}</div>}</div>
         {result?.pending_confirmation && <div className="confirmCard"><div className="risk">需要你的确认</div><strong>{result.pending_confirmation.summary}</strong><p>系统只会在你确认后执行该操作。</p><div><button className="cancel" disabled={busy} onClick={() => confirm(false)}>取消</button><button className="approve" disabled={busy} onClick={() => confirm(true)}>确认执行</button></div></div>}
         <form onSubmit={send}><textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="描述你想办理的事情…" rows={2}/><button disabled={busy}>发送</button></form>
       </div>
