@@ -2,7 +2,7 @@ import json
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from langsmith import traceable
@@ -40,8 +40,9 @@ class Workflow:
             task.domain,
             ToolContext(
                 user_id=state["user_id"],
+                conversation_id=state["conversation_id"],
+                request_id=state["request_id"],
                 task_id=task.id,
-                idempotency_key=f"{state['user_id']}:{task.id}",
             ),
         )
 
@@ -97,6 +98,7 @@ class Workflow:
             "domain_waiting_input": False,
             "domain_rejected": False,
             "domain_failed": False,
+            "domain_retry_required": False,
             "pending_tool_call": None,
         }
 
@@ -126,6 +128,21 @@ class Workflow:
                 "args": dict(raw_arguments),
                 "id": str(raw_call["id"]),
             }
+        has_tool_result = any(
+            isinstance(message, ToolMessage)
+            for message in state.get("domain_messages", [])
+        )
+        retry_required = pending is None and not has_tool_result
+        domain_messages = [*state.get("domain_messages", []), response]
+        if retry_required:
+            domain_messages.append(
+                SystemMessage(
+                    content=(
+                        "运行时校验：当前任务尚未调用任何工具。必须选择一个领域工具，"
+                        "或调用 request_information 说明缺失字段。"
+                    )
+                )
+            )
         confirmation = None
         tasks = state["tasks"]
         if pending:
@@ -149,13 +166,18 @@ class Workflow:
                 ]
         return {
             "tasks": tasks,
-            "domain_messages": [*state.get("domain_messages", []), response],
+            "domain_messages": domain_messages,
             "domain_iterations": iterations,
             "pending_tool_call": pending,
             "pending_confirmation": confirmation,
+            "domain_retry_required": retry_required,
         }
 
-    def after_decide(self, state: AssistantState) -> Literal["confirm_tool", "execute_tool", "domain_respond"]:
+    def after_decide(
+        self, state: AssistantState
+    ) -> Literal["confirm_tool", "execute_tool", "domain_respond", "domain_decide"]:
+        if state.get("domain_retry_required"):
+            return "domain_decide"
         call = state.get("pending_tool_call")
         if not call:
             return "domain_respond"
@@ -243,6 +265,7 @@ class Workflow:
             "confirmation_approved": False,
             "domain_waiting_input": registered.terminal,
             "domain_failed": not outcome.success,
+            "domain_retry_required": False,
         }
 
     def after_execute(self, state: AssistantState) -> Literal["domain_decide", "domain_respond"]:
@@ -272,17 +295,7 @@ class Workflow:
             for item in state["tasks"]
         ]
         if status in {TaskStatus.REJECTED, TaskStatus.FAILED}:
-            blocked = {
-                item.id
-                for item in tasks
-                if item.status in {TaskStatus.REJECTED, TaskStatus.FAILED}
-            }
-            tasks = [
-                item.model_copy(update={"status": TaskStatus.REJECTED})
-                if set(item.depends_on) & blocked and item.status == TaskStatus.PENDING
-                else item
-                for item in tasks
-            ]
+            tasks = self._reject_blocked_tasks(tasks)
         return {
             "tasks": tasks,
             "last_answer": "\n\n".join(
@@ -299,6 +312,25 @@ class Workflow:
         return "done" if any(
             item.status == TaskStatus.WAITING_INPUT for item in state["tasks"]
         ) else "select_task"
+
+    @staticmethod
+    def _reject_blocked_tasks(tasks: list[PlannedTask]) -> list[PlannedTask]:
+        result = tasks
+        while True:
+            blocked = {
+                item.id
+                for item in result
+                if item.status in {TaskStatus.REJECTED, TaskStatus.FAILED}
+            }
+            updated = [
+                item.model_copy(update={"status": TaskStatus.REJECTED})
+                if set(item.depends_on) & blocked and item.status == TaskStatus.PENDING
+                else item
+                for item in result
+            ]
+            if updated == result:
+                return updated
+            result = updated
 
 
 def build_graph(workflow: Workflow, checkpointer: Any) -> Any:

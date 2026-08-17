@@ -19,7 +19,7 @@ from enterprise_ai_assistant.api.schemas import (
 router = APIRouter(prefix="/api/v1")
 
 _NODE_PROGRESS = {
-    "understand": "正在理解你的目标并提取关键信息",
+    "understand": "正在结合会话上下文理解你的请求",
     "plan": "正在拆解任务并分析依赖关系",
     "select_task": "Supervisor 正在选择合适的专业 Agent",
     "domain_decide": "专业 Agent 正在分析字段并选择工具",
@@ -42,6 +42,8 @@ def _initial_state(payload: ChatRequest, user_id: str) -> dict[str, Any]:
     return {
         "messages": [HumanMessage(content=payload.message)],
         "user_id": user_id,
+        "conversation_id": payload.conversation_id,
+        "request_id": payload.request_id,
     }
 
 
@@ -85,15 +87,21 @@ async def _response(request: Request, conversation_id: UUID, user_id: str) -> As
     if not values or values.get("user_id") != user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
     pending = values.get("pending_confirmation")
-    workflow_status = (
-        "waiting_confirmation" if pending and "confirm_tool" in snapshot.next else "completed"
-    )
+    tasks = values.get("tasks", [])
+    if pending and "confirm_tool" in snapshot.next:
+        workflow_status = "waiting_confirmation"
+    elif any(task.status.value == "waiting_input" for task in tasks):
+        workflow_status = "waiting_input"
+    elif any(task.status.value == "failed" for task in tasks):
+        workflow_status = "failed"
+    else:
+        workflow_status = "completed"
     return AssistantResponse(
         conversation_id=conversation_id,
         status=workflow_status,
         answer=values.get("last_answer", ""),
         user_goal=values.get("user_goal", ""),
-        tasks=values.get("tasks", []),
+        tasks=tasks,
         artifacts=values.get("artifacts", {}),
         tool_results=values.get("tool_results", []),
         pending_confirmation=pending,

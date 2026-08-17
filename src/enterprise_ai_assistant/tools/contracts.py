@@ -2,8 +2,9 @@ from datetime import date
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Protocol
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ToolRisk(StrEnum):
@@ -21,8 +22,12 @@ class ToolContext(BaseModel):
     """可信运行时上下文，不作为模型可填写的工具参数暴露。"""
 
     user_id: str = Field(min_length=1, max_length=128)
+    conversation_id: UUID
+    request_id: UUID
     task_id: str = Field(min_length=1, max_length=128)
-    idempotency_key: str = Field(min_length=1, max_length=256)
+
+    def idempotency_key(self, tool_name: str) -> str:
+        return f"{self.conversation_id}:{self.request_id}:{self.task_id}:{tool_name}"
 
 
 class PolicySearchInput(StrictToolInput):
@@ -49,6 +54,12 @@ class TravelApplicationInput(StrictToolInput):
     end_date: date
     purpose: str = Field(min_length=1, max_length=1000)
 
+    @model_validator(mode="after")
+    def validate_dates(self) -> "TravelApplicationInput":
+        if self.end_date < self.start_date:
+            raise ValueError("end_date must not be earlier than start_date")
+        return self
+
 
 class ExpenseClaimInput(StrictToolInput):
     expense_type: str = Field(min_length=1, max_length=100)
@@ -73,6 +84,12 @@ class LeaveRequestInput(StrictToolInput):
     start_date: date
     end_date: date
     reason: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> "LeaveRequestInput":
+        if self.end_date < self.start_date:
+            raise ValueError("end_date must not be earlier than start_date")
+        return self
 
 
 class BusinessToolOutcome(BaseModel):

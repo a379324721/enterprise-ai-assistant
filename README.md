@@ -2,33 +2,34 @@
 
 面向企业内部事务的生产级 Multi-Agent。后端使用 FastAPI + LangGraph，模型通过 OpenAI-compatible Chat Completions API 接入；PostgreSQL 保存工作流 checkpoint 与业务写操作，Redis 缓存制度查询，Milvus 存储制度向量，LangSmith 记录 Agent、规划器和工具调用 trace。前端提供任务进度与 Human-in-the-loop 确认界面。
 
-## 为什么不是 Intent Router
+## 架构
 
-请求不会通过“差旅/报销/请假”关键词直接分流，而是依次经过：
+系统把会话理解、任务规划、领域执行和企业工具调用分成独立边界：
 
 ```mermaid
 flowchart LR
-    U[用户输入] --> UL[Understanding Layer\n目标规范化/槽位抽取]
-    UL --> P[Task Planner\n结构化任务 DAG]
-    P --> S[Supervisor Agent]
-    S --> C[Capability Routing\n按 required_capabilities 选择]
-    C --> T[Travel Agent]
-    C --> E[Expense Agent]
-    C --> H[HR Agent]
-    C --> K[Policy Agent]
-    T & E & H --> R{高风险写操作?}
-    R -- 是 --> I[LangGraph Interrupt\n人工确认]
-    I --> W[幂等写入]
-    R -- 否 --> X[更新共享 State]
-    W --> X
-    X --> S
+    U[用户输入 + 会话历史] --> S[Context Supervisor\n指代消解/输入改写]
+    S --> P[Task Planner\n领域任务 DAG]
+    P --> D[Task Scheduler]
+    D --> A[领域 Agent\nLLM 决策]
+    A --> M{缺少信息?}
+    M -- 是 --> Q[生成澄清问题]
+    M -- 否 --> T[选择领域工具]
+    T --> R{写工具?}
+    R -- 是 --> I[LangGraph Interrupt\n逐工具确认]
+    I --> X[执行工具]
+    R -- 否 --> X
+    X --> A
+    A --> O[LLM 原生流式回答]
+    O --> D
 ```
 
-- Understanding Layer 只处理当前用户输入，规范目标、解析相对日期并标记歧义。
-- Task Planner 通过模型的 structured output 生成任务 DAG、能力需求、依赖和风险等级。
-- Supervisor 只负责任务调度，不代替领域 Agent 执行业务。
-- Capability Registry 根据任务声明的能力集合选择提供者，不查看原始对话文本。
-- 领域 Agent 不接收聊天历史；它们只读取当前任务、`slots` 和 `tool_results` 的共享状态投影。
+- Context Supervisor 阅读完整对话，只负责消解指代、分析整体意图并生成独立请求；不抽取领域字段。
+- Planner 只生成任务领域、目标、成功标准和依赖；不选择工具、不生成参数、不判断风险。
+- Travel、Expense、HR、Policy Agent 分别拥有独立 Prompt 和最小工具白名单。
+- 每个领域 Agent 在受限循环中自行判断字段、请求补充信息、选择工具并解释工具结果。
+- 工具风险由服务端注册表声明。所有写工具在执行前保存 checkpoint 并要求用户确认。
+- 用户身份、会话 ID、请求 ID 和幂等键来自可信运行时，不作为模型参数暴露。
 
 ## State 设计
 
@@ -36,29 +37,43 @@ flowchart LR
 
 | 字段 | 用途 |
 |---|---|
-| `messages` | API 对话记录；仅 Understanding Layer 读取 |
-| `user_goal` | 规范化后的整体目标 |
-| `tasks` | 带依赖、能力、风险和状态的任务 DAG |
-| `slots` | 跨 Agent 的结构化业务上下文 |
+| `messages` | 持久化对话记录，供 Context Supervisor 消解上下文 |
+| `user_goal` | 当前轮次已改写的独立请求 |
+| `tasks` | 带领域、目标、依赖和状态的任务 DAG |
+| `artifacts` | 按 task ID 保存的结构化工具产物 |
 | `tool_results` | 可审计的工具执行结果 |
 | `current_agent` | 当前能力提供者 |
 | `active_task_id` | 当前执行任务 |
-| `pending_confirmation` | 等待用户确认的写操作及 payload |
+| `domain_messages` | 当前领域循环的隔离消息上下文 |
+| `pending_confirmation` | 等待确认的精确工具名、调用 ID 和参数 |
 
-Agent 之间不发送消息。例如 Expense Agent 安排“回来提醒报销”时，读取 Travel Agent 写入 `slots.travel_application` 的行程结束日期和申请编号。
+领域 Agent 不共享内部推理消息。后续任务只接收依赖任务在 `artifacts` 中留下的结构化结果。
+
+## 企业工具
+
+工具统一通过 `EnterpriseToolProvider` 接口接入，当前实现和后续 OA、财务、HR API 适配器遵循同一契约。替换后端实现不需要修改 Agent 或工作流。
+
+| Agent | 可用工具 |
+|---|---|
+| Travel | 差旅制度查询、创建差旅申请 |
+| Expense | 报销制度查询、创建报销单、设置普通或差旅报销提醒 |
+| HR | 人事制度查询、假期余额查询、提交请假申请 |
+| Policy | 通用制度查询 |
+
+所有领域都可调用 `request_information` 暂停当前任务并向用户询问缺失字段。工具输入使用 Pydantic 严格校验，未知字段会被拒绝。
 
 ## 示例流程
 
 输入：`下周去上海出差，帮我申请，回来提醒报销`
 
-1. 理解层解析目的地及日期；信息不足时不会臆造，会提示补充出差事由或具体日期。
-2. Planner 生成 `travel.application.write` 和依赖它的 `expense.reminder.write` 两个任务。
-3. Travel Agent 准备申请并触发 interrupt；此时尚未写入业务表。
-4. 用户确认后，以 `user_id:task_id` 为幂等键提交申请，并更新 `slots.travel_application`。
-5. Expense Agent 从共享 State 读取旅行信息并安排提醒。
-6. 每个 Supervisor、Planner、Agent 与写工具调用都带 LangSmith trace。
+1. Supervisor 结合历史会话把输入改写为独立请求，不抽取差旅字段。
+2. Planner 生成 Travel 任务和依赖它的 Expense 任务。
+3. Travel Agent 自行识别字段；缺失时调用 `request_information`，完整时提出创建差旅工具调用。
+4. 工作流冻结精确工具参数并触发 interrupt；确认后使用“会话 + 请求 + 任务 + 工具”幂等键执行。
+5. Travel 的结构化工具结果写入 `artifacts`，再作为依赖结果交给 Expense Agent。
+6. Expense Agent 选择提醒工具并独立确认，最终回答由领域 LLM 原生流式输出。
 
-请假提交和报销提交同样必须确认；制度读取和提醒安排不需要确认。
+所有写工具都需要确认；制度和余额读取不需要确认。
 
 ## 目录
 
@@ -142,10 +157,10 @@ curl -X POST http://localhost:8000/api/v1/chat \
 | 事件 | 内容 |
 |---|---|
 | `metadata` | 会话 ID |
-| `progress` | Understanding、Planner、Supervisor 和领域 Agent 的执行进度 |
-| `answer_start` | 最终回答即将开始 |
-| `token` | 用户可见回答的字符增量 |
-| `done` | 完整任务、slots、工具结果和确认状态 |
+| `progress` | Supervisor、Planner、领域循环和工具执行进度 |
+| `answer_start` | 一个领域回答开始，包含 message/agent/task ID |
+| `token` | 带 `user-visible` 标签的模型原生内容增量 |
+| `done` | 完整任务、artifacts、工具结果和确认状态 |
 | `error` | 流建立后的执行错误 |
 
 命令行验证：
@@ -178,17 +193,17 @@ uv run mypy src
 cd frontend && npm install && npm run build
 ```
 
-测试使用可注入的 PlanningService、内存 checkpointer 和内存 repository，不消耗模型额度；覆盖复合任务拆分、人工确认、拒绝、跨 Agent State 传递和幂等写入。
+测试使用可注入的 PlanningService、领域 Runtime、内存 checkpointer 和企业工具实现，不消耗模型额度；覆盖 DAG 校验、领域工具白名单、复合任务、逐工具确认、拒绝传播、原生流过滤和请求级幂等。
 
 ## 生产扩展点
 
-- 将示例 policy bootstrap 替换为带版本、权限标签和生效区间的离线摄取流水线；检索时增加 ABAC filter 与引用返回。
-- ActionRepository 当前展示可靠的幂等边界；接入真实 OA/财务/HR 系统时建议使用 outbox、状态回查和补偿任务。
+- 将 policy bootstrap 替换为带版本、权限标签和生效区间的离线摄取流水线；检索时增加 ABAC filter 与引用返回。
+- 为 `EnterpriseToolProvider` 增加 OA、财务和 HR 远端适配器，并配套 outbox、状态回查和补偿任务。
 - 在 API Gateway 接入 OIDC/JWT、租户隔离、速率限制、审计日志与 PII 脱敏。
-- 对 planner structured output 增加业务规则校验、任务数量上限和 prompt-injection 检测。
+- 增加会话级并发租约、模型/工具熔断、分布式限流和请求级成本预算。
 - PostgreSQL checkpoint 支持多实例恢复；大规模部署需设置连接池、checkpoint 清理策略和 Redis/Milvus 高可用。
-- 将提醒写入专用调度服务（如 Temporal/Celery），本 Demo 只演示了状态与工具边界。
+- 将提醒工具后端接入专用调度服务（如 Temporal/Celery）。
 
 ## 已知边界
 
-这是可运行的生产级架构基线，而不是已经对接某家企业 OA 的成品。真实差旅额度、年假余额、发票校验和组织审批链需要对应系统 API 与权限模型；在这些契约确定前，代码不会伪造成功结果。
+这是可运行、可替换后端的生产级架构基线。具体企业的差旅额度、发票校验、组织审批链、身份权限和业务 API 仍需通过 `EnterpriseToolProvider` 适配，并在上线前完成安全评审、容量测试和故障演练。

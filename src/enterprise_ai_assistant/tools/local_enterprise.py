@@ -46,7 +46,7 @@ class LocalEnterpriseToolProvider:
         payload: dict[str, Any],
     ) -> BusinessToolOutcome:
         recorded = await self._actions.execute_once(
-            idempotency_key=context.idempotency_key,
+            idempotency_key=context.idempotency_key(tool),
             action_type=action_type,
             user_id=context.user_id,
             payload=payload,

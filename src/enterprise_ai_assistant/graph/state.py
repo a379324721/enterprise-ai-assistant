@@ -1,4 +1,5 @@
 from typing import Annotated, Any, NotRequired, TypedDict
+from uuid import UUID
 
 from langgraph.graph.message import add_messages
 
@@ -10,6 +11,8 @@ class AssistantState(TypedDict):
 
     messages: Annotated[list[Any], add_messages]
     user_id: str
+    conversation_id: UUID
+    request_id: UUID
     user_goal: str
     tasks: list[PlannedTask]
     artifacts: dict[str, Any]
@@ -26,4 +29,5 @@ class AssistantState(TypedDict):
     domain_waiting_input: NotRequired[bool]
     domain_rejected: NotRequired[bool]
     domain_failed: NotRequired[bool]
+    domain_retry_required: NotRequired[bool]
     turn_answers: NotRequired[list[str]]

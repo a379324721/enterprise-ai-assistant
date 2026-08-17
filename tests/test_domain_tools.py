@@ -1,4 +1,5 @@
 from datetime import date
+from uuid import UUID
 
 import pytest
 
@@ -18,7 +19,10 @@ def registry() -> DomainToolRegistry:
 
 def context() -> ToolContext:
     return ToolContext(
-        user_id="u-1", task_id="task-1", idempotency_key="u-1:task-1"
+        user_id="u-1",
+        conversation_id=UUID("00000000-0000-0000-0000-000000000001"),
+        request_id=UUID("00000000-0000-0000-0000-000000000002"),
+        task_id="task-1",
     )
 
 

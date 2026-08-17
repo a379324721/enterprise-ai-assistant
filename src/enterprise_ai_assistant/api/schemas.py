@@ -9,6 +9,7 @@ from enterprise_ai_assistant.core.models import PendingConfirmation, PlannedTask
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8000)
     conversation_id: UUID = Field(default_factory=uuid4)
+    request_id: UUID = Field(default_factory=uuid4)
 
 
 class ConfirmationRequest(BaseModel):

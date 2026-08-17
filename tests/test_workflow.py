@@ -1,4 +1,5 @@
 from typing import Any
+from uuid import UUID
 
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -97,7 +98,7 @@ class ScriptedRuntime:
                     "args": {
                         "trigger_date": "2026-08-14",
                         "note": "提醒提交本次差旅费用",
-                        "travel_reference": "u-1:task-1:create_travel_application",
+                        "travel_reference": "travel-reference-1",
                     },
                     "id": f"{task_id}-expense-call",
                     "type": "tool_call",
@@ -143,6 +144,8 @@ def initial_state() -> dict[str, Any]:
     return {
         "messages": [HumanMessage(content="下周去上海出差，帮我申请，回来提醒报销")],
         "user_id": "u-1",
+        "conversation_id": UUID("00000000-0000-0000-0000-000000000001"),
+        "request_id": UUID("00000000-0000-0000-0000-000000000002"),
         "user_goal": "",
         "tasks": [],
         "artifacts": {},
@@ -172,7 +175,7 @@ async def test_compound_workflow_uses_tools_with_separate_confirmations() -> Non
     final = await graph.ainvoke(Command(resume={"approved": True}), config)
     assert [task.status.value for task in final["tasks"]] == ["completed", "completed"]
     assert final["artifacts"]["task-1"]["data"]["destination"] == "上海"
-    assert final["artifacts"]["task-2"]["data"]["travel_reference"].startswith("u-1")
+    assert final["artifacts"]["task-2"]["data"]["travel_reference"] == "travel-reference-1"
     assert len(actions.records) == 2
 
 
@@ -186,3 +189,33 @@ async def test_rejecting_write_cancels_dependent_task() -> None:
 
     assert [task.status.value for task in final["tasks"]] == ["rejected", "rejected"]
     assert actions.records == {}
+
+
+def test_blocked_tasks_are_rejected_transitively() -> None:
+    tasks = [
+        PlannedTask(
+            id="task-1",
+            title="失败任务",
+            domain=AgentName.TRAVEL,
+            objective="失败",
+            status="failed",
+        ),
+        PlannedTask(
+            id="task-2",
+            title="二级依赖",
+            domain=AgentName.EXPENSE,
+            objective="等待 task-1",
+            depends_on=["task-1"],
+        ),
+        PlannedTask(
+            id="task-3",
+            title="三级依赖",
+            domain=AgentName.HR,
+            objective="等待 task-2",
+            depends_on=["task-2"],
+        ),
+    ]
+
+    result = Workflow._reject_blocked_tasks(tasks)
+
+    assert [item.status.value for item in result] == ["failed", "rejected", "rejected"]

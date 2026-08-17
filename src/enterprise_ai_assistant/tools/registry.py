@@ -55,12 +55,6 @@ class DomainToolRegistry:
             terminal=terminal,
         )
 
-    @staticmethod
-    def _context(base: ToolContext, tool_name: str) -> ToolContext:
-        return base.model_copy(
-            update={"idempotency_key": f"{base.idempotency_key}:{tool_name}"}
-        )
-
     def for_agent(self, agent: AgentName, context: ToolContext) -> list[RegisteredTool]:
         async def request_information(**kwargs: Any) -> dict[str, Any]:
             payload = InformationRequestInput.model_validate(kwargs)
@@ -105,7 +99,7 @@ class DomainToolRegistry:
         if agent == AgentName.TRAVEL:
             async def create_travel(**kwargs: Any) -> dict[str, Any]:
                 outcome = await self._provider.create_travel_application(
-                    self._context(context, "create_travel_application"),
+                    context,
                     TravelApplicationInput.model_validate(kwargs),
                 )
                 return outcome.model_dump(mode="json")
@@ -125,14 +119,14 @@ class DomainToolRegistry:
         if agent == AgentName.EXPENSE:
             async def create_claim(**kwargs: Any) -> dict[str, Any]:
                 outcome = await self._provider.create_expense_claim(
-                    self._context(context, "create_expense_claim"),
+                    context,
                     ExpenseClaimInput.model_validate(kwargs),
                 )
                 return outcome.model_dump(mode="json")
 
             async def schedule_reminder(**kwargs: Any) -> dict[str, Any]:
                 outcome = await self._provider.schedule_expense_reminder(
-                    self._context(context, "schedule_expense_reminder"),
+                    context,
                     ExpenseReminderInput.model_validate(kwargs),
                 )
                 return outcome.model_dump(mode="json")
@@ -159,14 +153,14 @@ class DomainToolRegistry:
         if agent == AgentName.HR:
             async def leave_balance(**kwargs: Any) -> dict[str, Any]:
                 outcome = await self._provider.get_leave_balance(
-                    self._context(context, "get_leave_balance"),
+                    context,
                     LeaveBalanceInput.model_validate(kwargs),
                 )
                 return outcome.model_dump(mode="json")
 
             async def submit_leave(**kwargs: Any) -> dict[str, Any]:
                 outcome = await self._provider.submit_leave_request(
-                    self._context(context, "submit_leave_request"),
+                    context,
                     LeaveRequestInput.model_validate(kwargs),
                 )
                 return outcome.model_dump(mode="json")

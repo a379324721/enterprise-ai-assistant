@@ -28,11 +28,11 @@ class PlannedTask(BaseModel):
     """Planner 只描述领域目标和依赖，不决定字段、工具或风险。"""
 
     id: str = Field(default_factory=lambda: str(uuid4()))
-    title: str
+    title: str = Field(min_length=1, max_length=200)
     domain: AgentName
-    objective: str
+    objective: str = Field(min_length=1, max_length=2000)
     depends_on: list[str] = Field(default_factory=list)
-    success_criteria: list[str] = Field(default_factory=list)
+    success_criteria: list[str] = Field(default_factory=list, max_length=20)
     status: TaskStatus = TaskStatus.PENDING
 
     @model_validator(mode="after")
@@ -43,7 +43,7 @@ class PlannedTask(BaseModel):
 
 
 class TaskPlan(BaseModel):
-    user_goal: str
+    user_goal: str = Field(min_length=1, max_length=8000)
     tasks: list[PlannedTask] = Field(min_length=1, max_length=20)
 
     @model_validator(mode="after")
@@ -73,8 +73,8 @@ class TaskPlan(BaseModel):
 class ContextResolution(BaseModel):
     """Supervisor 对完整会话的解析结果，不包含任何领域业务字段。"""
 
-    standalone_request: str
-    intent_summary: str
+    standalone_request: str = Field(min_length=1, max_length=8000)
+    intent_summary: str = Field(min_length=1, max_length=1000)
     explicit_constraints: list[str] = Field(default_factory=list)
     referenced_task_ids: list[str] = Field(default_factory=list)
     unresolved_references: list[str] = Field(default_factory=list)
