@@ -1,48 +1,11 @@
-from datetime import date
 from typing import Any
 
 from langsmith import traceable
 
 from enterprise_ai_assistant.agents.base import AgentOutcome
-from enterprise_ai_assistant.core.models import (
-    PendingConfirmation,
-    PlannedTask,
-    TaskStatus,
-    ToolResult,
-)
+from enterprise_ai_assistant.core.models import PendingConfirmation, PlannedTask, ToolResult
 from enterprise_ai_assistant.repositories.actions import ActionRepository
 from enterprise_ai_assistant.repositories.policies import PolicyRepository
-
-_SLOT_LABELS = {
-    "destination": "出差地点",
-    "start_date": "出发日期",
-    "end_date": "行程结束日期",
-    "purpose": "出差事由",
-    "leave_type": "请假类型",
-    "leave_start": "请假开始日期",
-    "leave_end": "请假结束日期",
-}
-
-
-def _has_slot(slots: dict[str, Any], field: str) -> bool:
-    value = slots.get(field)
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return value.strip().lower() not in {"", "none", "null", "unknown", "未知", "未提供"}
-    return True
-
-
-def _missing_slot_message(prefix: str, fields: tuple[str, ...], slots: dict[str, Any]) -> str:
-    missing = [_SLOT_LABELS[field] for field in fields if not _has_slot(slots, field)]
-    return f"{prefix}还需要补充：{'、'.join(missing)}。"
-
-
-def _leave_duration(start: str, end: str) -> int | None:
-    try:
-        return (date.fromisoformat(end) - date.fromisoformat(start)).days + 1
-    except (TypeError, ValueError):
-        return None
 
 
 class TravelAgent:
@@ -60,23 +23,11 @@ class TravelAgent:
                     task_id=task.id, tool="policy_search", success=True, data={"items": policies}
                 ),
             )
-        required = ("destination", "start_date", "end_date", "purpose")
-        if any(not _has_slot(slots, name) for name in required):
-            if slots.get("is_one_way") and all(
-                _has_slot(slots, name) for name in ("destination", "start_date", "purpose")
-            ):
-                return AgentOutcome(
-                    answer=(
-                        "单程不需要填写返程交通，但差旅申请仍需填写行程结束日期，"
-                        "也就是本次出差预计结束的日期。请补充预计结束日期。"
-                    ),
-                    task_status=TaskStatus.WAITING_INPUT,
-                )
-            return AgentOutcome(
-                answer=_missing_slot_message("创建差旅申请前", required, slots),
-                task_status=TaskStatus.WAITING_INPUT,
-            )
-        payload = {name: slots[name] for name in required}
+        required = {"destination", "start_date", "end_date", "purpose"}
+        missing = sorted(required - slots.keys())
+        if missing:
+            return AgentOutcome(answer=f"创建差旅申请前还需要：{', '.join(missing)}。")
+        payload = {name: slots[name] for name in sorted(required)}
         return AgentOutcome(
             answer="差旅申请已准备，等待确认。",
             confirmation=PendingConfirmation(
@@ -89,15 +40,10 @@ class TravelAgent:
 
     @traceable(name="travel-agent-execute", run_type="tool")
     async def execute(
-        self,
-        task: PlannedTask,
-        user_id: str,
-        payload: dict[str, Any],
-        *,
-        idempotency_key: str,
+        self, task: PlannedTask, user_id: str, payload: dict[str, Any]
     ) -> AgentOutcome:
         result = await self._actions.execute_once(
-            idempotency_key=idempotency_key,
+            idempotency_key=f"{user_id}:{task.id}",
             action_type="travel",
             user_id=user_id,
             payload=payload,
@@ -129,10 +75,7 @@ class ExpenseAgent:
         if "expense.reminder.write" in task.required_capabilities:
             travel = slots.get("travel_application")
             if not travel:
-                return AgentOutcome(
-                    answer="差旅尚未创建，暂时无法安排报销提醒。",
-                    task_status=TaskStatus.WAITING_INPUT,
-                )
+                return AgentOutcome(answer="差旅尚未创建，暂时无法安排报销提醒。")
             reminder = {
                 "trigger_date": travel["end_date"],
                 "travel_reference": travel["reference_id"],
@@ -146,10 +89,7 @@ class ExpenseAgent:
             )
         amount = slots.get("expense_amount")
         if amount is None:
-            return AgentOutcome(
-                answer="提交报销前还需要报销金额和票据信息。",
-                task_status=TaskStatus.WAITING_INPUT,
-            )
+            return AgentOutcome(answer="提交报销前还需要报销金额和票据信息。")
         payload = {"amount": amount, "travel_application": slots.get("travel_application")}
         return AgentOutcome(
             answer="报销单已准备，等待确认。",
@@ -163,15 +103,10 @@ class ExpenseAgent:
 
     @traceable(name="expense-agent-execute", run_type="tool")
     async def execute(
-        self,
-        task: PlannedTask,
-        user_id: str,
-        payload: dict[str, Any],
-        *,
-        idempotency_key: str,
+        self, task: PlannedTask, user_id: str, payload: dict[str, Any]
     ) -> AgentOutcome:
         result = await self._actions.execute_once(
-            idempotency_key=idempotency_key,
+            idempotency_key=f"{user_id}:{task.id}",
             action_type="expense",
             user_id=user_id,
             payload=payload,
@@ -193,50 +128,36 @@ class HRAgent:
     async def prepare(self, task: PlannedTask, slots: dict[str, Any]) -> AgentOutcome:
         if "hr.leave.read" in task.required_capabilities:
             policies = await self._policies.search(task.title, "hr")
-            balance_days = 8
             return AgentOutcome(
-                answer=f"当前可用年假余额为 {balance_days} 天。{policies[0]['content']}",
+                answer=policies[0]["content"],
                 tool_result=ToolResult(
                     task_id=task.id,
                     tool="leave_query",
                     success=True,
-                    data={"balance_days": balance_days, "policies": policies},
+                    data={"balance_days": 8, "policies": policies},
                 ),
             )
-        required = ("leave_type", "leave_start", "leave_end")
-        if any(not _has_slot(slots, key) for key in required):
-            return AgentOutcome(
-                answer=_missing_slot_message("提交请假前", required, slots),
-                task_status=TaskStatus.WAITING_INPUT,
-            )
+        required = {"leave_type", "leave_start", "leave_end"}
+        missing = sorted(required - slots.keys())
+        if missing:
+            return AgentOutcome(answer=f"提交请假前还需要：{', '.join(missing)}。")
         payload = {key: slots[key] for key in required}
-        duration = _leave_duration(payload["leave_start"], payload["leave_end"])
-        duration_text = f"，共 {duration} 天" if duration is not None else ""
-        summary = (
-            f"提交 {payload['leave_start']} 至 {payload['leave_end']} 的"
-            f"{payload['leave_type']}申请{duration_text}"
-        )
         return AgentOutcome(
-            answer=f"请假申请已准备：{summary}。请确认是否提交。",
+            answer="请假申请已准备，等待确认。",
             confirmation=PendingConfirmation(
                 task_id=task.id,
                 action="hr.leave.submit",
-                summary=summary,
+                summary=f"提交 {payload['leave_start']} 至 {payload['leave_end']} 的{payload['leave_type']}申请",
                 payload=payload,
             ),
         )
 
     @traceable(name="hr-agent-execute", run_type="tool")
     async def execute(
-        self,
-        task: PlannedTask,
-        user_id: str,
-        payload: dict[str, Any],
-        *,
-        idempotency_key: str,
+        self, task: PlannedTask, user_id: str, payload: dict[str, Any]
     ) -> AgentOutcome:
         result = await self._actions.execute_once(
-            idempotency_key=idempotency_key,
+            idempotency_key=f"{user_id}:{task.id}",
             action_type="leave",
             user_id=user_id,
             payload=payload,

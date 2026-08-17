@@ -5,7 +5,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 from starlette.responses import StreamingResponse
 
@@ -13,11 +13,8 @@ from enterprise_ai_assistant.api.schemas import (
     AssistantResponse,
     ChatRequest,
     ConfirmationRequest,
-    ConversationMessage,
-    ConversationSummary,
     HealthResponse,
 )
-from enterprise_ai_assistant.core.models import TaskStatus
 
 router = APIRouter(prefix="/api/v1")
 
@@ -52,7 +49,6 @@ def _initial_state(payload: ChatRequest, user_id: str) -> dict[str, Any]:
         "user_id": user_id,
         "user_goal": "",
         "tasks": [],
-        "task_history": [],
         "slots": {},
         "tool_results": [],
         "current_agent": None,
@@ -62,104 +58,10 @@ def _initial_state(payload: ChatRequest, user_id: str) -> dict[str, Any]:
     }
 
 
-async def _chat_input(request: Request, payload: ChatRequest, user_id: str) -> dict[str, Any]:
-    snapshot = await request.app.state.graph.aget_state(_config(payload.conversation_id, user_id))
-    if not snapshot.values:
-        return _initial_state(payload, user_id)
-    if snapshot.values.get("user_id") != user_id:
-        raise HTTPException(status_code=404, detail="会话不存在")
-    if "confirm" in snapshot.next:
-        raise HTTPException(status_code=409, detail="当前会话有待确认操作，请先确认或取消")
-    chat_input: dict[str, Any] = {
-        "messages": [HumanMessage(content=payload.message)],
-        "user_id": user_id,
-        "last_answer": "",
-        "pending_confirmation": None,
-    }
-    if snapshot.next:
-        # 普通节点异常会留下 next，但不应把整个会话永久锁死。新一轮开始前，
-        # 将上一轮尚未结束的任务标记失败，plan 节点会把它们归入历史目标。
-        chat_input.update(
-            {
-                "tasks": _fail_incomplete_tasks(snapshot.values.get("tasks", [])),
-                "active_task_id": None,
-                "current_agent": None,
-                "confirmation_approved": False,
-            }
-        )
-    return chat_input
-
-
 def _encode_sse(event: str, data: Any) -> str:
     """编码一条带类型的 SSE 事件；JSON 可明确表示换行符和 Unicode 字符。"""
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     return f"event: {event}\ndata: {payload}\n\n"
-
-
-def _conversation_title(message: str, max_length: int = 32) -> str:
-    title = " ".join(message.split())
-    return title if len(title) <= max_length else f"{title[:max_length]}…"
-
-
-async def _index_conversation(
-    request: Request,
-    conversation_id: UUID,
-    user_id: str,
-    title_source: str | None = None,
-) -> None:
-    try:
-        if title_source is None:
-            await request.app.state.conversations.touch(
-                conversation_id=conversation_id, user_id=user_id
-            )
-        else:
-            await request.app.state.conversations.upsert(
-                conversation_id=conversation_id,
-                user_id=user_id,
-                title=_conversation_title(title_source),
-            )
-    except Exception:
-        request.app.state.logger.exception(
-            "conversation_index_failed", conversation_id=str(conversation_id)
-        )
-
-
-def _conversation_messages(messages: list[Any]) -> list[ConversationMessage]:
-    """每轮只保留用户输入和最终助手回答，隐藏工作流内部中间消息。"""
-    transcript: list[ConversationMessage] = []
-    current_user: str | None = None
-    final_answer: str | None = None
-
-    def append_turn() -> None:
-        if current_user is None:
-            return
-        transcript.append(ConversationMessage(role="user", text=current_user))
-        if final_answer:
-            transcript.append(ConversationMessage(role="assistant", text=final_answer))
-
-    for message in messages:
-        if isinstance(message, HumanMessage):
-            append_turn()
-            current_user = str(message.content)
-            final_answer = None
-        elif isinstance(message, AIMessage) and current_user is not None:
-            final_answer = str(message.content)
-    append_turn()
-    return transcript
-
-
-def _fail_incomplete_tasks(tasks: list[Any]) -> list[Any]:
-    incomplete = {
-        TaskStatus.PENDING,
-        TaskStatus.RUNNING,
-        TaskStatus.WAITING_CONFIRMATION,
-    }
-    return [
-        task.model_copy(update={"status": TaskStatus.FAILED})
-        if task.status in incomplete
-        else task
-        for task in tasks
-    ]
 
 
 async def _response(request: Request, conversation_id: UUID, user_id: str) -> AssistantResponse:
@@ -167,30 +69,16 @@ async def _response(request: Request, conversation_id: UUID, user_id: str) -> As
     values = snapshot.values
     if not values or values.get("user_id") != user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
-    has_confirmation_interrupt = "confirm" in snapshot.next
-    stored_pending = values.get("pending_confirmation")
-    pending = stored_pending if has_confirmation_interrupt else None
-    tasks = values.get("tasks", [])
-    orphaned_confirmation = stored_pending is not None and not has_confirmation_interrupt
-    interrupted_outside_confirmation = bool(snapshot.next) and not has_confirmation_interrupt
-    if not snapshot.next or orphaned_confirmation or interrupted_outside_confirmation:
-        tasks = _fail_incomplete_tasks(tasks)
-    if pending:
-        workflow_status = "waiting_confirmation"
-    elif any(task.status == TaskStatus.WAITING_INPUT for task in tasks):
-        workflow_status = "waiting_input"
-    elif any(task.status == TaskStatus.FAILED for task in tasks):
-        workflow_status = "failed"
-    else:
-        workflow_status = "completed"
+    pending = values.get("pending_confirmation")
+    workflow_status = (
+        "waiting_confirmation" if pending and "confirm" in snapshot.next else "completed"
+    )
     return AssistantResponse(
         conversation_id=conversation_id,
         status=workflow_status,
         answer=values.get("last_answer", ""),
         user_goal=values.get("user_goal", ""),
-        tasks=tasks,
-        task_history=values.get("task_history", []),
-        messages=_conversation_messages(values.get("messages", [])),
+        tasks=values.get("tasks", []),
         slots=values.get("slots", {}),
         tool_results=values.get("tool_results", []),
         pending_confirmation=pending,
@@ -202,7 +90,6 @@ async def _stream_graph(
     graph_input: dict[str, Any] | Command[Any],
     conversation_id: UUID,
     user_id: str,
-    title_source: str | None = None,
 ) -> AsyncIterator[str]:
     """流式发送持久化工作流进度、回答增量和最终状态快照。
 
@@ -223,7 +110,6 @@ async def _stream_graph(
                     yield _encode_sse("progress", {"node": node_name, "message": message})
 
         response = await _response(request, conversation_id, user_id)
-        await _index_conversation(request, conversation_id, user_id, title_source)
         yield _encode_sse("answer_start", {})
         for character in response.answer:
             if await request.is_disconnected():
@@ -251,7 +137,7 @@ async def chat(
     request: Request,
     user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
 ) -> AssistantResponse:
-    initial = await _chat_input(request, payload, user_id)
+    initial = _initial_state(payload, user_id)
     try:
         await request.app.state.graph.ainvoke(initial, _config(payload.conversation_id, user_id))
     except Exception as exc:
@@ -259,9 +145,7 @@ async def chat(
             "graph_invocation_failed", conversation_id=str(payload.conversation_id)
         )
         raise HTTPException(status_code=502, detail="智能助手执行失败，请稍后重试") from exc
-    response = await _response(request, payload.conversation_id, user_id)
-    await _index_conversation(request, payload.conversation_id, user_id, payload.message)
-    return response
+    return await _response(request, payload.conversation_id, user_id)
 
 
 @router.post("/chat/stream")
@@ -271,14 +155,12 @@ async def chat_stream(
     user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
 ) -> StreamingResponse:
     """聊天输入使用 POST，因此该 SSE 接口由流式 fetch 消费。"""
-    graph_input = await _chat_input(request, payload, user_id)
     return StreamingResponse(
         _stream_graph(
             request,
-            graph_input,
+            _initial_state(payload, user_id),
             payload.conversation_id,
             user_id,
-            payload.message,
         ),
         media_type="text/event-stream",
         headers={
@@ -305,9 +187,7 @@ async def confirm(
         Command(resume={"approved": payload.approved, "comment": payload.comment}),
         _config(conversation_id, user_id),
     )
-    response = await _response(request, conversation_id, user_id)
-    await _index_conversation(request, conversation_id, user_id)
-    return response
+    return await _response(request, conversation_id, user_id)
 
 
 @router.post("/conversations/{conversation_id}/confirm/stream")
@@ -337,58 +217,13 @@ async def confirm_stream(
     )
 
 
-@router.get("/conversations", response_model=list[ConversationSummary])
-async def list_conversations(
-    request: Request,
-    user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
-) -> list[ConversationSummary]:
-    records = await request.app.state.conversations.list_for_user(user_id)
-    return [ConversationSummary.model_validate(record) for record in records]
-
-
 @router.get("/conversations/{conversation_id}", response_model=AssistantResponse)
 async def get_conversation(
     conversation_id: UUID,
     request: Request,
     user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
 ) -> AssistantResponse:
-    response = await _response(request, conversation_id, user_id)
-    first_user_message = next(
-        (message.text for message in response.messages if message.role == "user"),
-        "新会话",
-    )
-    await request.app.state.conversations.ensure(
-        conversation_id=conversation_id,
-        user_id=user_id,
-        title=_conversation_title(first_user_message),
-    )
-    return response
-
-
-@router.delete(
-    "/conversations/{conversation_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-)
-async def delete_conversation(
-    conversation_id: UUID,
-    request: Request,
-    user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
-) -> None:
-    """删除当前用户的会话索引及其全部 LangGraph 检查点。"""
-    owns_conversation = await request.app.state.conversations.belongs_to_user(
-        conversation_id=conversation_id,
-        user_id=user_id,
-    )
-    if not owns_conversation:
-        raise HTTPException(status_code=404, detail="会话不存在")
-
-    await request.app.state.graph.checkpointer.adelete_thread(str(conversation_id))
-    deleted = await request.app.state.conversations.delete(
-        conversation_id=conversation_id,
-        user_id=user_id,
-    )
-    if not deleted:
-        raise HTTPException(status_code=404, detail="会话不存在")
+    return await _response(request, conversation_id, user_id)
 
 
 @router.get("/health", response_model=HealthResponse)

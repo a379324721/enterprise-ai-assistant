@@ -22,7 +22,6 @@ from enterprise_ai_assistant.core.logging import configure_logging
 from enterprise_ai_assistant.db.postgres import create_pool
 from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
 from enterprise_ai_assistant.repositories.actions import PostgresActionRepository
-from enterprise_ai_assistant.repositories.conversations import PostgresConversationRepository
 from enterprise_ai_assistant.repositories.policies import (
     CachedMilvusPolicyRepository,
     bootstrap_policy_collection,
@@ -31,13 +30,7 @@ from enterprise_ai_assistant.services.capabilities import CapabilityRegistry
 from enterprise_ai_assistant.services.llm import build_chat_model, build_embeddings
 from enterprise_ai_assistant.services.planning import LLMPlanningService
 
-_settings = get_settings()
-configure_logging(
-    log_file=_settings.log_file,
-    max_bytes=_settings.log_max_bytes,
-    backup_count=_settings.log_backup_count,
-    environment=_settings.app_env,
-)
+configure_logging()
 
 
 @asynccontextmanager
@@ -51,7 +44,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await bootstrap_policy_collection(milvus, embeddings)
     policies = CachedMilvusPolicyRepository(milvus, redis, embeddings)
     actions = PostgresActionRepository(db_pool)
-    conversations = PostgresConversationRepository(db_pool)
     supervisor = SupervisorAgent(LLMPlanningService(build_chat_model()), CapabilityRegistry())
     workflow = Workflow(
         supervisor,
@@ -64,7 +56,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await checkpointer.setup()
         app.state.graph = build_graph(workflow, checkpointer)
         app.state.db_pool = db_pool
-        app.state.conversations = conversations
         app.state.redis = redis
         app.state.milvus = milvus
         app.state.logger = logger
@@ -82,7 +73,7 @@ def create_app(lifespan_handler: Any = lifespan) -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "DELETE"],
+        allow_methods=["GET", "POST"],
         allow_headers=["Content-Type", "X-User-ID"],
     )
     application.include_router(router)

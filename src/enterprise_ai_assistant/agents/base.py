@@ -1,12 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from enterprise_ai_assistant.core.models import (
-    PendingConfirmation,
-    PlannedTask,
-    TaskStatus,
-    ToolResult,
-)
+from enterprise_ai_assistant.core.models import PendingConfirmation, PlannedTask, ToolResult
 
 
 @dataclass
@@ -15,7 +10,6 @@ class AgentOutcome:
     slot_updates: dict[str, Any] = field(default_factory=dict)
     tool_result: ToolResult | None = None
     confirmation: PendingConfirmation | None = None
-    task_status: TaskStatus | None = None
 
 
 class DomainAgent(Protocol):
@@ -24,10 +18,5 @@ class DomainAgent(Protocol):
 
 class WritableDomainAgent(DomainAgent, Protocol):
     async def execute(
-        self,
-        task: PlannedTask,
-        user_id: str,
-        payload: dict[str, Any],
-        *,
-        idempotency_key: str,
+        self, task: PlannedTask, user_id: str, payload: dict[str, Any]
     ) -> AgentOutcome: ...

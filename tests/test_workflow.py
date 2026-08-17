@@ -1,11 +1,9 @@
-from datetime import date, timedelta
 from typing import Any
 
 import pytest
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
-from pydantic import ValidationError
 
 from enterprise_ai_assistant.agents.domain_agents import (
     ExpenseAgent,
@@ -14,24 +12,15 @@ from enterprise_ai_assistant.agents.domain_agents import (
     TravelAgent,
 )
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
-from enterprise_ai_assistant.core.models import GoalUnderstanding, PlannedTask, TaskPlan, TaskStatus
-from enterprise_ai_assistant.graph.workflow import (
-    Workflow,
-    _explicit_travel_date_slots,
-    _relative_date,
-    _travel_mode_slots,
-    build_graph,
-)
+from enterprise_ai_assistant.core.models import GoalUnderstanding, PlannedTask, TaskPlan
+from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
 from enterprise_ai_assistant.services.capabilities import CapabilityRegistry
-from enterprise_ai_assistant.services.planning import PlanningService
 
 
 class StubPlanningService:
-    async def understand(
-        self, user_text: str, conversation_history: str = ""
-    ) -> GoalUnderstanding:
+    async def understand(self, user_text: str) -> GoalUnderstanding:
         assert "上海" in user_text
         return GoalUnderstanding(
             normalized_goal="申请上海差旅并在返程后提醒报销",
@@ -66,146 +55,10 @@ class StubPlanningService:
         )
 
 
-class GreetingPlanningService:
-    async def understand(
-        self, user_text: str, conversation_history: str = ""
-    ) -> GoalUnderstanding:
-        assert user_text == "你好"
-        return GoalUnderstanding(normalized_goal="问候")
-
-    async def plan(self, understanding: GoalUnderstanding) -> TaskPlan:
-        return TaskPlan(
-            user_goal=understanding.normalized_goal,
-            tasks=[],
-            direct_answer="你好！有什么企业事务需要我协助吗？",
-        )
-
-
-class MissingTravelPlanningService:
-    async def understand(
-        self, user_text: str, conversation_history: str = ""
-    ) -> GoalUnderstanding:
-        return GoalUnderstanding(
-            normalized_goal="创建差旅申请",
-            inferred_slots={"start_date": "2026-08-11"},
-        )
-
-    async def plan(self, understanding: GoalUnderstanding) -> TaskPlan:
-        return TaskPlan(
-            user_goal=understanding.normalized_goal,
-            tasks=[
-                PlannedTask(
-                    id="task-1",
-                    title="创建差旅申请",
-                    operation="submit",
-                    required_capabilities=["travel.application.write"],
-                    risk="high",
-                )
-            ],
-            extracted_slots=understanding.inferred_slots,
-        )
-
-
-class HistoryPlanningService:
-    def __init__(self) -> None:
-        self.histories: list[str] = []
-
-    async def understand(
-        self, user_text: str, conversation_history: str = ""
-    ) -> GoalUnderstanding:
-        self.histories.append(conversation_history)
-        return GoalUnderstanding(normalized_goal=user_text)
-
-    async def plan(self, understanding: GoalUnderstanding) -> TaskPlan:
-        return TaskPlan(
-            user_goal=understanding.normalized_goal,
-            tasks=[],
-            direct_answer=f"收到：{understanding.normalized_goal}",
-        )
-
-
-class SingleDayLeavePlanningService:
-    async def understand(
-        self, user_text: str, conversation_history: str = ""
-    ) -> GoalUnderstanding:
-        return GoalUnderstanding(
-            normalized_goal="申请事假",
-            inferred_slots={"leave_type": "事假"},
-        )
-
-    async def plan(self, understanding: GoalUnderstanding) -> TaskPlan:
-        return TaskPlan(
-            user_goal=understanding.normalized_goal,
-            tasks=[
-                PlannedTask(
-                    id="task-1",
-                    title="提交事假申请",
-                    operation="submit",
-                    required_capabilities=["hr.leave.write"],
-                    risk="high",
-                )
-            ],
-            extracted_slots=understanding.inferred_slots,
-        )
-
-
-class FollowUpTravelDatePlanningService:
-    async def understand(
-        self, user_text: str, conversation_history: str = ""
-    ) -> GoalUnderstanding:
-        if "北京" in user_text:
-            return GoalUnderstanding(
-                normalized_goal="创建北京单程差旅申请",
-                inferred_slots={
-                    "destination": "北京",
-                    "start_date": (date.today() + timedelta(days=1)).isoformat(),
-                    "purpose": "开会",
-                },
-            )
-        return GoalUnderstanding(normalized_goal="补充差旅行程结束日期")
-
-    async def plan(self, understanding: GoalUnderstanding) -> TaskPlan:
-        return TaskPlan(
-            user_goal=understanding.normalized_goal,
-            tasks=[
-                PlannedTask(
-                    id="task-1",
-                    title="创建差旅申请",
-                    operation="submit",
-                    required_capabilities=["travel.application.write"],
-                    risk="high",
-                )
-            ],
-            extracted_slots=understanding.inferred_slots,
-        )
-
-
-class UnsupportedCapabilityPlanningService:
-    async def understand(
-        self, user_text: str, conversation_history: str = ""
-    ) -> GoalUnderstanding:
-        return GoalUnderstanding(normalized_goal="查询已提交的差旅申请")
-
-    async def plan(self, understanding: GoalUnderstanding) -> TaskPlan:
-        return TaskPlan(
-            user_goal=understanding.normalized_goal,
-            tasks=[
-                PlannedTask(
-                    id="task-1",
-                    title="查询已提交的差旅申请",
-                    operation="travel.application.read",
-                    required_capabilities=["travel.application.read"],
-                )
-            ],
-        )
-
-
-def make_graph(
-    planning: PlanningService | None = None,
-) -> tuple[Any, InMemoryActionRepository]:
+def make_graph() -> tuple[Any, InMemoryActionRepository]:
     policies = InMemoryPolicyRepository()
     actions = InMemoryActionRepository()
-    supervisor = SupervisorAgent(planning or StubPlanningService(), CapabilityRegistry())
+    supervisor = SupervisorAgent(StubPlanningService(), CapabilityRegistry())
     workflow = Workflow(
         supervisor,
         TravelAgent(policies, actions),
@@ -222,7 +75,6 @@ def initial_state() -> dict[str, Any]:
         "user_id": "u-1",
         "user_goal": "",
         "tasks": [],
-        "task_history": [],
         "slots": {},
         "tool_results": [],
         "current_agent": None,
@@ -230,29 +82,6 @@ def initial_state() -> dict[str, Any]:
         "pending_confirmation": None,
         "last_answer": "",
     }
-
-
-def test_travel_mode_slots_understand_one_way_corrections() -> None:
-    assert _travel_mode_slots("我不返回，补充什么？") == {"is_one_way": True}
-    assert _travel_mode_slots("还是改成往返吧") == {"is_one_way": False}
-
-
-def test_next_weekday_is_resolved_in_the_following_calendar_week() -> None:
-    today = date.today()
-    next_monday = today + timedelta(days=7 - today.weekday())
-
-    assert _relative_date("下周五请一天年假") == (
-        next_monday + timedelta(days=4)
-    ).isoformat()
-
-
-def test_explicit_travel_dates_are_normalized_and_slot_names_are_strict() -> None:
-    assert _explicit_travel_date_slots("北京开会，明天出发，后天回来") == {
-        "start_date": (date.today() + timedelta(days=1)).isoformat(),
-        "end_date": (date.today() + timedelta(days=2)).isoformat(),
-    }
-    with pytest.raises(ValidationError):
-        GoalUnderstanding(normalized_goal="出差", inferred_slots={"reason": "开会"})
 
 
 @pytest.mark.asyncio
@@ -264,41 +93,22 @@ async def test_compound_workflow_interrupt_resume_and_shared_state() -> None:
     assert "confirm" in paused.next
     assert paused.values["pending_confirmation"].action == "travel.application.submit"
     assert [task.id for task in paused.values["tasks"]] == ["task-1", "task-2"]
-    assert paused.values["tasks"][0].status.value == "waiting_confirmation"
 
     final = await graph.ainvoke(Command(resume={"approved": True}), config)
     assert [task.status.value for task in final["tasks"]] == ["completed", "completed"]
     assert final["slots"]["travel_application"]["destination"] == "上海"
-    assert final["slots"]["expense_reminder"]["travel_reference"].startswith("TRAVEL-")
+    assert final["slots"]["expense_reminder"]["travel_reference"] == "u-1:task-1"
     assert len(actions.records) == 1
 
     # 仓储层的幂等性也能防止工具重试造成重复写入。
     first = next(iter(actions.records.values()))
-    first_key = next(iter(actions.records))
     repeated = await actions.execute_once(
-        idempotency_key=first_key,
+        idempotency_key="u-1:task-1",
         action_type="travel",
         user_id="u-1",
-        payload={
-            "destination": "上海",
-            "start_date": "2026-08-10",
-            "end_date": "2026-08-14",
-            "purpose": "客户交流",
-        },
+        payload={"destination": "错误覆盖"},
     )
     assert repeated == first
-
-
-@pytest.mark.asyncio
-async def test_same_planner_task_id_in_two_confirmations_creates_distinct_actions() -> None:
-    graph, actions = make_graph()
-    for thread_id in ("thread-action-1", "thread-action-2"):
-        config = {"configurable": {"thread_id": thread_id}}
-        await graph.ainvoke(initial_state(), config)
-        await graph.ainvoke(Command(resume={"approved": True}), config)
-
-    assert len(actions.records) == 2
-    assert len({record["reference_id"] for record in actions.records.values()}) == 2
 
 
 @pytest.mark.asyncio
@@ -308,162 +118,4 @@ async def test_reject_cancels_dependent_task_without_writing() -> None:
     await graph.ainvoke(initial_state(), config)
     final = await graph.ainvoke(Command(resume={"approved": False}), config)
     assert [task.status.value for task in final["tasks"]] == ["rejected", "rejected"]
-    assert actions.records == {}
-
-
-@pytest.mark.asyncio
-async def test_rejected_action_can_request_confirmation_again() -> None:
-    graph, actions = make_graph()
-    config = {"configurable": {"thread_id": "thread-confirm-again"}}
-    await graph.ainvoke(initial_state(), config)
-    await graph.ainvoke(Command(resume={"approved": False}), config)
-
-    await graph.ainvoke(
-        {
-            "messages": [HumanMessage(content="点错了，还是申请上海差旅")],
-            "user_id": "u-1",
-            "last_answer": "",
-            "pending_confirmation": None,
-        },
-        config,
-    )
-    paused = await graph.aget_state(config)
-
-    assert "confirm" in paused.next
-    assert paused.values["pending_confirmation"] is not None
-    assert paused.values["tasks"][0].status.value == "waiting_confirmation"
-    assert actions.records == {}
-
-
-@pytest.mark.asyncio
-async def test_greeting_returns_direct_answer_without_tasks() -> None:
-    graph, actions = make_graph(GreetingPlanningService())
-    state = initial_state()
-    state["messages"] = [HumanMessage(content="你好")]
-
-    final = await graph.ainvoke(state, {"configurable": {"thread_id": "thread-greeting"}})
-
-    assert final["tasks"] == []
-    assert final["last_answer"] == "你好！有什么企业事务需要我协助吗？"
-    assert final["messages"][-1].content == final["last_answer"]
-    assert actions.records == {}
-
-
-@pytest.mark.asyncio
-async def test_missing_information_keeps_task_waiting_for_input() -> None:
-    graph, actions = make_graph(MissingTravelPlanningService())
-    config = {"configurable": {"thread_id": "thread-missing-input"}}
-
-    first = await graph.ainvoke(initial_state(), config)
-
-    assert first["tasks"][0].status.value == "waiting_input"
-    assert first["last_answer"] == "创建差旅申请前还需要补充：出差地点、行程结束日期、出差事由。"
-
-    second = await graph.ainvoke(
-        {
-            "messages": [HumanMessage(content="出差地点是上海")],
-            "user_id": "u-1",
-            "last_answer": "",
-            "pending_confirmation": None,
-        },
-        config,
-    )
-
-    assert len(second["task_history"]) == 1
-    assert second["task_history"][0].user_goal == "创建差旅申请"
-    assert second["task_history"][0].tasks[0].status.value == "waiting_input"
-    assert actions.records == {}
-
-
-@pytest.mark.asyncio
-async def test_unsupported_planner_capability_returns_explanation_instead_of_crashing() -> None:
-    graph, actions = make_graph(UnsupportedCapabilityPlanningService())
-    state = initial_state()
-    state["messages"] = [HumanMessage(content="我咋看不见")]
-
-    final = await graph.ainvoke(
-        state,
-        {"configurable": {"thread_id": "thread-unsupported-capability"}},
-    )
-
-    assert final["tasks"][0].status == TaskStatus.FAILED
-    assert "当前系统暂不支持" in final["last_answer"]
-    assert "当前对话" in final["last_answer"]
-    assert final["messages"][-1].content == final["last_answer"]
-    assert actions.records == {}
-
-
-@pytest.mark.asyncio
-async def test_follow_up_turn_passes_recent_conversation_to_understanding() -> None:
-    planning = HistoryPlanningService()
-    graph, _ = make_graph(planning)
-    config = {"configurable": {"thread_id": "thread-history"}}
-    state = initial_state()
-    state["messages"] = [HumanMessage(content="我明天要出差")]
-
-    await graph.ainvoke(state, config)
-    final = await graph.ainvoke(
-        {
-            "messages": [HumanMessage(content="改成后天")],
-            "user_id": "u-1",
-            "last_answer": "",
-            "pending_confirmation": None,
-        },
-        config,
-    )
-
-    assert planning.histories[0] == ""
-    assert "用户：我明天要出差" in planning.histories[1]
-    assert "助手：收到：我明天要出差" in planning.histories[1]
-    assert final["messages"][-1].content == "收到：改成后天"
-
-
-@pytest.mark.asyncio
-async def test_full_day_leave_uses_same_start_and_end_date() -> None:
-    graph, actions = make_graph(SingleDayLeavePlanningService())
-    state = initial_state()
-    state["messages"] = [HumanMessage(content="事假，后天一整天")]
-    expected_date = (date.today() + timedelta(days=2)).isoformat()
-
-    await graph.ainvoke(
-        state, {"configurable": {"thread_id": "thread-single-day-leave"}}
-    )
-    paused = await graph.aget_state(
-        {"configurable": {"thread_id": "thread-single-day-leave"}}
-    )
-
-    assert "confirm" in paused.next
-    assert paused.values["slots"]["leave_start"] == expected_date
-    assert paused.values["slots"]["leave_end"] == expected_date
-    assert paused.values["pending_confirmation"].payload["leave_start"] == expected_date
-    assert paused.values["pending_confirmation"].payload["leave_end"] == expected_date
-    assert actions.records == {}
-
-
-@pytest.mark.asyncio
-async def test_relative_date_fills_the_only_missing_travel_date() -> None:
-    graph, actions = make_graph(FollowUpTravelDatePlanningService())
-    config = {"configurable": {"thread_id": "thread-travel-end-date"}}
-    state = initial_state()
-    state["messages"] = [HumanMessage(content="明天去北京开会，单程")]
-
-    await graph.ainvoke(state, config)
-    first = await graph.aget_state(config)
-    assert first.values["tasks"][0].status.value == "waiting_input"
-
-    await graph.ainvoke(
-        {
-            "messages": [HumanMessage(content="后天")],
-            "user_id": "u-1",
-            "last_answer": "",
-            "pending_confirmation": None,
-        },
-        config,
-    )
-    paused = await graph.aget_state(config)
-    expected_end_date = (date.today() + timedelta(days=2)).isoformat()
-
-    assert "confirm" in paused.next
-    assert paused.values["slots"]["end_date"] == expected_end_date
-    assert paused.values["pending_confirmation"].payload["end_date"] == expected_end_date
     assert actions.records == {}
