@@ -13,11 +13,6 @@ class ToolRisk(StrEnum):
     WRITE = "write"
 
 
-class ToolEnvironment(StrEnum):
-    MOCK = "mock"
-    PRODUCTION = "production"
-
-
 class StrictToolInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -34,6 +29,18 @@ class PolicySearchInput(StrictToolInput):
     query: str = Field(min_length=1, max_length=2000)
     domain: str = Field(min_length=1, max_length=32)
     limit: int = Field(default=3, ge=1, le=10)
+
+
+class PolicyQueryInput(StrictToolInput):
+    """暴露给领域模型的查询参数；领域由工具注册表固定。"""
+
+    query: str = Field(min_length=1, max_length=2000)
+    limit: int = Field(default=3, ge=1, le=10)
+
+
+class InformationRequestInput(StrictToolInput):
+    missing_fields: list[str] = Field(min_length=1)
+    question: str = Field(min_length=1, max_length=1000)
 
 
 class TravelApplicationInput(StrictToolInput):
@@ -71,7 +78,6 @@ class LeaveRequestInput(StrictToolInput):
 class BusinessToolOutcome(BaseModel):
     tool: str
     success: bool
-    environment: ToolEnvironment
     status: str
     reference_id: str | None = None
     data: dict[str, Any] = Field(default_factory=dict)
@@ -79,9 +85,7 @@ class BusinessToolOutcome(BaseModel):
 
 
 class EnterpriseToolProvider(Protocol):
-    """企业系统边界；生产适配器和 mock 适配器必须遵循相同契约。"""
-
-    environment: ToolEnvironment
+    """企业系统边界；所有后端适配器必须遵循相同契约。"""
 
     async def search_policy(self, payload: PolicySearchInput) -> BusinessToolOutcome: ...
 

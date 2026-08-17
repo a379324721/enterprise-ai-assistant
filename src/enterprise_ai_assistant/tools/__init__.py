@@ -5,27 +5,29 @@ from enterprise_ai_assistant.tools.contracts import (
     EnterpriseToolProvider,
     ExpenseClaimInput,
     ExpenseReminderInput,
+    InformationRequestInput,
     LeaveBalanceInput,
     LeaveRequestInput,
+    PolicyQueryInput,
     PolicySearchInput,
     ToolContext,
-    ToolEnvironment,
     ToolRisk,
     TravelApplicationInput,
 )
-from enterprise_ai_assistant.tools.mock_enterprise import MockEnterpriseToolProvider
+from enterprise_ai_assistant.tools.local_enterprise import LocalEnterpriseToolProvider
 
 __all__ = [
     "BusinessToolOutcome",
     "EnterpriseToolProvider",
     "ExpenseClaimInput",
     "ExpenseReminderInput",
+    "InformationRequestInput",
     "LeaveBalanceInput",
     "LeaveRequestInput",
-    "MockEnterpriseToolProvider",
+    "LocalEnterpriseToolProvider",
     "PolicySearchInput",
+    "PolicyQueryInput",
     "ToolContext",
-    "ToolEnvironment",
     "ToolRisk",
     "TravelApplicationInput",
 ]

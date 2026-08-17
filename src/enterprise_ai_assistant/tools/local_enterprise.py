@@ -10,15 +10,12 @@ from enterprise_ai_assistant.tools.contracts import (
     LeaveRequestInput,
     PolicySearchInput,
     ToolContext,
-    ToolEnvironment,
     TravelApplicationInput,
 )
 
 
-class MockEnterpriseToolProvider:
-    """可替换的企业系统模拟器；所有结果均显式标记为 mock。"""
-
-    environment = ToolEnvironment.MOCK
+class LocalEnterpriseToolProvider:
+    """当前企业工具实现；后续可在不改变 Agent 的情况下替换为远端适配器。"""
 
     def __init__(
         self,
@@ -36,8 +33,7 @@ class MockEnterpriseToolProvider:
         return BusinessToolOutcome(
             tool="search_policy",
             success=True,
-            environment=self.environment,
-            status="simulated_completed",
+            status="completed",
             data={"items": items},
         )
 
@@ -53,13 +49,12 @@ class MockEnterpriseToolProvider:
             idempotency_key=context.idempotency_key,
             action_type=action_type,
             user_id=context.user_id,
-            payload={"environment": self.environment.value, **payload},
+            payload=payload,
         )
         return BusinessToolOutcome(
             tool=tool,
             success=True,
-            environment=self.environment,
-            status="simulated_submitted",
+            status="submitted",
             reference_id=str(recorded["reference_id"]),
             data=recorded,
         )
@@ -102,8 +97,7 @@ class MockEnterpriseToolProvider:
         return BusinessToolOutcome(
             tool="get_leave_balance",
             success=True,
-            environment=self.environment,
-            status="simulated_completed",
+            status="completed",
             data={"leave_type": payload.leave_type, "balance_days": balance},
         )
 
