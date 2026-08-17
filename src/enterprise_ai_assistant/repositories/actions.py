@@ -19,7 +19,8 @@ class PostgresActionRepository:
     async def execute_once(
         self, *, idempotency_key: str, action_type: str, user_id: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        result = {"reference_id": idempotency_key, "status": "submitted", **payload}
+        # 该表只记录适配器调用并提供幂等性；它不代表外部企业系统已成功受理。
+        result = {"reference_id": idempotency_key, "status": "recorded", **payload}
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
                 """
@@ -48,7 +49,7 @@ class InMemoryActionRepository:
         if idempotency_key not in self.records:
             self.records[idempotency_key] = {
                 "reference_id": idempotency_key,
-                "status": "submitted",
+                "status": "recorded",
                 "action_type": action_type,
                 "user_id": user_id,
                 **payload,
