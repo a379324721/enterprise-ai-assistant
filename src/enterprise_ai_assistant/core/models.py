@@ -53,11 +53,14 @@ class TaskPlan(BaseModel):
         return self
 
 
-class GoalUnderstanding(BaseModel):
-    normalized_goal: str
+class ContextResolution(BaseModel):
+    """Supervisor 对完整会话的解析结果，不包含任何领域业务字段。"""
+
+    standalone_request: str
+    intent_summary: str
     explicit_constraints: list[str] = Field(default_factory=list)
-    inferred_slots: dict[str, Any] = Field(default_factory=dict)
-    ambiguities: list[str] = Field(default_factory=list)
+    referenced_task_ids: list[str] = Field(default_factory=list)
+    unresolved_references: list[str] = Field(default_factory=list)
 
 
 class PendingConfirmation(BaseModel):

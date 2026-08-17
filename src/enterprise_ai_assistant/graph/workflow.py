@@ -16,7 +16,7 @@ from enterprise_ai_assistant.agents.domain_agents import (
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.core.models import (
     AgentName,
-    GoalUnderstanding,
+    ContextResolution,
     PlannedTask,
     TaskStatus,
 )
@@ -53,18 +53,23 @@ class Workflow:
         return task
 
     async def understand(self, state: AssistantState) -> dict[str, Any]:
-        # 只有这一边界会读取聊天历史；领域 Agent 接收的是状态投影。
-        user_text = str(state["messages"][-1].content)
-        understanding = await self.supervisor.understand(user_text)
+        conversation = [
+            {
+                "role": "user" if message.type == "human" else "assistant",
+                "content": str(message.content),
+            }
+            for message in state["messages"]
+            if message.type in {"human", "ai"}
+        ]
+        context = await self.supervisor.resolve_context(conversation)
         return {
-            "user_goal": understanding.normalized_goal,
-            "understanding": understanding.model_dump(mode="json"),
-            "slots": {**state.get("slots", {}), **understanding.inferred_slots},
+            "user_goal": context.standalone_request,
+            "understanding": context.model_dump(mode="json"),
         }
 
     async def plan(self, state: AssistantState) -> dict[str, Any]:
-        understanding = GoalUnderstanding.model_validate(state["understanding"])
-        plan = await self.supervisor.plan(understanding)
+        context = ContextResolution.model_validate(state["understanding"])
+        plan = await self.supervisor.plan(context)
         return {
             "user_goal": plan.user_goal,
             "tasks": plan.tasks,

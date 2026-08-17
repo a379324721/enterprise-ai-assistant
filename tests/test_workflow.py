@@ -12,7 +12,7 @@ from enterprise_ai_assistant.agents.domain_agents import (
     TravelAgent,
 )
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
-from enterprise_ai_assistant.core.models import GoalUnderstanding, PlannedTask, TaskPlan
+from enterprise_ai_assistant.core.models import ContextResolution, PlannedTask, TaskPlan
 from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
@@ -20,21 +20,18 @@ from enterprise_ai_assistant.services.capabilities import CapabilityRegistry
 
 
 class StubPlanningService:
-    async def understand(self, user_text: str) -> GoalUnderstanding:
-        assert "上海" in user_text
-        return GoalUnderstanding(
-            normalized_goal="申请上海差旅并在返程后提醒报销",
-            inferred_slots={
-                "destination": "上海",
-                "start_date": "2026-08-10",
-                "end_date": "2026-08-14",
-                "purpose": "客户交流",
-            },
+    async def resolve_context(
+        self, conversation: list[dict[str, str]]
+    ) -> ContextResolution:
+        assert "上海" in conversation[-1]["content"]
+        return ContextResolution(
+            standalone_request="申请上海差旅并在返程后提醒报销",
+            intent_summary="申请差旅并设置报销提醒",
         )
 
-    async def plan(self, understanding: GoalUnderstanding) -> TaskPlan:
+    async def plan(self, context: ContextResolution) -> TaskPlan:
         return TaskPlan(
-            user_goal=understanding.normalized_goal,
+            user_goal=context.standalone_request,
             tasks=[
                 PlannedTask(
                     id="task-1",
@@ -51,7 +48,12 @@ class StubPlanningService:
                     depends_on=["task-1"],
                 ),
             ],
-            extracted_slots=understanding.inferred_slots,
+            extracted_slots={
+                "destination": "上海",
+                "start_date": "2026-08-10",
+                "end_date": "2026-08-14",
+                "purpose": "客户交流",
+            },
         )
 
 

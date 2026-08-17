@@ -2,7 +2,7 @@ from langsmith import traceable
 
 from enterprise_ai_assistant.core.models import (
     AgentName,
-    GoalUnderstanding,
+    ContextResolution,
     PlannedTask,
     TaskPlan,
     TaskStatus,
@@ -19,12 +19,14 @@ class SupervisorAgent:
         self._capabilities = capabilities
 
     @traceable(name="supervisor-understand", run_type="chain")
-    async def understand(self, user_text: str) -> GoalUnderstanding:
-        return await self._planning.understand(user_text)
+    async def resolve_context(
+        self, conversation: list[dict[str, str]]
+    ) -> ContextResolution:
+        return await self._planning.resolve_context(conversation)
 
     @traceable(name="supervisor-plan", run_type="chain")
-    async def plan(self, understanding: GoalUnderstanding) -> TaskPlan:
-        return await self._planning.plan(understanding)
+    async def plan(self, context: ContextResolution) -> TaskPlan:
+        return await self._planning.plan(context)
 
     @traceable(name="supervisor-capability-routing", run_type="chain")
     def route(self, task: PlannedTask) -> AgentName:
