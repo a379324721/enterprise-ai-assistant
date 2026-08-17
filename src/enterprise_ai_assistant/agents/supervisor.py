@@ -1,22 +1,19 @@
 from langsmith import traceable
 
 from enterprise_ai_assistant.core.models import (
-    AgentName,
     ContextResolution,
     PlannedTask,
     TaskPlan,
     TaskStatus,
 )
-from enterprise_ai_assistant.services.capabilities import CapabilityRegistry
 from enterprise_ai_assistant.services.planning import PlanningService
 
 
 class SupervisorAgent:
     """负责理解、拆解和委派任务，但不执行领域写操作。"""
 
-    def __init__(self, planning: PlanningService, capabilities: CapabilityRegistry) -> None:
+    def __init__(self, planning: PlanningService) -> None:
         self._planning = planning
-        self._capabilities = capabilities
 
     @traceable(name="supervisor-understand", run_type="chain")
     async def resolve_context(
@@ -28,11 +25,8 @@ class SupervisorAgent:
     async def plan(self, context: ContextResolution) -> TaskPlan:
         return await self._planning.plan(context)
 
-    @traceable(name="supervisor-capability-routing", run_type="chain")
-    def route(self, task: PlannedTask) -> AgentName:
-        return self._capabilities.select(task)
-
     @staticmethod
+    @traceable(name="supervisor-task-scheduling", run_type="chain")
     def next_runnable(tasks: list[PlannedTask]) -> PlannedTask | None:
         completed = {task.id for task in tasks if task.status == TaskStatus.COMPLETED}
         for task in tasks:

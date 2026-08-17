@@ -22,15 +22,10 @@ _NODE_PROGRESS = {
     "understand": "正在理解你的目标并提取关键信息",
     "plan": "正在拆解任务并分析依赖关系",
     "select_task": "Supervisor 正在选择合适的专业 Agent",
-    "travel": "Travel Agent 正在处理差旅任务",
-    "expense": "Expense Agent 正在处理报销任务",
-    "hr": "HR Agent 正在处理人事任务",
-    "policy": "Policy Agent 正在查询企业制度",
-    "confirm": "操作需要人工确认",
-    "execute_travel": "正在提交差旅申请",
-    "execute_expense": "正在提交报销申请",
-    "execute_hr": "正在提交请假申请",
-    "complete_task": "正在汇总任务执行结果",
+    "domain_decide": "专业 Agent 正在分析字段并选择工具",
+    "confirm_tool": "工具调用需要人工确认",
+    "execute_tool": "正在调用企业工具",
+    "domain_respond": "专业 Agent 正在生成回答",
 }
 
 
@@ -47,15 +42,19 @@ def _initial_state(payload: ChatRequest, user_id: str) -> dict[str, Any]:
     return {
         "messages": [HumanMessage(content=payload.message)],
         "user_id": user_id,
-        "user_goal": "",
-        "tasks": [],
-        "slots": {},
-        "tool_results": [],
-        "current_agent": None,
-        "active_task_id": None,
-        "pending_confirmation": None,
-        "last_answer": "",
     }
+
+
+async def _validate_chat_turn(
+    request: Request, conversation_id: UUID, user_id: str
+) -> None:
+    snapshot = await request.app.state.graph.aget_state(_config(conversation_id, user_id))
+    if not snapshot.values:
+        return
+    if snapshot.values.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if "confirm_tool" in snapshot.next:
+        raise HTTPException(status_code=409, detail="当前会话仍有待确认操作")
 
 
 def _encode_sse(event: str, data: Any) -> str:
@@ -71,7 +70,7 @@ async def _response(request: Request, conversation_id: UUID, user_id: str) -> As
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
     pending = values.get("pending_confirmation")
     workflow_status = (
-        "waiting_confirmation" if pending and "confirm" in snapshot.next else "completed"
+        "waiting_confirmation" if pending and "confirm_tool" in snapshot.next else "completed"
     )
     return AssistantResponse(
         conversation_id=conversation_id,
@@ -79,7 +78,7 @@ async def _response(request: Request, conversation_id: UUID, user_id: str) -> As
         answer=values.get("last_answer", ""),
         user_goal=values.get("user_goal", ""),
         tasks=values.get("tasks", []),
-        slots=values.get("slots", {}),
+        artifacts=values.get("artifacts", {}),
         tool_results=values.get("tool_results", []),
         pending_confirmation=pending,
     )
@@ -137,6 +136,7 @@ async def chat(
     request: Request,
     user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
 ) -> AssistantResponse:
+    await _validate_chat_turn(request, payload.conversation_id, user_id)
     initial = _initial_state(payload, user_id)
     try:
         await request.app.state.graph.ainvoke(initial, _config(payload.conversation_id, user_id))
@@ -155,6 +155,7 @@ async def chat_stream(
     user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
 ) -> StreamingResponse:
     """聊天输入使用 POST，因此该 SSE 接口由流式 fetch 消费。"""
+    await _validate_chat_turn(request, payload.conversation_id, user_id)
     return StreamingResponse(
         _stream_graph(
             request,
@@ -181,7 +182,7 @@ async def confirm(
     snapshot = await request.app.state.graph.aget_state(_config(conversation_id, user_id))
     if not snapshot.values or snapshot.values.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="会话不存在")
-    if "confirm" not in snapshot.next:
+    if "confirm_tool" not in snapshot.next:
         raise HTTPException(status_code=409, detail="当前会话没有待确认操作")
     await request.app.state.graph.ainvoke(
         Command(resume={"approved": payload.approved, "comment": payload.comment}),
@@ -201,7 +202,7 @@ async def confirm_stream(
     snapshot = await request.app.state.graph.aget_state(_config(conversation_id, user_id))
     if not snapshot.values or snapshot.values.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="会话不存在")
-    if "confirm" not in snapshot.next:
+    if "confirm_tool" not in snapshot.next:
         raise HTTPException(status_code=409, detail="当前会话没有待确认操作")
     command: Command[str] = Command(
         resume={"approved": payload.approved, "comment": payload.comment}

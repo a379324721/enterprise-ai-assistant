@@ -1,49 +1,31 @@
+import json
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from langsmith import traceable
 
-from enterprise_ai_assistant.agents.base import AgentOutcome, DomainAgent, WritableDomainAgent
-from enterprise_ai_assistant.agents.domain_agents import (
-    ExpenseAgent,
-    HRAgent,
-    PolicyAgent,
-    TravelAgent,
-)
+from enterprise_ai_assistant.agents.domain_runtime import DomainRuntime, DomainRuntimeProvider
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.core.models import (
-    AgentName,
     ContextResolution,
+    PendingConfirmation,
     PlannedTask,
     TaskStatus,
+    ToolResult,
 )
 from enterprise_ai_assistant.graph.state import AssistantState
+from enterprise_ai_assistant.tools import BusinessToolOutcome, ToolContext, ToolRisk
 
 
 class Workflow:
-    def __init__(
-        self,
-        supervisor: SupervisorAgent,
-        travel: TravelAgent,
-        expense: ExpenseAgent,
-        hr: HRAgent,
-        policy: PolicyAgent,
-    ) -> None:
+    MAX_DOMAIN_ITERATIONS = 8
+
+    def __init__(self, supervisor: SupervisorAgent, domains: DomainRuntimeProvider) -> None:
         self.supervisor = supervisor
-        self.agents: dict[AgentName, DomainAgent] = {
-            AgentName.TRAVEL: travel,
-            AgentName.EXPENSE: expense,
-            AgentName.HR: hr,
-            AgentName.POLICY: policy,
-        }
-        self.write_agents: dict[AgentName, WritableDomainAgent] = {
-            AgentName.TRAVEL: travel,
-            AgentName.EXPENSE: expense,
-            AgentName.HR: hr,
-        }
+        self.domains = domains
 
     @staticmethod
     def _active_task(state: AssistantState) -> PlannedTask:
@@ -51,6 +33,17 @@ class Workflow:
         if task is None:
             raise RuntimeError("active task is missing from state")
         return task
+
+    def _runtime(self, state: AssistantState) -> DomainRuntime:
+        task = self._active_task(state)
+        return self.domains.create(
+            task.domain,
+            ToolContext(
+                user_id=state["user_id"],
+                task_id=task.id,
+                idempotency_key=f"{state['user_id']}:{task.id}",
+            ),
+        )
 
     async def understand(self, state: AssistantState) -> dict[str, Any]:
         conversation = [
@@ -65,136 +58,243 @@ class Workflow:
         return {
             "user_goal": context.standalone_request,
             "understanding": context.model_dump(mode="json"),
+            "pending_confirmation": None,
+            "pending_tool_call": None,
         }
 
     async def plan(self, state: AssistantState) -> dict[str, Any]:
         context = ContextResolution.model_validate(state["understanding"])
         plan = await self.supervisor.plan(context)
-        return {
-            "user_goal": plan.user_goal,
-            "tasks": plan.tasks,
-            "slots": {**state.get("slots", {}), **plan.extracted_slots},
-        }
+        return {"user_goal": plan.user_goal, "tasks": plan.tasks}
 
     async def select_task(self, state: AssistantState) -> dict[str, Any]:
         task = self.supervisor.next_runnable(state["tasks"])
         if task is None:
             return {"active_task_id": None, "current_agent": None}
-        agent = self.supervisor.route(task)
         tasks = [
             item.model_copy(update={"status": TaskStatus.RUNNING}) if item.id == task.id else item
             for item in state["tasks"]
         ]
-        return {"tasks": tasks, "active_task_id": task.id, "current_agent": agent.value}
+        dependency_results = {
+            dependency: state.get("artifacts", {}).get(dependency)
+            for dependency in task.depends_on
+            if dependency in state.get("artifacts", {})
+        }
+        domain_input = {
+            "standalone_request": state["user_goal"],
+            "task": task.model_dump(mode="json"),
+            "dependency_results": dependency_results,
+        }
+        return {
+            "tasks": tasks,
+            "active_task_id": task.id,
+            "current_agent": task.domain.value,
+            "domain_messages": [
+                HumanMessage(content=json.dumps(domain_input, ensure_ascii=False))
+            ],
+            "domain_iterations": 0,
+            "domain_waiting_input": False,
+            "domain_rejected": False,
+            "domain_failed": False,
+            "pending_tool_call": None,
+        }
 
     def route_task(self, state: AssistantState) -> str:
-        return state["current_agent"] or "done"
+        return "domain_decide" if state.get("active_task_id") else "done"
 
-    async def _prepare(self, state: AssistantState, agent_name: AgentName) -> dict[str, Any]:
+    async def domain_decide(self, state: AssistantState) -> dict[str, Any]:
+        iterations = state.get("domain_iterations", 0) + 1
+        if iterations > self.MAX_DOMAIN_ITERATIONS:
+            raise RuntimeError("domain agent exceeded its model-call limit")
         task = self._active_task(state)
-        outcome = await self.agents[agent_name].prepare(task, dict(state["slots"]))
-        return self._outcome_update(state, outcome)
+        response = await self._runtime(state).decide(
+            task.objective,
+            list(state.get("domain_messages", [])),
+            task_id=task.id,
+        )
+        if len(response.tool_calls) > 1:
+            raise RuntimeError("parallel domain tool calls are not allowed")
+        pending: dict[str, Any] | None = None
+        if response.tool_calls:
+            raw_call = response.tool_calls[0]
+            raw_arguments = raw_call.get("args")
+            if not isinstance(raw_arguments, Mapping):
+                raise RuntimeError("domain tool call arguments must be an object")
+            pending = {
+                "name": str(raw_call["name"]),
+                "args": dict(raw_arguments),
+                "id": str(raw_call["id"]),
+            }
+        confirmation = None
+        tasks = state["tasks"]
+        if pending:
+            registered = self._runtime(state).tool(str(pending["name"]))
+            if registered.risk == ToolRisk.WRITE:
+                confirmation = PendingConfirmation(
+                    task_id=task.id,
+                    action=str(pending["name"]),
+                    tool_call_id=str(pending["id"]),
+                    summary=(
+                        f"允许 {task.domain.value} 执行 {pending['name']}："
+                        f"{json.dumps(pending['args'], ensure_ascii=False)}"
+                    ),
+                    payload=dict(pending["args"]),
+                )
+                tasks = [
+                    item.model_copy(update={"status": TaskStatus.WAITING_CONFIRMATION})
+                    if item.id == task.id
+                    else item
+                    for item in tasks
+                ]
+        return {
+            "tasks": tasks,
+            "domain_messages": [*state.get("domain_messages", []), response],
+            "domain_iterations": iterations,
+            "pending_tool_call": pending,
+            "pending_confirmation": confirmation,
+        }
 
-    async def travel(self, state: AssistantState) -> dict[str, Any]:
-        return await self._prepare(state, AgentName.TRAVEL)
+    def after_decide(self, state: AssistantState) -> Literal["confirm_tool", "execute_tool", "domain_respond"]:
+        call = state.get("pending_tool_call")
+        if not call:
+            return "domain_respond"
+        registered = self._runtime(state).tool(str(call["name"]))
+        return "confirm_tool" if registered.risk == ToolRisk.WRITE else "execute_tool"
 
-    async def expense(self, state: AssistantState) -> dict[str, Any]:
-        return await self._prepare(state, AgentName.EXPENSE)
-
-    async def hr(self, state: AssistantState) -> dict[str, Any]:
-        return await self._prepare(state, AgentName.HR)
-
-    async def policy(self, state: AssistantState) -> dict[str, Any]:
-        return await self._prepare(state, AgentName.POLICY)
-
-    @traceable(name="human-confirmation", run_type="chain")
-    async def confirm(self, state: AssistantState) -> dict[str, Any]:
-        pending = state["pending_confirmation"]
+    @traceable(name="tool-confirmation", run_type="chain")
+    async def confirm_tool(self, state: AssistantState) -> dict[str, Any]:
+        call = state.get("pending_tool_call")
+        if not call:
+            raise RuntimeError("confirmation entered without a tool call")
+        pending = state.get("pending_confirmation")
         if pending is None:
-            raise RuntimeError("confirmation node entered without a pending action")
+            raise RuntimeError("confirmation details are missing")
         decision = interrupt(pending.model_dump(mode="json"))
         approved = bool(decision.get("approved")) if isinstance(decision, Mapping) else False
         if approved:
-            return {"confirmation_approved": True}
+            tasks = [
+                item.model_copy(update={"status": TaskStatus.RUNNING})
+                if item.id == pending.task_id
+                else item
+                for item in state["tasks"]
+            ]
+            return {
+                "tasks": tasks,
+                "pending_confirmation": pending,
+                "confirmation_approved": True,
+            }
+        rejected = ToolMessage(
+            content=json.dumps(
+                {"success": False, "status": "rejected", "error": "用户拒绝执行工具"},
+                ensure_ascii=False,
+            ),
+            tool_call_id=pending.tool_call_id,
+            name=pending.action,
+        )
+        return {
+            "domain_messages": [*state.get("domain_messages", []), rejected],
+            "pending_confirmation": None,
+            "pending_tool_call": None,
+            "confirmation_approved": False,
+            "domain_rejected": True,
+        }
+
+    def after_confirm(self, state: AssistantState) -> Literal["execute_tool", "domain_respond"]:
+        return "execute_tool" if state.get("confirmation_approved") else "domain_respond"
+
+    async def execute_tool(self, state: AssistantState) -> dict[str, Any]:
+        call = state.get("pending_tool_call")
+        if not call:
+            raise RuntimeError("tool execution entered without a tool call")
+        task = self._active_task(state)
+        name = str(call["name"])
+        registered = self._runtime(state).tool(name)
+        try:
+            raw = await self._runtime(state).invoke_tool(name, dict(call["args"]))
+            outcome = BusinessToolOutcome.model_validate(raw)
+        except Exception as exc:
+            outcome = BusinessToolOutcome(
+                tool=name,
+                success=False,
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        message = ToolMessage(
+            content=outcome.model_dump_json(),
+            tool_call_id=str(call["id"]),
+            name=name,
+        )
+        audit = ToolResult(
+            task_id=task.id,
+            tool=name,
+            success=outcome.success,
+            data=outcome.model_dump(mode="json"),
+            error=outcome.error,
+        )
+        artifacts = dict(state.get("artifacts", {}))
+        artifacts[task.id] = outcome.model_dump(mode="json")
+        return {
+            "domain_messages": [*state.get("domain_messages", []), message],
+            "tool_results": [*state.get("tool_results", []), audit],
+            "artifacts": artifacts,
+            "pending_confirmation": None,
+            "pending_tool_call": None,
+            "confirmation_approved": False,
+            "domain_waiting_input": registered.terminal,
+            "domain_failed": not outcome.success,
+        }
+
+    def after_execute(self, state: AssistantState) -> Literal["domain_decide", "domain_respond"]:
+        return (
+            "domain_respond"
+            if state.get("domain_waiting_input") or state.get("domain_failed")
+            else "domain_decide"
+        )
+
+    async def domain_respond(self, state: AssistantState) -> dict[str, Any]:
+        task = self._active_task(state)
+        response = await self._runtime(state).respond(
+            task.objective,
+            list(state.get("domain_messages", [])),
+            task_id=task.id,
+        )
+        if state.get("domain_waiting_input"):
+            status = TaskStatus.WAITING_INPUT
+        elif state.get("domain_rejected"):
+            status = TaskStatus.REJECTED
+        elif state.get("domain_failed"):
+            status = TaskStatus.FAILED
+        else:
+            status = TaskStatus.COMPLETED
         tasks = [
-            item.model_copy(update={"status": TaskStatus.REJECTED})
-            if item.id == pending.task_id
-            else item
+            item.model_copy(update={"status": status}) if item.id == task.id else item
             for item in state["tasks"]
         ]
+        if status in {TaskStatus.REJECTED, TaskStatus.FAILED}:
+            blocked = {
+                item.id
+                for item in tasks
+                if item.status in {TaskStatus.REJECTED, TaskStatus.FAILED}
+            }
+            tasks = [
+                item.model_copy(update={"status": TaskStatus.REJECTED})
+                if set(item.depends_on) & blocked and item.status == TaskStatus.PENDING
+                else item
+                for item in tasks
+            ]
         return {
             "tasks": tasks,
-            "confirmation_approved": False,
-            "pending_confirmation": None,
-            "last_answer": "操作已取消，未写入企业系统。",
-            "messages": [AIMessage(content="操作已取消，未写入企业系统。")],
-        }
-
-    async def _execute(self, state: AssistantState, agent_name: AgentName) -> dict[str, Any]:
-        pending = state["pending_confirmation"]
-        if pending is None:
-            raise RuntimeError("execute node entered without a confirmed action")
-        outcome = await self.write_agents[agent_name].execute(
-            self._active_task(state), state["user_id"], pending.payload
-        )
-        update = self._outcome_update(state, outcome)
-        update["pending_confirmation"] = None
-        return update
-
-    async def execute_travel(self, state: AssistantState) -> dict[str, Any]:
-        return await self._execute(state, AgentName.TRAVEL)
-
-    async def execute_expense(self, state: AssistantState) -> dict[str, Any]:
-        return await self._execute(state, AgentName.EXPENSE)
-
-    async def execute_hr(self, state: AssistantState) -> dict[str, Any]:
-        return await self._execute(state, AgentName.HR)
-
-    def after_prepare(self, state: AssistantState) -> Literal["confirm", "complete_task"]:
-        return "confirm" if state["pending_confirmation"] else "complete_task"
-
-    def after_confirm(self, state: AssistantState) -> str:
-        return (
-            f"execute_{state['current_agent']}"
-            if state.get("confirmation_approved")
-            else "complete_task"
-        )
-
-    async def complete_task(self, state: AssistantState) -> dict[str, Any]:
-        active_id = state["active_task_id"]
-        tasks = []
-        for item in state["tasks"]:
-            if item.id == active_id and item.status == TaskStatus.RUNNING:
-                item = item.model_copy(update={"status": TaskStatus.COMPLETED})
-            tasks.append(item)
-        # 取消前置任务已被拒绝的任务，避免 DAG 陷入死锁。
-        rejected = {
-            item.id for item in tasks if item.status in {TaskStatus.REJECTED, TaskStatus.FAILED}
-        }
-        tasks = [
-            item.model_copy(update={"status": TaskStatus.REJECTED})
-            if set(item.depends_on) & rejected and item.status == TaskStatus.PENDING
-            else item
-            for item in tasks
-        ]
-        return {
-            "tasks": tasks,
+            "last_answer": str(response.content),
+            "messages": [AIMessage(content=response.content)],
             "active_task_id": None,
             "current_agent": None,
-            "confirmation_approved": False,
+            "domain_messages": [*state.get("domain_messages", []), response],
         }
 
-    @staticmethod
-    def _outcome_update(state: AssistantState, outcome: AgentOutcome) -> dict[str, Any]:
-        update: dict[str, Any] = {
-            "last_answer": outcome.answer,
-            "messages": [AIMessage(content=outcome.answer)],
-            "slots": {**state["slots"], **outcome.slot_updates},
-            "pending_confirmation": outcome.confirmation,
-        }
-        if outcome.tool_result:
-            update["tool_results"] = [*state["tool_results"], outcome.tool_result]
-        return update
+    def after_response(self, state: AssistantState) -> Literal["select_task", "done"]:
+        return "done" if any(
+            item.status == TaskStatus.WAITING_INPUT for item in state["tasks"]
+        ) else "select_task"
 
 
 def build_graph(workflow: Workflow, checkpointer: Any) -> Any:
@@ -202,34 +302,21 @@ def build_graph(workflow: Workflow, checkpointer: Any) -> Any:
     graph.add_node("understand", workflow.understand)
     graph.add_node("plan", workflow.plan)
     graph.add_node("select_task", workflow.select_task)
-    for name in ("travel", "expense", "hr", "policy"):
-        graph.add_node(name, getattr(workflow, name))
-    graph.add_node("confirm", workflow.confirm)
-    for name in ("travel", "expense", "hr"):
-        graph.add_node(f"execute_{name}", getattr(workflow, f"execute_{name}"))
-    graph.add_node("complete_task", workflow.complete_task)
+    graph.add_node("domain_decide", workflow.domain_decide)
+    graph.add_node("confirm_tool", workflow.confirm_tool)
+    graph.add_node("execute_tool", workflow.execute_tool)
+    graph.add_node("domain_respond", workflow.domain_respond)
 
     graph.add_edge(START, "understand")
     graph.add_edge("understand", "plan")
     graph.add_edge("plan", "select_task")
     graph.add_conditional_edges(
-        "select_task",
-        workflow.route_task,
-        {"travel": "travel", "expense": "expense", "hr": "hr", "policy": "policy", "done": END},
+        "select_task", workflow.route_task, {"domain_decide": "domain_decide", "done": END}
     )
-    for name in ("travel", "expense", "hr", "policy"):
-        graph.add_conditional_edges(name, workflow.after_prepare)
+    graph.add_conditional_edges("domain_decide", workflow.after_decide)
+    graph.add_conditional_edges("confirm_tool", workflow.after_confirm)
+    graph.add_conditional_edges("execute_tool", workflow.after_execute)
     graph.add_conditional_edges(
-        "confirm",
-        workflow.after_confirm,
-        {
-            "execute_travel": "execute_travel",
-            "execute_expense": "execute_expense",
-            "execute_hr": "execute_hr",
-            "complete_task": "complete_task",
-        },
+        "domain_respond", workflow.after_response, {"select_task": "select_task", "done": END}
     )
-    for name in ("execute_travel", "execute_expense", "execute_hr"):
-        graph.add_edge(name, "complete_task")
-    graph.add_edge("complete_task", "select_task")
     return graph.compile(checkpointer=checkpointer)

@@ -22,7 +22,7 @@ class AssistantResponse(BaseModel):
     answer: str
     user_goal: str
     tasks: list[PlannedTask]
-    slots: dict[str, Any]
+    artifacts: dict[str, Any]
     tool_results: list[ToolResult]
     pending_confirmation: PendingConfirmation | None = None
 

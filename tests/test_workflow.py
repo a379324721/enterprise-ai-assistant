@@ -1,22 +1,22 @@
 from typing import Any
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from enterprise_ai_assistant.agents.domain_agents import (
-    ExpenseAgent,
-    HRAgent,
-    PolicyAgent,
-    TravelAgent,
-)
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
-from enterprise_ai_assistant.core.models import ContextResolution, PlannedTask, TaskPlan
+from enterprise_ai_assistant.core.models import (
+    AgentName,
+    ContextResolution,
+    PlannedTask,
+    TaskPlan,
+)
 from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
-from enterprise_ai_assistant.services.capabilities import CapabilityRegistry
+from enterprise_ai_assistant.tools import LocalEnterpriseToolProvider, ToolContext
+from enterprise_ai_assistant.tools.registry import DomainToolRegistry, RegisteredTool
 
 
 class StubPlanningService:
@@ -25,7 +25,7 @@ class StubPlanningService:
     ) -> ContextResolution:
         assert "上海" in conversation[-1]["content"]
         return ContextResolution(
-            standalone_request="申请上海差旅并在返程后提醒报销",
+            standalone_request="2026-08-10 至 2026-08-14 去上海客户交流，创建差旅并提醒报销",
             intent_summary="申请差旅并设置报销提醒",
         )
 
@@ -36,37 +36,105 @@ class StubPlanningService:
                 PlannedTask(
                     id="task-1",
                     title="创建上海差旅申请",
-                    operation="submit",
-                    required_capabilities={"travel.application.write"},
-                    risk="high",
+                    domain=AgentName.TRAVEL,
+                    objective="根据请求创建差旅申请",
+                    success_criteria=["返回差旅申请编号"],
                 ),
                 PlannedTask(
                     id="task-2",
                     title="返程后提醒报销",
-                    operation="schedule",
-                    required_capabilities={"expense.reminder.write"},
+                    domain=AgentName.EXPENSE,
+                    objective="在行程结束日设置报销提醒",
                     depends_on=["task-1"],
+                    success_criteria=["返回提醒状态"],
                 ),
             ],
-            extracted_slots={
-                "destination": "上海",
-                "start_date": "2026-08-10",
-                "end_date": "2026-08-14",
-                "purpose": "客户交流",
-            },
         )
 
 
+class ScriptedRuntime:
+    def __init__(
+        self, name: AgentName, tools: list[RegisteredTool]
+    ) -> None:
+        self.name = name
+        self.tools = {item.tool.name: item for item in tools}
+
+    def tool(self, name: str) -> RegisteredTool:
+        return self.tools[name]
+
+    async def decide(
+        self,
+        task_objective: str,
+        messages: list[BaseMessage],
+        *,
+        task_id: str,
+    ) -> AIMessage:
+        del task_objective
+        if any(isinstance(message, ToolMessage) for message in messages):
+            return AIMessage(content="")
+        if self.name == AgentName.TRAVEL:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "create_travel_application",
+                        "args": {
+                            "destination": "上海",
+                            "start_date": "2026-08-10",
+                            "end_date": "2026-08-14",
+                            "purpose": "客户交流",
+                        },
+                        "id": f"{task_id}-travel-call",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "schedule_expense_reminder",
+                    "args": {
+                        "trigger_date": "2026-08-14",
+                        "note": "提醒提交本次差旅费用",
+                        "travel_reference": "u-1:task-1:create_travel_application",
+                    },
+                    "id": f"{task_id}-expense-call",
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+    async def respond(
+        self,
+        task_objective: str,
+        messages: list[BaseMessage],
+        *,
+        task_id: str,
+    ) -> AIMessage:
+        del task_objective, messages, task_id
+        return AIMessage(content=f"{self.name.value} 任务处理完成")
+
+    async def invoke_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        result = await self.tools[name].tool.ainvoke(arguments)
+        assert isinstance(result, dict)
+        return result
+
+
+class ScriptedRuntimeFactory:
+    def __init__(self, registry: DomainToolRegistry) -> None:
+        self.registry = registry
+
+    def create(self, agent: AgentName, context: ToolContext) -> ScriptedRuntime:
+        return ScriptedRuntime(agent, self.registry.for_agent(agent, context))
+
+
 def make_graph() -> tuple[Any, InMemoryActionRepository]:
-    policies = InMemoryPolicyRepository()
     actions = InMemoryActionRepository()
-    supervisor = SupervisorAgent(StubPlanningService(), CapabilityRegistry())
+    provider = LocalEnterpriseToolProvider(actions, InMemoryPolicyRepository())
     workflow = Workflow(
-        supervisor,
-        TravelAgent(policies, actions),
-        ExpenseAgent(policies, actions),
-        HRAgent(policies, actions),
-        PolicyAgent(policies),
+        SupervisorAgent(StubPlanningService()),
+        ScriptedRuntimeFactory(DomainToolRegistry(provider)),
     )
     return build_graph(workflow, InMemorySaver()), actions
 
@@ -77,7 +145,7 @@ def initial_state() -> dict[str, Any]:
         "user_id": "u-1",
         "user_goal": "",
         "tasks": [],
-        "slots": {},
+        "artifacts": {},
         "tool_results": [],
         "current_agent": None,
         "active_task_id": None,
@@ -87,37 +155,34 @@ def initial_state() -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_compound_workflow_interrupt_resume_and_shared_state() -> None:
+async def test_compound_workflow_uses_tools_with_separate_confirmations() -> None:
     graph, actions = make_graph()
     config = {"configurable": {"thread_id": "thread-1"}}
+
     await graph.ainvoke(initial_state(), config)
-    paused = await graph.aget_state(config)
-    assert "confirm" in paused.next
-    assert paused.values["pending_confirmation"].action == "travel.application.submit"
-    assert [task.id for task in paused.values["tasks"]] == ["task-1", "task-2"]
+    first_pause = await graph.aget_state(config)
+    assert "confirm_tool" in first_pause.next
+    assert first_pause.values["pending_confirmation"].action == "create_travel_application"
+
+    await graph.ainvoke(Command(resume={"approved": True}), config)
+    second_pause = await graph.aget_state(config)
+    assert "confirm_tool" in second_pause.next
+    assert second_pause.values["pending_confirmation"].action == "schedule_expense_reminder"
 
     final = await graph.ainvoke(Command(resume={"approved": True}), config)
     assert [task.status.value for task in final["tasks"]] == ["completed", "completed"]
-    assert final["slots"]["travel_application"]["destination"] == "上海"
-    assert final["slots"]["expense_reminder"]["travel_reference"] == "u-1:task-1"
-    assert len(actions.records) == 1
-
-    # 仓储层的幂等性也能防止工具重试造成重复写入。
-    first = next(iter(actions.records.values()))
-    repeated = await actions.execute_once(
-        idempotency_key="u-1:task-1",
-        action_type="travel",
-        user_id="u-1",
-        payload={"destination": "错误覆盖"},
-    )
-    assert repeated == first
+    assert final["artifacts"]["task-1"]["data"]["destination"] == "上海"
+    assert final["artifacts"]["task-2"]["data"]["travel_reference"].startswith("u-1")
+    assert len(actions.records) == 2
 
 
 @pytest.mark.asyncio
-async def test_reject_cancels_dependent_task_without_writing() -> None:
+async def test_rejecting_write_cancels_dependent_task() -> None:
     graph, actions = make_graph()
     config = {"configurable": {"thread_id": "thread-2"}}
+
     await graph.ainvoke(initial_state(), config)
     final = await graph.ainvoke(Command(resume={"approved": False}), config)
+
     assert [task.status.value for task in final["tasks"]] == ["rejected", "rejected"]
     assert actions.records == {}

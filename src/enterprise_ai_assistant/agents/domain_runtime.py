@@ -1,11 +1,12 @@
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 
 from enterprise_ai_assistant.core.models import AgentName
-from enterprise_ai_assistant.tools.registry import RegisteredTool
+from enterprise_ai_assistant.tools import ToolContext
+from enterprise_ai_assistant.tools.registry import DomainToolRegistry, RegisteredTool
 
 _DOMAIN_INSTRUCTIONS = {
     AgentName.TRAVEL: "负责差旅制度查询和差旅申请。自行识别并校验差旅字段。",
@@ -89,3 +90,41 @@ class DomainAgentRuntime:
         if not isinstance(result, dict):
             raise TypeError(f"Tool {name!r} returned a non-object result")
         return result
+
+
+class DomainRuntime(Protocol):
+    @property
+    def name(self) -> AgentName: ...
+
+    def tool(self, name: str) -> RegisteredTool: ...
+
+    async def decide(
+        self,
+        task_objective: str,
+        messages: list[BaseMessage],
+        *,
+        task_id: str,
+    ) -> AIMessage: ...
+
+    async def respond(
+        self,
+        task_objective: str,
+        messages: list[BaseMessage],
+        *,
+        task_id: str,
+    ) -> AIMessage: ...
+
+    async def invoke_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]: ...
+
+
+class DomainRuntimeFactory:
+    def __init__(self, model: BaseChatModel, tools: DomainToolRegistry) -> None:
+        self._model = model
+        self._tools = tools
+
+    def create(self, agent: AgentName, context: ToolContext) -> DomainRuntime:
+        return DomainAgentRuntime(agent, self._model, tuple(self._tools.for_agent(agent, context)))
+
+
+class DomainRuntimeProvider(Protocol):
+    def create(self, agent: AgentName, context: ToolContext) -> DomainRuntime: ...

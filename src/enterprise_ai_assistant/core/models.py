@@ -10,6 +10,7 @@ class TaskStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     WAITING_CONFIRMATION = "waiting_confirmation"
+    WAITING_INPUT = "waiting_input"
     COMPLETED = "completed"
     REJECTED = "rejected"
     FAILED = "failed"
@@ -24,23 +25,26 @@ class AgentName(StrEnum):
 
 
 class PlannedTask(BaseModel):
-    """规划器输出；路由依据能力，而不是意图标签。"""
+    """Planner 只描述领域目标和依赖，不决定字段、工具或风险。"""
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     title: str
-    operation: str
-    # 保持面向模型服务商的 JSON Schema 简单。部分 OpenAI 兼容 API
-    # 不接受 Pydantic 为 Python 集合生成的 `uniqueItems` 关键字。
-    required_capabilities: list[str]
+    domain: AgentName
+    objective: str
     depends_on: list[str] = Field(default_factory=list)
-    risk: str = Field(default="low", pattern="^(low|medium|high)$")
+    success_criteria: list[str] = Field(default_factory=list)
     status: TaskStatus = TaskStatus.PENDING
+
+    @model_validator(mode="after")
+    def reject_supervisor_domain(self) -> "PlannedTask":
+        if self.domain == AgentName.SUPERVISOR:
+            raise ValueError("supervisor cannot execute a domain task")
+        return self
 
 
 class TaskPlan(BaseModel):
     user_goal: str
-    tasks: list[PlannedTask]
-    extracted_slots: dict[str, Any] = Field(default_factory=dict)
+    tasks: list[PlannedTask] = Field(min_length=1, max_length=20)
 
     @model_validator(mode="after")
     def validate_dependencies(self) -> "TaskPlan":
@@ -50,6 +54,19 @@ class TaskPlan(BaseModel):
         for task in self.tasks:
             if task.id in task.depends_on or not set(task.depends_on) <= ids:
                 raise ValueError(f"invalid dependencies for task {task.id}")
+        dependencies = {task.id: set(task.depends_on) for task in self.tasks}
+        ready = [task_id for task_id, required in dependencies.items() if not required]
+        visited: set[str] = set()
+        while ready:
+            completed = ready.pop()
+            if completed in visited:
+                continue
+            visited.add(completed)
+            for task_id, required in dependencies.items():
+                if task_id not in visited and required <= visited:
+                    ready.append(task_id)
+        if visited != ids:
+            raise ValueError("task dependencies must form an acyclic graph")
         return self
 
 
@@ -67,6 +84,7 @@ class PendingConfirmation(BaseModel):
     confirmation_id: UUID = Field(default_factory=uuid4)
     task_id: str
     action: str
+    tool_call_id: str
     summary: str
     payload: dict[str, Any]
     requested_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

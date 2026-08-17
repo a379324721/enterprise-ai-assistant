@@ -3,11 +3,11 @@ import {createRoot} from "react-dom/client";
 import "./styles.css";
 import "./streaming.css";
 
-type Task = {id: string; title: string; operation: string; status: string; required_capabilities: string[]};
+type Task = {id: string; title: string; domain: string; objective: string; status: string};
 type Confirmation = {summary: string; action: string; payload: Record<string, unknown>};
 type Result = {
   conversation_id: string; status: string; answer: string; user_goal: string;
-  tasks: Task[]; slots: Record<string, unknown>; pending_confirmation?: Confirmation | null;
+  tasks: Task[]; artifacts: Record<string, unknown>; pending_confirmation?: Confirmation | null;
 };
 type Message = {role: "user" | "assistant"; text: string};
 type SseMessage = {event: string; data: unknown};
@@ -112,7 +112,7 @@ function App() {
       </div>
       <aside><div className="asideHead"><span>任务执行</span><small>{result ? `${result.tasks.filter(t => t.status === "completed").length}/${result.tasks.length}` : "0/0"}</small></div>
         {!result && <div className="empty"><i>⌁</i><p>发送请求后，这里会展示 AI 拆解出的任务及执行进度。</p></div>}
-        {result && <><div className="goal"><small>理解到的目标</small><p>{result.user_goal}</p></div><div className="taskList">{result.tasks.map((task, index) => <div className="task" key={task.id}><span className={task.status}>{task.status === "completed" ? "✓" : index + 1}</span><div><strong>{task.title}</strong><small>{task.required_capabilities.join(" · ")}</small></div><em>{({completed:"已完成",running:"执行中",waiting_confirmation:"待确认",pending:"等待中",rejected:"已取消"} as Record<string,string>)[task.status] || task.status}</em></div>)}</div></>}
+        {result && <><div className="goal"><small>理解到的目标</small><p>{result.user_goal}</p></div><div className="taskList">{result.tasks.map((task, index) => <div className="task" key={task.id}><span className={task.status}>{task.status === "completed" ? "✓" : index + 1}</span><div><strong>{task.title}</strong><small>{task.domain}</small></div><em>{({completed:"已完成",running:"执行中",waiting_confirmation:"待确认",waiting_input:"待补充",pending:"等待中",rejected:"已取消"} as Record<string,string>)[task.status] || task.status}</em></div>)}</div></>}
       </aside>
     </section>
   </main>;

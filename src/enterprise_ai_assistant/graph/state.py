@@ -6,17 +6,23 @@ from enterprise_ai_assistant.core.models import PendingConfirmation, PlannedTask
 
 
 class AssistantState(TypedDict):
-    """Agent 之间共享的唯一契约；Agent 提示词永远不会接收 `messages`。"""
+    """外层调度状态；领域模型只接收为当前任务构造的 domain_messages。"""
 
     messages: Annotated[list[Any], add_messages]
     user_id: str
     user_goal: str
     tasks: list[PlannedTask]
-    slots: dict[str, Any]
+    artifacts: dict[str, Any]
     tool_results: list[ToolResult]
     current_agent: str | None
     active_task_id: str | None
     pending_confirmation: PendingConfirmation | None
+    pending_tool_call: NotRequired[dict[str, Any] | None]
     last_answer: str
     understanding: NotRequired[dict[str, Any]]
     confirmation_approved: NotRequired[bool]
+    domain_messages: NotRequired[list[Any]]
+    domain_iterations: NotRequired[int]
+    domain_waiting_input: NotRequired[bool]
+    domain_rejected: NotRequired[bool]
+    domain_failed: NotRequired[bool]

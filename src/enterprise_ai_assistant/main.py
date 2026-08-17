@@ -9,12 +9,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pymilvus import MilvusClient
 from redis.asyncio import Redis
 
-from enterprise_ai_assistant.agents.domain_agents import (
-    ExpenseAgent,
-    HRAgent,
-    PolicyAgent,
-    TravelAgent,
-)
+from enterprise_ai_assistant.agents.domain_runtime import DomainRuntimeFactory
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.api.routes import router
 from enterprise_ai_assistant.core.config import get_settings
@@ -26,9 +21,10 @@ from enterprise_ai_assistant.repositories.policies import (
     CachedMilvusPolicyRepository,
     bootstrap_policy_collection,
 )
-from enterprise_ai_assistant.services.capabilities import CapabilityRegistry
 from enterprise_ai_assistant.services.llm import build_chat_model, build_embeddings
 from enterprise_ai_assistant.services.planning import LLMPlanningService
+from enterprise_ai_assistant.tools import LocalEnterpriseToolProvider
+from enterprise_ai_assistant.tools.registry import DomainToolRegistry
 
 configure_logging()
 
@@ -44,13 +40,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await bootstrap_policy_collection(milvus, embeddings)
     policies = CachedMilvusPolicyRepository(milvus, redis, embeddings)
     actions = PostgresActionRepository(db_pool)
-    supervisor = SupervisorAgent(LLMPlanningService(build_chat_model()), CapabilityRegistry())
+    model = build_chat_model()
+    supervisor = SupervisorAgent(LLMPlanningService(model))
+    provider = LocalEnterpriseToolProvider(actions, policies)
     workflow = Workflow(
         supervisor,
-        TravelAgent(policies, actions),
-        ExpenseAgent(policies, actions),
-        HRAgent(policies, actions),
-        PolicyAgent(policies),
+        DomainRuntimeFactory(model, DomainToolRegistry(provider)),
     )
     async with AsyncPostgresSaver.from_conn_string(settings.postgres_dsn) as checkpointer:
         await checkpointer.setup()

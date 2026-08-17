@@ -2,7 +2,6 @@ import pytest
 
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.core.models import ContextResolution, TaskPlan
-from enterprise_ai_assistant.services.capabilities import CapabilityRegistry
 
 
 class CapturingPlanningService:
@@ -26,7 +25,7 @@ class CapturingPlanningService:
 @pytest.mark.asyncio
 async def test_supervisor_receives_complete_conversation() -> None:
     planning = CapturingPlanningService()
-    supervisor = SupervisorAgent(planning, CapabilityRegistry())
+    supervisor = SupervisorAgent(planning)
     conversation: list[dict[str, str]] = [
         {"role": "user", "content": "帮我申请去上海出差"},
         {"role": "assistant", "content": "还需要开始日期"},
