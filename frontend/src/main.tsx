@@ -85,7 +85,7 @@ function App() {
     } else if (event === "done") {
       const completed = data as Result;
       setResult(completed);
-      setMessages((old) => old.map((message, index) => index === old.length - 1 && !message.text ? {...message, text: completed.answer || "任务已完成。"} : message));
+      setMessages((old) => old.map((message, index) => index === old.length - 1 && !message.text ? {...message, text: completed.answer || "未生成有效回复，请重试。"} : message));
     } else if (event === "error") {
       throw new Error((data as {message: string}).message);
     }

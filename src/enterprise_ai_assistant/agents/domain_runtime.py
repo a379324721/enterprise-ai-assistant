@@ -16,6 +16,23 @@ _DOMAIN_INSTRUCTIONS = {
 }
 
 
+def _has_text_content(content: Any) -> bool:
+    if isinstance(content, str):
+        return bool(content.strip())
+    if not isinstance(content, list):
+        return False
+    return any(
+        (isinstance(block, str) and bool(block.strip()))
+        or (
+            isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+            and bool(block["text"].strip())
+        )
+        for block in content
+    )
+
+
 @dataclass(frozen=True)
 class DomainAgentRuntime:
     """领域 Agent 的模型边界；循环和持久化由 LangGraph 工作流驱动。"""
@@ -74,16 +91,35 @@ class DomainAgentRuntime:
                 "根据工具返回的结构化事实生成最终用户回答。"
                 "不得编造字段、单号或成功状态。"
                 "如果缺少信息，直接提出工具结果中给出的问题。回答简洁、自然。"
+                "这是最终回答阶段：禁止调用任何工具，必须只输出非空的用户可见文本。"
             )
         )
-        result = await self.model.ainvoke(
-            [system, *messages],
-            config={
-                "tags": ["user-visible"],
-                "metadata": {"agent": self.name.value, "task_id": task_id},
-            },
-        )
-        return AIMessage.model_validate(result)
+        final_context = [
+            message
+            for message in messages
+            if not (
+                isinstance(message, AIMessage)
+                and not message.tool_calls
+                and _has_text_content(message.content)
+            )
+        ]
+        for attempt in range(2):
+            correction = (
+                [SystemMessage(content="上一次输出无效。不要调用工具，只输出最终回答文本。")]
+                if attempt
+                else []
+            )
+            result = await self.model.ainvoke(
+                [system, *final_context, *correction],
+                config={
+                    "tags": ["user-visible"],
+                    "metadata": {"agent": self.name.value, "task_id": task_id},
+                },
+            )
+            response = AIMessage.model_validate(result)
+            if not response.tool_calls and _has_text_content(response.content):
+                return response
+        raise RuntimeError("domain model returned no valid final response")
 
     async def invoke_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         result = await self.tool(name).tool.ainvoke(arguments)

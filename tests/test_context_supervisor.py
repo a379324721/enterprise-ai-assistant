@@ -1,4 +1,5 @@
 import pytest
+from langchain_core.messages import AIMessage
 
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.core.models import ContextResolution, TaskPlan
@@ -15,11 +16,15 @@ class CapturingPlanningService:
         return ContextResolution(
             standalone_request="将上一条差旅申请的开始日期改为下周三",
             intent_summary="修改差旅日期",
+            requires_task_planning=True,
             referenced_task_ids=["task-1"],
         )
 
     async def plan(self, context: ContextResolution) -> TaskPlan:
         raise AssertionError(f"not used: {context}")
+
+    async def respond_direct(self, conversation: list[dict[str, str]]) -> AIMessage:
+        raise AssertionError(f"not used: {conversation}")
 
 
 @pytest.mark.asyncio

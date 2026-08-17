@@ -75,6 +75,7 @@ class ContextResolution(BaseModel):
 
     standalone_request: str = Field(min_length=1, max_length=8000)
     intent_summary: str = Field(min_length=1, max_length=1000)
+    requires_task_planning: bool
     explicit_constraints: list[str] = Field(default_factory=list)
     referenced_task_ids: list[str] = Field(default_factory=list)
     unresolved_references: list[str] = Field(default_factory=list)

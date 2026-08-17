@@ -20,6 +20,7 @@ router = APIRouter(prefix="/api/v1")
 
 _NODE_PROGRESS = {
     "understand": "正在结合会话上下文理解你的请求",
+    "direct_respond": "正在生成回复",
     "plan": "正在拆解任务并分析依赖关系",
     "select_task": "Supervisor 正在选择合适的专业 Agent",
     "domain_decide": "专业 Agent 正在分析字段并选择工具",
@@ -93,6 +94,8 @@ async def _response(request: Request, conversation_id: UUID, user_id: str) -> As
     elif any(task.status.value == "waiting_input" for task in tasks):
         workflow_status = "waiting_input"
     elif any(task.status.value == "failed" for task in tasks):
+        workflow_status = "failed"
+    elif not str(values.get("last_answer", "")).strip():
         workflow_status = "failed"
     else:
         workflow_status = "completed"

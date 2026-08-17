@@ -28,6 +28,7 @@ class StubPlanningService:
         return ContextResolution(
             standalone_request="2026-08-10 至 2026-08-14 去上海客户交流，创建差旅并提醒报销",
             intent_summary="申请差旅并设置报销提醒",
+            requires_task_planning=True,
         )
 
     async def plan(self, context: ContextResolution) -> TaskPlan:
@@ -51,6 +52,28 @@ class StubPlanningService:
                 ),
             ],
         )
+
+    async def respond_direct(self, conversation: list[dict[str, str]]) -> AIMessage:
+        raise AssertionError(f"not used: {conversation}")
+
+
+class DirectPlanningService:
+    async def resolve_context(
+        self, conversation: list[dict[str, str]]
+    ) -> ContextResolution:
+        assert conversation[-1]["content"] == "你好"
+        return ContextResolution(
+            standalone_request="你好",
+            intent_summary="用户向助手打招呼",
+            requires_task_planning=False,
+        )
+
+    async def plan(self, context: ContextResolution) -> TaskPlan:
+        raise AssertionError(f"direct conversation must not be planned: {context}")
+
+    async def respond_direct(self, conversation: list[dict[str, str]]) -> AIMessage:
+        assert conversation[-1]["content"] == "你好"
+        return AIMessage(content="你好！有什么企业事务需要我协助？")
 
 
 class ScriptedRuntime:
@@ -130,6 +153,33 @@ class ScriptedRuntimeFactory:
         return ScriptedRuntime(agent, self.registry.for_agent(agent, context))
 
 
+class InvalidResponseRuntime(ScriptedRuntime):
+    async def respond(
+        self,
+        task_objective: str,
+        messages: list[BaseMessage],
+        *,
+        task_id: str,
+    ) -> AIMessage:
+        del task_objective, messages, task_id
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "search_general_policy",
+                    "args": {"query": "问候", "limit": 1},
+                    "id": "invalid-final-tool-call",
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+
+class InvalidResponseRuntimeFactory(ScriptedRuntimeFactory):
+    def create(self, agent: AgentName, context: ToolContext) -> InvalidResponseRuntime:
+        return InvalidResponseRuntime(agent, self.registry.for_agent(agent, context))
+
+
 def make_graph() -> tuple[Any, InMemoryActionRepository]:
     actions = InMemoryActionRepository()
     provider = LocalEnterpriseToolProvider(actions, InMemoryPolicyRepository())
@@ -155,6 +205,49 @@ def initial_state() -> dict[str, Any]:
         "pending_confirmation": None,
         "last_answer": "",
     }
+
+
+@pytest.mark.asyncio
+async def test_direct_conversation_skips_planning_and_tools() -> None:
+    actions = InMemoryActionRepository()
+    provider = LocalEnterpriseToolProvider(actions, InMemoryPolicyRepository())
+    workflow = Workflow(
+        SupervisorAgent(DirectPlanningService()),
+        ScriptedRuntimeFactory(DomainToolRegistry(provider)),
+    )
+    graph = build_graph(workflow, InMemorySaver())
+    state = initial_state()
+    state["messages"] = [HumanMessage(content="你好")]
+
+    final = await graph.ainvoke(state, {"configurable": {"thread_id": "direct-thread"}})
+
+    assert final["last_answer"] == "你好！有什么企业事务需要我协助？"
+    assert final["tasks"] == []
+    assert actions.records == {}
+
+
+@pytest.mark.asyncio
+async def test_domain_response_rejects_empty_text_and_tool_calls() -> None:
+    actions = InMemoryActionRepository()
+    provider = LocalEnterpriseToolProvider(actions, InMemoryPolicyRepository())
+    workflow = Workflow(
+        SupervisorAgent(StubPlanningService()),
+        InvalidResponseRuntimeFactory(DomainToolRegistry(provider)),
+    )
+    state = initial_state()
+    state["tasks"] = [
+        PlannedTask(
+            id="task-1",
+            title="回答制度问题",
+            domain=AgentName.POLICY,
+            objective="回答用户的制度问题",
+            status="running",
+        )
+    ]
+    state["active_task_id"] = "task-1"
+
+    with pytest.raises(RuntimeError, match="no user-visible text"):
+        await workflow.domain_respond(state)  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio

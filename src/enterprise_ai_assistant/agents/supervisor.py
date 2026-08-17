@@ -1,3 +1,4 @@
+from langchain_core.messages import AIMessage
 from langsmith import traceable
 
 from enterprise_ai_assistant.core.models import (
@@ -24,6 +25,10 @@ class SupervisorAgent:
     @traceable(name="supervisor-plan", run_type="chain")
     async def plan(self, context: ContextResolution) -> TaskPlan:
         return await self._planning.plan(context)
+
+    @traceable(name="supervisor-direct-response", run_type="chain")
+    async def respond_direct(self, conversation: list[dict[str, str]]) -> AIMessage:
+        return await self._planning.respond_direct(conversation)
 
     @staticmethod
     @traceable(name="supervisor-task-scheduling", run_type="chain")

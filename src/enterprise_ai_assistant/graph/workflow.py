@@ -46,8 +46,9 @@ class Workflow:
             ),
         )
 
-    async def understand(self, state: AssistantState) -> dict[str, Any]:
-        conversation = [
+    @staticmethod
+    def _conversation(state: AssistantState) -> list[dict[str, str]]:
+        return [
             {
                 "role": "user" if message.type == "human" else "assistant",
                 "content": str(message.content),
@@ -55,6 +56,29 @@ class Workflow:
             for message in state["messages"]
             if message.type in {"human", "ai"}
         ]
+
+    @staticmethod
+    def _answer_text(message: AIMessage) -> str:
+        if message.tool_calls:
+            return ""
+        if isinstance(message.content, str):
+            return message.content.strip()
+        if not isinstance(message.content, list):
+            return ""
+        parts: list[str] = []
+        for block in message.content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif (
+                isinstance(block, dict)
+                and block.get("type") == "text"
+                and isinstance(block.get("text"), str)
+            ):
+                parts.append(block["text"])
+        return "".join(parts).strip()
+
+    async def understand(self, state: AssistantState) -> dict[str, Any]:
+        conversation = self._conversation(state)
         context = await self.supervisor.resolve_context(conversation)
         return {
             "user_goal": context.standalone_request,
@@ -62,6 +86,24 @@ class Workflow:
             "pending_confirmation": None,
             "pending_tool_call": None,
             "turn_answers": [],
+        }
+
+    def after_understand(self, state: AssistantState) -> Literal["plan", "direct_respond"]:
+        context = ContextResolution.model_validate(state["understanding"])
+        return "plan" if context.requires_task_planning else "direct_respond"
+
+    async def direct_respond(self, state: AssistantState) -> dict[str, Any]:
+        response = await self.supervisor.respond_direct(self._conversation(state))
+        answer = self._answer_text(response)
+        if not answer:
+            raise RuntimeError("direct responder returned no user-visible text")
+        return {
+            "tasks": [],
+            "last_answer": answer,
+            "turn_answers": [answer],
+            "messages": [AIMessage(content=answer)],
+            "active_task_id": None,
+            "current_agent": None,
         }
 
     async def plan(self, state: AssistantState) -> dict[str, Any]:
@@ -282,6 +324,9 @@ class Workflow:
             list(state.get("domain_messages", [])),
             task_id=task.id,
         )
+        answer = self._answer_text(response)
+        if not answer:
+            raise RuntimeError("domain responder returned no user-visible text")
         if state.get("domain_waiting_input"):
             status = TaskStatus.WAITING_INPUT
         elif state.get("domain_rejected"):
@@ -298,11 +343,9 @@ class Workflow:
             tasks = self._reject_blocked_tasks(tasks)
         return {
             "tasks": tasks,
-            "last_answer": "\n\n".join(
-                [*state.get("turn_answers", []), str(response.content)]
-            ),
-            "turn_answers": [*state.get("turn_answers", []), str(response.content)],
-            "messages": [AIMessage(content=response.content)],
+            "last_answer": "\n\n".join([*state.get("turn_answers", []), answer]),
+            "turn_answers": [*state.get("turn_answers", []), answer],
+            "messages": [AIMessage(content=answer)],
             "active_task_id": None,
             "current_agent": None,
             "domain_messages": [*state.get("domain_messages", []), response],
@@ -336,6 +379,7 @@ class Workflow:
 def build_graph(workflow: Workflow, checkpointer: Any) -> Any:
     graph = StateGraph(AssistantState)
     graph.add_node("understand", workflow.understand)
+    graph.add_node("direct_respond", workflow.direct_respond)
     graph.add_node("plan", workflow.plan)
     graph.add_node("select_task", workflow.select_task)
     graph.add_node("domain_decide", workflow.domain_decide)
@@ -344,7 +388,12 @@ def build_graph(workflow: Workflow, checkpointer: Any) -> Any:
     graph.add_node("domain_respond", workflow.domain_respond)
 
     graph.add_edge(START, "understand")
-    graph.add_edge("understand", "plan")
+    graph.add_conditional_edges(
+        "understand",
+        workflow.after_understand,
+        {"plan": "plan", "direct_respond": "direct_respond"},
+    )
+    graph.add_edge("direct_respond", END)
     graph.add_edge("plan", "select_task")
     graph.add_conditional_edges(
         "select_task", workflow.route_task, {"domain_decide": "domain_decide", "done": END}
