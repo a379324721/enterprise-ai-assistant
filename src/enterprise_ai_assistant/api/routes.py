@@ -63,6 +63,22 @@ def _encode_sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {payload}\n\n"
 
 
+def _message_text_delta(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") == "text":
+            text = block.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    return "".join(parts)
+
+
 async def _response(request: Request, conversation_id: UUID, user_id: str) -> AssistantResponse:
     snapshot = await request.app.state.graph.aget_state(_config(conversation_id, user_id))
     values = snapshot.values
@@ -93,30 +109,56 @@ async def _stream_graph(
     """流式发送持久化工作流进度、回答增量和最终状态快照。
 
     规划器的结构化输出不会作为模型词元暴露。客户端接收稳定的工作流事件，
-    只有面向用户的回答会以增量形式发送。最终的 `done` 事件仍是任务和槽位的
+    只有标记为 user-visible 的领域回答会按模型原生增量发送。最终 `done` 事件是
     权威数据来源。
     """
     yield _encode_sse("metadata", {"conversation_id": str(conversation_id)})
     try:
-        async for update in request.app.state.graph.astream(
+        active_message_ids: set[str] = set()
+        async for part in request.app.state.graph.astream(
             graph_input,
             _config(conversation_id, user_id),
-            stream_mode="updates",
+            stream_mode=["messages", "updates"],
+            version="v2",
         ):
-            for node_name in update:
-                message = _NODE_PROGRESS.get(node_name)
-                if message:
-                    yield _encode_sse("progress", {"node": node_name, "message": message})
+            if part["type"] == "messages":
+                chunk, metadata = part["data"]
+                if "user-visible" not in metadata.get("tags", []):
+                    continue
+                content = _message_text_delta(chunk.content)
+                if not content:
+                    continue
+                message_id = str(chunk.id or metadata.get("task_id") or "answer")
+                if message_id not in active_message_ids:
+                    active_message_ids.add(message_id)
+                    yield _encode_sse(
+                        "answer_start",
+                        {
+                            "message_id": message_id,
+                            "agent": metadata.get("agent"),
+                            "task_id": metadata.get("task_id"),
+                        },
+                    )
+                if await request.is_disconnected():
+                    return
+                yield _encode_sse(
+                    "token",
+                    {
+                        "message_id": message_id,
+                        "agent": metadata.get("agent"),
+                        "task_id": metadata.get("task_id"),
+                        "content": content,
+                    },
+                )
+            elif part["type"] == "updates":
+                for node_name in part["data"]:
+                    message = _NODE_PROGRESS.get(node_name)
+                    if message:
+                        yield _encode_sse(
+                            "progress", {"node": node_name, "message": message}
+                        )
 
         response = await _response(request, conversation_id, user_id)
-        yield _encode_sse("answer_start", {})
-        for character in response.answer:
-            if await request.is_disconnected():
-                return
-            yield _encode_sse("token", {"content": character})
-            # 短暂延迟可让较短且确定的工具回答呈现出可见的流式效果。
-            # 后续可在此处透传 LLM 回答节点原生的词元输出时序。
-            await asyncio.sleep(0.012)
         yield _encode_sse("done", response.model_dump(mode="json"))
     except asyncio.CancelledError:
         request.app.state.logger.info(

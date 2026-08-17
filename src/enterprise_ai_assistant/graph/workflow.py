@@ -60,6 +60,7 @@ class Workflow:
             "understanding": context.model_dump(mode="json"),
             "pending_confirmation": None,
             "pending_tool_call": None,
+            "turn_answers": [],
         }
 
     async def plan(self, state: AssistantState) -> dict[str, Any]:
@@ -284,7 +285,10 @@ class Workflow:
             ]
         return {
             "tasks": tasks,
-            "last_answer": str(response.content),
+            "last_answer": "\n\n".join(
+                [*state.get("turn_answers", []), str(response.content)]
+            ),
+            "turn_answers": [*state.get("turn_answers", []), str(response.content)],
             "messages": [AIMessage(content=response.content)],
             "active_task_id": None,
             "current_agent": None,

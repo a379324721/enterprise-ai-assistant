@@ -26,3 +26,4 @@ class AssistantState(TypedDict):
     domain_waiting_input: NotRequired[bool]
     domain_rejected: NotRequired[bool]
     domain_failed: NotRequired[bool]
+    turn_answers: NotRequired[list[str]]

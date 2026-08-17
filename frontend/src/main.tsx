@@ -1,4 +1,4 @@
-import React, {FormEvent, useMemo, useState} from "react";
+import React, {FormEvent, useMemo, useRef, useState} from "react";
 import {createRoot} from "react-dom/client";
 import "./styles.css";
 import "./streaming.css";
@@ -56,11 +56,18 @@ function App() {
   const [result, setResult] = useState<Result | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [progress, setProgress] = useState("");
+  const activeAnswerId = useRef<string | null>(null);
   const userId = useMemo(() => "demo-user", []);
 
   function handleStreamEvent({event, data}: SseMessage) {
     if (event === "progress") {
       setProgress((data as {message: string}).message);
+    } else if (event === "answer_start") {
+      const messageId = (data as {message_id: string}).message_id;
+      if (activeAnswerId.current && activeAnswerId.current !== messageId) {
+        setMessages((old) => old.map((message, index) => index === old.length - 1 && message.text ? {...message, text: `${message.text}\n\n`} : message));
+      }
+      activeAnswerId.current = messageId;
     } else if (event === "token") {
       const token = (data as {content: string}).content;
       setMessages((old) => old.map((message, index) => index === old.length - 1 ? {...message, text: message.text + token} : message));
@@ -84,7 +91,7 @@ function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "系统异常";
       setMessages((old) => old.map((item, index) => index === old.length - 1 ? {...item, text: item.text || message} : item));
-    } finally { setBusy(false); setProgress(""); }
+    } finally { setBusy(false); setProgress(""); activeAnswerId.current = null; }
   }
 
   async function confirm(approved: boolean) {
@@ -97,7 +104,7 @@ function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "系统异常";
       setMessages((old) => old.map((item, index) => index === old.length - 1 ? {...item, text: item.text || message} : item));
-    } finally { setBusy(false); setProgress(""); }
+    } finally { setBusy(false); setProgress(""); activeAnswerId.current = null; }
   }
 
   return <main>
