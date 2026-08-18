@@ -97,7 +97,7 @@ function App() {
     const text = input.trim(); setInput(""); setBusy(true); setProgress("正在连接智能助手");
     setMessages((old) => [...old, {role: "user", text}, {role: "assistant", text: ""}]);
     try {
-      const response = await fetch("/api/v1/chat/stream", {method: "POST", headers: {"Content-Type": "application/json", "X-User-ID": userId}, body: JSON.stringify({message: text, request_id: crypto.randomUUID()})});
+      const response = await fetch("/api/v1/chat/stream", {method: "POST", headers: {"Content-Type": "application/json", "X-User-ID": userId}, body: JSON.stringify({message: text, request_id: crypto.randomUUID(), conversation_id: result?.conversation_id})});
       await consumeSse(response, handleStreamEvent);
     } catch (error) {
       const message = error instanceof Error ? error.message : "系统异常";
