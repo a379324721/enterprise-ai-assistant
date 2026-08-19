@@ -85,7 +85,15 @@ function App() {
     } else if (event === "done") {
       const completed = data as Result;
       setResult(completed);
-      setMessages((old) => old.map((message, index) => index === old.length - 1 && !message.text ? {...message, text: completed.answer || "未生成有效回复，请重试。"} : message));
+      setMessages((old) => {
+        const last = old.at(-1);
+        if (!last || last.role !== "assistant" || last.text) return old;
+        if (completed.answer) {
+          return old.map((message, index) => index === old.length - 1 ? {...message, text: completed.answer} : message);
+        }
+        if (completed.status === "waiting_confirmation") return old.slice(0, -1);
+        return old.map((message, index) => index === old.length - 1 ? {...message, text: "未生成有效回复，请重试。"} : message);
+      });
     } else if (event === "error") {
       throw new Error((data as {message: string}).message);
     }
