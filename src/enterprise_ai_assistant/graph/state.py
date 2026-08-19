@@ -48,4 +48,4 @@ class DomainTaskState(TypedDict):
     domain_retry_required: bool
     domain_tool_executed: bool
     artifact: NotRequired[dict[str, Any] | None]
-    tool_results: list[ToolResult]
+    domain_tool_results: list[ToolResult]

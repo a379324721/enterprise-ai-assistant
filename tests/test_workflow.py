@@ -306,7 +306,7 @@ async def test_domain_response_rejects_empty_text_and_tool_calls() -> None:
         "domain_rejected": False,
         "domain_failed": False,
         "domain_retry_required": False,
-        "tool_results": [],
+        "domain_tool_results": [],
     }
 
     with pytest.raises(RuntimeError, match="no user-visible text"):
@@ -343,7 +343,7 @@ async def test_domain_subgraph_recovers_from_tool_outside_allowlist() -> None:
 
     assert final["domain_result"].status.value == "completed"
     assert final["domain_iterations"] == 3
-    assert final["tool_results"][0].tool == "search_general_policy"
+    assert final["domain_tool_results"][0].tool == "search_general_policy"
 
 
 @pytest.mark.asyncio
@@ -389,6 +389,7 @@ async def test_compound_workflow_uses_tools_with_separate_confirmations() -> Non
     assert [task.status.value for task in final["tasks"]] == ["completed", "completed"]
     assert final["artifacts"]["task-1"]["data"]["destination"] == "上海"
     assert final["artifacts"]["task-2"]["data"]["travel_reference"] == "travel-reference-1"
+    assert len(final["tool_results"]) == 2
     assert len(actions.records) == 2
 
 

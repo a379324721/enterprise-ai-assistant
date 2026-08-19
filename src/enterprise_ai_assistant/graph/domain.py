@@ -88,7 +88,7 @@ class DomainTaskWorkflow:
             "pending_tool_call": None,
             "confirmation_approved": False,
             "artifact": None,
-            "tool_results": [],
+            "domain_tool_results": [],
         }
 
     async def decide(self, state: DomainTaskState) -> dict[str, Any]:
@@ -283,7 +283,7 @@ class DomainTaskWorkflow:
         )
         return {
             "domain_messages": [*state.get("domain_messages", []), message],
-            "tool_results": [*state.get("tool_results", []), audit],
+            "domain_tool_results": [*state.get("domain_tool_results", []), audit],
             "artifact": outcome.model_dump(mode="json"),
             "pending_confirmation": None,
             "pending_tool_call": None,
@@ -326,7 +326,7 @@ class DomainTaskWorkflow:
                 status=status,
                 answer=answer,
                 artifact=state.get("artifact"),
-                tool_results=list(state.get("tool_results", [])),
+                tool_results=list(state.get("domain_tool_results", [])),
             ),
         }
 
