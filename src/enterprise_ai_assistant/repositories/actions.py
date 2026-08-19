@@ -1,7 +1,16 @@
 import json
+from collections.abc import Mapping
 from typing import Any, Protocol
 
 import asyncpg
+
+
+def _decode_json_object(value: Any) -> dict[str, Any]:
+    """兼容 asyncpg 默认返回的 JSON 字符串和自定义 codec 返回的映射。"""
+    decoded = json.loads(value) if isinstance(value, str) else value
+    if not isinstance(decoded, Mapping):
+        raise TypeError("database JSON result must be an object")
+    return dict(decoded)
 
 
 class ActionRepository(Protocol):
@@ -36,7 +45,7 @@ class PostgresActionRepository:
                 json.dumps(payload, ensure_ascii=False),
                 json.dumps(result, ensure_ascii=False),
             )
-        return dict(row["result"])
+        return _decode_json_object(row["result"])
 
 
 class InMemoryActionRepository:
