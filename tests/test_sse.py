@@ -6,7 +6,12 @@ from uuid import UUID
 import pytest
 from langchain_core.messages import AIMessageChunk
 
-from enterprise_ai_assistant.api.routes import _encode_sse, _stream_graph
+from enterprise_ai_assistant.api.routes import (
+    _encode_sse,
+    _pending_confirmation,
+    _stream_graph,
+)
+from enterprise_ai_assistant.core.models import PendingConfirmation
 
 
 def test_sse_event_is_typed_utf8_json() -> None:
@@ -18,9 +23,29 @@ def test_sse_event_is_typed_utf8_json() -> None:
     assert json.loads(payload) == {"content": "差\n旅"}
 
 
+def test_pending_confirmation_comes_from_interrupt_payload() -> None:
+    pending = PendingConfirmation(
+        task_id="task-1",
+        action="submit_leave_request",
+        tool_call_id="call-1",
+        summary="提交请假申请",
+        payload={"leave_type": "annual"},
+    )
+    snapshot = SimpleNamespace(
+        next=("domain_task",),
+        interrupts=(SimpleNamespace(value=pending.model_dump(mode="json")),),
+    )
+
+    assert _pending_confirmation(snapshot) == pending
+
+
 class FakeGraph:
+    def __init__(self) -> None:
+        self.stream_kwargs: dict[str, Any] = {}
+
     async def astream(self, *args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
+        del args
+        self.stream_kwargs = kwargs
         yield {
             "type": "messages",
             "data": (
@@ -55,6 +80,7 @@ class FakeGraph:
                 "pending_confirmation": None,
             },
             next=(),
+            interrupts=(),
         )
 
 
@@ -74,10 +100,11 @@ def decode_event(encoded: str) -> tuple[str, dict[str, Any]]:
 
 @pytest.mark.asyncio
 async def test_graph_stream_forwards_only_native_user_visible_chunks() -> None:
+    request = FakeRequest()
     events = [
         decode_event(item)
         async for item in _stream_graph(
-            FakeRequest(),  # type: ignore[arg-type]
+            request,  # type: ignore[arg-type]
             {},
             UUID("00000000-0000-0000-0000-000000000001"),
             "u-1",
@@ -88,3 +115,4 @@ async def test_graph_stream_forwards_only_native_user_visible_chunks() -> None:
     assert sum(event == "answer_start" for event, _ in events) == 1
     assert all(data.get("content") != "内部规划" for _, data in events)
     assert events[-1][0] == "done"
+    assert request.app.state.graph.stream_kwargs["subgraphs"] is True

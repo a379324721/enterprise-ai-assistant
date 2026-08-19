@@ -7,27 +7,32 @@
 系统把会话理解、任务规划、领域执行和企业工具调用分成独立边界：
 
 ```mermaid
-flowchart LR
+flowchart TB
     U[用户输入 + 会话历史] --> S[Context Supervisor\n指代消解/输入改写]
     S --> P[Task Planner\n领域任务 DAG]
     P --> D[Task Scheduler]
-    D --> A[领域 Agent\nLLM 决策]
-    A --> M{缺少信息?}
-    M -- 是 --> Q[生成澄清问题]
-    M -- 否 --> T[选择领域工具]
-    T --> R{写工具?}
-    R -- 是 --> I[LangGraph Interrupt\n逐工具确认]
-    I --> X[执行工具]
-    R -- 否 --> X
-    X --> A
-    A --> O[LLM 原生流式回答]
-    O --> D
+    D --> SG
+    subgraph SG[Domain Task Subgraph]
+        A[领域 Agent\nLLM 决策] --> M{缺少信息?}
+        M -- 是 --> Q[生成澄清问题]
+        M -- 否 --> T[选择白名单工具]
+        T --> R{写工具?}
+        R -- 是 --> I[LangGraph Interrupt\n逐工具确认]
+        I --> X[执行工具]
+        R -- 否 --> X
+        X --> A
+        A --> O[LLM 原生流式回答]
+    end
+    SG --> G[Result Aggregator]
+    G --> D
 ```
 
 - Context Supervisor 阅读完整对话，只负责消解指代、分析整体意图并生成独立请求；不抽取领域字段。
 - Planner 只生成任务领域、目标、成功标准和依赖；不选择工具、不生成参数、不判断风险。
 - Travel、Expense、HR、Policy Agent 分别拥有独立 Prompt 和最小工具白名单。
-- 每个领域 Agent 在受限循环中自行判断字段、请求补充信息、选择工具并解释工具结果。
+- 每项计划任务调用一次通用领域子图；子图根据任务领域装配 Prompt 和最小工具集。
+- 领域子图在受限循环中自行判断字段、请求补充信息、选择工具并解释工具结果。
+- 父图与领域子图只通过 `DomainTaskRequest` 和 `DomainTaskResult` 通信；模型消息、重试计数和待执行工具保留在子图内部。
 - 工具风险由服务端注册表声明。所有写工具在执行前保存 checkpoint 并要求用户确认。
 - 用户身份、会话 ID、请求 ID 和幂等键来自可信运行时，不作为模型参数暴露。
 
@@ -44,10 +49,12 @@ flowchart LR
 | `tool_results` | 可审计的工具执行结果 |
 | `current_agent` | 当前能力提供者 |
 | `active_task_id` | 当前执行任务 |
-| `domain_messages` | 当前领域循环的隔离消息上下文 |
-| `pending_confirmation` | 等待确认的精确工具名、调用 ID 和参数 |
+| `domain_request` | 父图发给领域子图的任务、依赖产物与可信上下文 |
+| `domain_result` | 领域子图返回的状态、回答、产物和工具审计结果 |
 
-领域 Agent 不共享内部推理消息。后续任务只接收依赖任务在 `artifacts` 中留下的结构化结果。
+`domain_messages`、工具决策和确认状态属于子图私有状态。领域 Agent 不共享内部消息，
+后续任务只接收依赖任务在 `artifacts` 中留下的结构化结果。人工确认通过 LangGraph
+interrupt payload 暴露，API 不依赖子图内部节点名。
 
 ## 企业工具
 
@@ -69,7 +76,7 @@ flowchart LR
 1. Supervisor 结合历史会话把输入改写为独立请求，不抽取差旅字段。
 2. Planner 生成 Travel 任务和依赖它的 Expense 任务。
 3. Travel Agent 自行识别字段；缺失时调用 `request_information`，完整时提出创建差旅工具调用。
-4. 工作流冻结精确工具参数并触发 interrupt；确认后使用“会话 + 请求 + 任务 + 工具”幂等键执行。
+4. 子图冻结精确工具参数并触发 interrupt；确认请求必须携带对应的 `confirmation_id`，通过后再使用“会话 + 请求 + 任务 + 工具”幂等键执行。
 5. Travel 的结构化工具结果写入 `artifacts`，再作为依赖结果交给 Expense Agent。
 6. Expense Agent 选择提醒工具并独立确认，最终回答由领域 LLM 原生流式输出。
 
@@ -83,7 +90,7 @@ src/enterprise_ai_assistant/
 ├── api/             # FastAPI 路由和 DTO
 ├── core/            # 配置、日志、领域类型
 ├── db/              # PostgreSQL schema/bootstrap
-├── graph/           # LangGraph State 与工作流
+├── graph/           # 父调度图、领域任务子图与各自 State
 ├── repositories/    # PostgreSQL、Redis、Milvus 边界
 └── services/        # LLM、理解/规划、能力注册表
 frontend/            # React + TypeScript + Vite
@@ -181,7 +188,7 @@ curl -N -X POST http://localhost:8000/api/v1/chat/stream \
 curl -X POST http://localhost:8000/api/v1/conversations/<conversation-id>/confirm \
   -H 'Content-Type: application/json' \
   -H 'X-User-ID: u-1001' \
-  -d '{"approved":true}'
+  -d '{"confirmation_id":"<pending-confirmation-id>","approved":true}'
 ```
 
 ## 测试与质量
@@ -193,7 +200,7 @@ uv run mypy src
 cd frontend && npm install && npm run build
 ```
 
-测试使用可注入的 PlanningService、领域 Runtime、内存 checkpointer 和企业工具实现，不消耗模型额度；覆盖 DAG 校验、领域工具白名单、复合任务、逐工具确认、拒绝传播、原生流过滤和请求级幂等。
+测试使用可注入的 PlanningService、领域 Runtime、内存 checkpointer 和企业工具实现，不消耗模型额度；覆盖 DAG 校验、子图状态隔离、领域工具白名单、非法工具自恢复、复合任务、逐工具确认、拒绝传播、原生流过滤和请求级幂等。
 
 ## 生产扩展点
 

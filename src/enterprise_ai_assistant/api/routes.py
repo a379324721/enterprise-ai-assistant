@@ -15,6 +15,7 @@ from enterprise_ai_assistant.api.schemas import (
     ConfirmationRequest,
     HealthResponse,
 )
+from enterprise_ai_assistant.core.models import PendingConfirmation, TaskStatus
 
 router = APIRouter(prefix="/api/v1")
 
@@ -23,10 +24,12 @@ _NODE_PROGRESS = {
     "direct_respond": "正在生成回复",
     "plan": "正在拆解任务并分析依赖关系",
     "select_task": "Supervisor 正在选择合适的专业 Agent",
-    "domain_decide": "专业 Agent 正在分析字段并选择工具",
+    "initialize": "正在初始化专业 Agent",
+    "decide": "专业 Agent 正在分析字段并选择工具",
     "confirm_tool": "工具调用需要人工确认",
     "execute_tool": "正在调用企业工具",
-    "domain_respond": "专业 Agent 正在生成回答",
+    "respond": "专业 Agent 正在生成回答",
+    "apply_domain_result": "正在归并专业 Agent 的处理结果",
 }
 
 
@@ -35,7 +38,7 @@ def _config(conversation_id: UUID, user_id: str) -> dict[str, Any]:
         "configurable": {"thread_id": str(conversation_id)},
         "tags": ["enterprise-assistant", "multi-agent"],
         "metadata": {"conversation_id": str(conversation_id), "user_id": user_id},
-        "recursion_limit": 50,
+        "recursion_limit": 100,
     }
 
 
@@ -56,8 +59,18 @@ async def _validate_chat_turn(
         return
     if snapshot.values.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="会话不存在")
-    if "confirm_tool" in snapshot.next:
+    if _pending_confirmation(snapshot) is not None:
         raise HTTPException(status_code=409, detail="当前会话仍有待确认操作")
+
+
+def _pending_confirmation(snapshot: Any) -> PendingConfirmation | None:
+    """从公开的 interrupt 契约读取确认信息，不依赖子图内部节点名。"""
+    for item in getattr(snapshot, "interrupts", ()):
+        try:
+            return PendingConfirmation.model_validate(item.value)
+        except (AttributeError, ValueError):
+            continue
+    return None
 
 
 def _encode_sse(event: str, data: Any) -> str:
@@ -87,14 +100,22 @@ async def _response(request: Request, conversation_id: UUID, user_id: str) -> As
     values = snapshot.values
     if not values or values.get("user_id") != user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
-    pending = values.get("pending_confirmation")
+    pending = _pending_confirmation(snapshot)
     tasks = values.get("tasks", [])
-    if pending and "confirm_tool" in snapshot.next:
+    if pending:
         workflow_status = "waiting_confirmation"
+        tasks = [
+            task.model_copy(update={"status": TaskStatus.WAITING_CONFIRMATION})
+            if task.id == pending.task_id
+            else task
+            for task in tasks
+        ]
     elif any(task.status.value == "waiting_input" for task in tasks):
         workflow_status = "waiting_input"
     elif any(task.status.value == "failed" for task in tasks):
         workflow_status = "failed"
+    elif any(task.status.value == "rejected" for task in tasks):
+        workflow_status = "rejected"
     elif not str(values.get("last_answer", "")).strip():
         workflow_status = "failed"
     else:
@@ -130,6 +151,7 @@ async def _stream_graph(
             graph_input,
             _config(conversation_id, user_id),
             stream_mode=["messages", "updates"],
+            subgraphs=True,
             version="v2",
         ):
             if part["type"] == "messages":
@@ -235,10 +257,19 @@ async def confirm(
     snapshot = await request.app.state.graph.aget_state(_config(conversation_id, user_id))
     if not snapshot.values or snapshot.values.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="会话不存在")
-    if "confirm_tool" not in snapshot.next:
+    pending = _pending_confirmation(snapshot)
+    if pending is None:
         raise HTTPException(status_code=409, detail="当前会话没有待确认操作")
+    if pending.confirmation_id != payload.confirmation_id:
+        raise HTTPException(status_code=409, detail="确认请求已过期，请刷新后重试")
     await request.app.state.graph.ainvoke(
-        Command(resume={"approved": payload.approved, "comment": payload.comment}),
+        Command(
+            resume={
+                "confirmation_id": str(payload.confirmation_id),
+                "approved": payload.approved,
+                "comment": payload.comment,
+            }
+        ),
         _config(conversation_id, user_id),
     )
     return await _response(request, conversation_id, user_id)
@@ -255,10 +286,17 @@ async def confirm_stream(
     snapshot = await request.app.state.graph.aget_state(_config(conversation_id, user_id))
     if not snapshot.values or snapshot.values.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="会话不存在")
-    if "confirm_tool" not in snapshot.next:
+    pending = _pending_confirmation(snapshot)
+    if pending is None:
         raise HTTPException(status_code=409, detail="当前会话没有待确认操作")
+    if pending.confirmation_id != payload.confirmation_id:
+        raise HTTPException(status_code=409, detail="确认请求已过期，请刷新后重试")
     command: Command[str] = Command(
-        resume={"approved": payload.approved, "comment": payload.comment}
+        resume={
+            "confirmation_id": str(payload.confirmation_id),
+            "approved": payload.approved,
+            "comment": payload.comment,
+        }
     )
     return StreamingResponse(
         _stream_graph(request, command, conversation_id, user_id),

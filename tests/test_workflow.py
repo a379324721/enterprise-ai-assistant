@@ -10,9 +10,14 @@ from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.core.models import (
     AgentName,
     ContextResolution,
+    DomainTaskRequest,
+    PendingConfirmation,
     PlannedTask,
     TaskPlan,
+    ToolResult,
 )
+from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow, build_domain_graph
+from enterprise_ai_assistant.graph.state import DomainTaskState
 from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
@@ -180,14 +185,61 @@ class InvalidResponseRuntimeFactory(ScriptedRuntimeFactory):
         return InvalidResponseRuntime(agent, self.registry.for_agent(agent, context))
 
 
+class InvalidToolRuntime(ScriptedRuntime):
+    async def decide(
+        self,
+        task_objective: str,
+        messages: list[BaseMessage],
+        *,
+        task_id: str,
+    ) -> AIMessage:
+        del task_objective
+        if any(
+            isinstance(message, ToolMessage) and message.name == "search_general_policy"
+            for message in messages
+        ):
+            return AIMessage(content="")
+        if any(
+            isinstance(message, ToolMessage) and message.name == "not_allowed"
+            for message in messages
+        ):
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "search_general_policy",
+                        "args": {"query": "差旅制度", "limit": 1},
+                        "id": f"{task_id}-valid-call",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "not_allowed",
+                    "args": {},
+                    "id": f"{task_id}-invalid-call",
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+
+class InvalidToolRuntimeFactory(ScriptedRuntimeFactory):
+    def create(self, agent: AgentName, context: ToolContext) -> InvalidToolRuntime:
+        return InvalidToolRuntime(agent, self.registry.for_agent(agent, context))
+
+
 def make_graph() -> tuple[Any, InMemoryActionRepository]:
     actions = InMemoryActionRepository()
     provider = LocalEnterpriseToolProvider(actions, InMemoryPolicyRepository())
-    workflow = Workflow(
-        SupervisorAgent(StubPlanningService()),
-        ScriptedRuntimeFactory(DomainToolRegistry(provider)),
+    workflow = Workflow(SupervisorAgent(StubPlanningService()))
+    domain_workflow = DomainTaskWorkflow(
+        ScriptedRuntimeFactory(DomainToolRegistry(provider))
     )
-    return build_graph(workflow, InMemorySaver()), actions
+    return build_graph(workflow, domain_workflow, InMemorySaver()), actions
 
 
 def initial_state() -> dict[str, Any]:
@@ -202,7 +254,6 @@ def initial_state() -> dict[str, Any]:
         "tool_results": [],
         "current_agent": None,
         "active_task_id": None,
-        "pending_confirmation": None,
         "last_answer": "",
     }
 
@@ -211,11 +262,11 @@ def initial_state() -> dict[str, Any]:
 async def test_direct_conversation_skips_planning_and_tools() -> None:
     actions = InMemoryActionRepository()
     provider = LocalEnterpriseToolProvider(actions, InMemoryPolicyRepository())
-    workflow = Workflow(
-        SupervisorAgent(DirectPlanningService()),
-        ScriptedRuntimeFactory(DomainToolRegistry(provider)),
+    workflow = Workflow(SupervisorAgent(DirectPlanningService()))
+    domain_workflow = DomainTaskWorkflow(
+        ScriptedRuntimeFactory(DomainToolRegistry(provider))
     )
-    graph = build_graph(workflow, InMemorySaver())
+    graph = build_graph(workflow, domain_workflow, InMemorySaver())
     state = initial_state()
     state["messages"] = [HumanMessage(content="你好")]
 
@@ -230,24 +281,69 @@ async def test_direct_conversation_skips_planning_and_tools() -> None:
 async def test_domain_response_rejects_empty_text_and_tool_calls() -> None:
     actions = InMemoryActionRepository()
     provider = LocalEnterpriseToolProvider(actions, InMemoryPolicyRepository())
-    workflow = Workflow(
-        SupervisorAgent(StubPlanningService()),
+    workflow = DomainTaskWorkflow(
         InvalidResponseRuntimeFactory(DomainToolRegistry(provider)),
     )
-    state = initial_state()
-    state["tasks"] = [
-        PlannedTask(
+    task = PlannedTask(
             id="task-1",
             title="回答制度问题",
             domain=AgentName.POLICY,
             objective="回答用户的制度问题",
             status="running",
         )
-    ]
-    state["active_task_id"] = "task-1"
+    state: DomainTaskState = {
+        "domain_request": DomainTaskRequest(
+            user_id="u-1",
+            conversation_id=UUID("00000000-0000-0000-0000-000000000001"),
+            request_id=UUID("00000000-0000-0000-0000-000000000002"),
+            user_goal="回答制度问题",
+            task=task,
+        ),
+        "domain_result": None,
+        "domain_messages": [HumanMessage(content="回答制度问题")],
+        "domain_iterations": 1,
+        "domain_waiting_input": False,
+        "domain_rejected": False,
+        "domain_failed": False,
+        "domain_retry_required": False,
+        "tool_results": [],
+    }
 
     with pytest.raises(RuntimeError, match="no user-visible text"):
-        await workflow.domain_respond(state)  # type: ignore[arg-type]
+        await workflow.respond(state)
+
+
+@pytest.mark.asyncio
+async def test_domain_subgraph_recovers_from_tool_outside_allowlist() -> None:
+    provider = LocalEnterpriseToolProvider(
+        InMemoryActionRepository(), InMemoryPolicyRepository()
+    )
+    workflow = DomainTaskWorkflow(
+        InvalidToolRuntimeFactory(DomainToolRegistry(provider))
+    )
+    task = PlannedTask(
+        id="task-1",
+        title="查询制度",
+        domain=AgentName.POLICY,
+        objective="查询差旅制度",
+    )
+
+    final = await build_domain_graph(workflow).ainvoke(
+        {
+            "domain_request": DomainTaskRequest(
+                user_id="u-1",
+                conversation_id=UUID("00000000-0000-0000-0000-000000000001"),
+                request_id=UUID("00000000-0000-0000-0000-000000000002"),
+                user_goal="查询差旅制度",
+                task=task,
+            ),
+            "domain_result": None,
+        }
+    )
+
+    assert final["domain_result"].status.value == "completed"
+    assert final["domain_iterations"] == 3
+    assert final["tool_results"][0].tool == "search_general_policy"
 
 
 @pytest.mark.asyncio
@@ -257,15 +353,39 @@ async def test_compound_workflow_uses_tools_with_separate_confirmations() -> Non
 
     await graph.ainvoke(initial_state(), config)
     first_pause = await graph.aget_state(config)
-    assert "confirm_tool" in first_pause.next
-    assert first_pause.values["pending_confirmation"].action == "create_travel_application"
+    assert "domain_task" in first_pause.next
+    first_confirmation = PendingConfirmation.model_validate(first_pause.interrupts[0].value)
+    assert first_confirmation.action == "create_travel_application"
+    assert "domain_messages" not in first_pause.values
+    assert "pending_confirmation" not in first_pause.values
+    nested_pause = await graph.aget_state(config, subgraphs=True)
+    nested_state = nested_pause.tasks[0].state
+    assert nested_state is not None
+    assert nested_state.values["pending_confirmation"].action == "create_travel_application"
 
-    await graph.ainvoke(Command(resume={"approved": True}), config)
+    await graph.ainvoke(
+        Command(
+            resume={
+                "confirmation_id": str(first_confirmation.confirmation_id),
+                "approved": True,
+            }
+        ),
+        config,
+    )
     second_pause = await graph.aget_state(config)
-    assert "confirm_tool" in second_pause.next
-    assert second_pause.values["pending_confirmation"].action == "schedule_expense_reminder"
+    assert "domain_task" in second_pause.next
+    second_confirmation = PendingConfirmation.model_validate(second_pause.interrupts[0].value)
+    assert second_confirmation.action == "schedule_expense_reminder"
 
-    final = await graph.ainvoke(Command(resume={"approved": True}), config)
+    final = await graph.ainvoke(
+        Command(
+            resume={
+                "confirmation_id": str(second_confirmation.confirmation_id),
+                "approved": True,
+            }
+        ),
+        config,
+    )
     assert [task.status.value for task in final["tasks"]] == ["completed", "completed"]
     assert final["artifacts"]["task-1"]["data"]["destination"] == "上海"
     assert final["artifacts"]["task-2"]["data"]["travel_reference"] == "travel-reference-1"
@@ -278,7 +398,17 @@ async def test_rejecting_write_cancels_dependent_task() -> None:
     config = {"configurable": {"thread_id": "thread-2"}}
 
     await graph.ainvoke(initial_state(), config)
-    final = await graph.ainvoke(Command(resume={"approved": False}), config)
+    pause = await graph.aget_state(config)
+    confirmation = PendingConfirmation.model_validate(pause.interrupts[0].value)
+    final = await graph.ainvoke(
+        Command(
+            resume={
+                "confirmation_id": str(confirmation.confirmation_id),
+                "approved": False,
+            }
+        ),
+        config,
+    )
 
     assert [task.status.value for task in final["tasks"]] == ["rejected", "rejected"]
     assert actions.records == {}
@@ -312,3 +442,20 @@ def test_blocked_tasks_are_rejected_transitively() -> None:
     result = Workflow._reject_blocked_tasks(tasks)
 
     assert [item.status.value for item in result] == ["failed", "rejected", "rejected"]
+
+
+@pytest.mark.asyncio
+async def test_new_turn_clears_turn_scoped_artifacts_and_tool_results() -> None:
+    workflow = Workflow(SupervisorAgent(StubPlanningService()))
+    state = initial_state()
+    state["artifacts"] = {"task-1": {"stale": True}}
+    state["tool_results"] = [
+        ToolResult(task_id="task-1", tool="old_tool", success=True)
+    ]
+    state["last_answer"] = "上一轮回答"
+
+    update = await workflow.understand(state)  # type: ignore[arg-type]
+
+    assert update["artifacts"] == {}
+    assert update["tool_results"] == []
+    assert update["last_answer"] == ""

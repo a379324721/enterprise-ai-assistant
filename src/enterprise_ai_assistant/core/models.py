@@ -100,6 +100,27 @@ class ToolResult(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class DomainTaskRequest(BaseModel):
+    """父图交给领域子图的稳定输入契约。"""
+
+    user_id: str = Field(min_length=1, max_length=128)
+    conversation_id: UUID
+    request_id: UUID
+    user_goal: str = Field(min_length=1, max_length=8000)
+    task: PlannedTask
+    dependency_results: dict[str, Any] = Field(default_factory=dict)
+
+
+class DomainTaskResult(BaseModel):
+    """领域子图返回给父图的稳定输出契约。"""
+
+    task_id: str
+    status: TaskStatus
+    answer: str = Field(min_length=1)
+    artifact: dict[str, Any] | None = None
+    tool_results: list[ToolResult] = Field(default_factory=list)
+
+
 class TravelApplication(BaseModel):
     application_id: UUID = Field(default_factory=uuid4)
     user_id: str

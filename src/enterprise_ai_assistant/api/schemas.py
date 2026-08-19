@@ -13,6 +13,7 @@ class ChatRequest(BaseModel):
 
 
 class ConfirmationRequest(BaseModel):
+    confirmation_id: UUID
     approved: bool
     comment: str | None = Field(default=None, max_length=500)
 

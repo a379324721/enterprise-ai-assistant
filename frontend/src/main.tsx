@@ -6,7 +6,7 @@ import "./styles.css";
 import "./streaming.css";
 
 type Task = {id: string; title: string; domain: string; objective: string; status: string};
-type Confirmation = {summary: string; action: string; payload: Record<string, unknown>};
+type Confirmation = {confirmation_id: string; summary: string; action: string; payload: Record<string, unknown>};
 type Result = {
   conversation_id: string; status: string; answer: string; user_goal: string;
   tasks: Task[]; artifacts: Record<string, unknown>; pending_confirmation?: Confirmation | null;
@@ -106,11 +106,11 @@ function App() {
   }
 
   async function confirm(approved: boolean) {
-    if (!result || busy) return;
+    if (!result?.pending_confirmation || busy) return;
     setBusy(true); setProgress(approved ? "正在确认并恢复任务" : "正在取消操作");
     setMessages((old) => [...old, {role: "assistant", text: ""}]);
     try {
-      const response = await fetch(`/api/v1/conversations/${result.conversation_id}/confirm/stream`, {method: "POST", headers: {"Content-Type": "application/json", "X-User-ID": userId}, body: JSON.stringify({approved})});
+      const response = await fetch(`/api/v1/conversations/${result.conversation_id}/confirm/stream`, {method: "POST", headers: {"Content-Type": "application/json", "X-User-ID": userId}, body: JSON.stringify({confirmation_id: result.pending_confirmation.confirmation_id, approved})});
       await consumeSse(response, handleStreamEvent);
     } catch (error) {
       const message = error instanceof Error ? error.message : "系统异常";
@@ -130,7 +130,7 @@ function App() {
       </div>
       <aside><div className="asideHead"><span>任务执行</span><small>{result ? `${result.tasks.filter(t => t.status === "completed").length}/${result.tasks.length}` : "0/0"}</small></div>
         {!result && <div className="empty"><i>⌁</i><p>发送请求后，这里会展示 AI 拆解出的任务及执行进度。</p></div>}
-        {result && <><div className="goal"><small>理解到的目标</small><p>{result.user_goal}</p></div><div className="taskList">{result.tasks.map((task, index) => <div className="task" key={task.id}><span className={task.status}>{task.status === "completed" ? "✓" : index + 1}</span><div><strong>{task.title}</strong><small>{task.domain}</small></div><em>{({completed:"已完成",running:"执行中",waiting_confirmation:"待确认",waiting_input:"待补充",pending:"等待中",rejected:"已取消"} as Record<string,string>)[task.status] || task.status}</em></div>)}</div></>}
+        {result && <><div className="goal"><small>理解到的目标</small><p>{result.user_goal}</p></div><div className="taskList">{result.tasks.map((task, index) => <div className="task" key={task.id}><span className={task.status}>{task.status === "completed" ? "✓" : index + 1}</span><div><strong>{task.title}</strong><small>{task.domain}</small></div><em>{({completed:"已完成",running:"执行中",waiting_confirmation:"待确认",waiting_input:"待补充",pending:"等待中",rejected:"已取消",failed:"失败"} as Record<string,string>)[task.status] || task.status}</em></div>)}</div></>}
       </aside>
     </section>
   </main>;

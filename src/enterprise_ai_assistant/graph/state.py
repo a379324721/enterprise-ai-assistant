@@ -3,7 +3,13 @@ from uuid import UUID
 
 from langgraph.graph.message import add_messages
 
-from enterprise_ai_assistant.core.models import PendingConfirmation, PlannedTask, ToolResult
+from enterprise_ai_assistant.core.models import (
+    DomainTaskRequest,
+    DomainTaskResult,
+    PendingConfirmation,
+    PlannedTask,
+    ToolResult,
+)
 
 
 class AssistantState(TypedDict):
@@ -19,15 +25,27 @@ class AssistantState(TypedDict):
     tool_results: list[ToolResult]
     current_agent: str | None
     active_task_id: str | None
-    pending_confirmation: PendingConfirmation | None
-    pending_tool_call: NotRequired[dict[str, Any] | None]
     last_answer: str
     understanding: NotRequired[dict[str, Any]]
-    confirmation_approved: NotRequired[bool]
-    domain_messages: NotRequired[list[Any]]
-    domain_iterations: NotRequired[int]
-    domain_waiting_input: NotRequired[bool]
-    domain_rejected: NotRequired[bool]
-    domain_failed: NotRequired[bool]
-    domain_retry_required: NotRequired[bool]
     turn_answers: NotRequired[list[str]]
+    domain_request: NotRequired[DomainTaskRequest | None]
+    domain_result: NotRequired[DomainTaskResult | None]
+
+
+class DomainTaskState(TypedDict):
+    """单次领域任务子图状态；只有 request/result 与父图共享。"""
+
+    domain_request: DomainTaskRequest
+    domain_result: DomainTaskResult | None
+    domain_messages: list[Any]
+    domain_iterations: int
+    pending_confirmation: NotRequired[PendingConfirmation | None]
+    pending_tool_call: NotRequired[dict[str, Any] | None]
+    confirmation_approved: NotRequired[bool]
+    domain_waiting_input: bool
+    domain_rejected: bool
+    domain_failed: bool
+    domain_retry_required: bool
+    domain_tool_executed: bool
+    artifact: NotRequired[dict[str, Any] | None]
+    tool_results: list[ToolResult]

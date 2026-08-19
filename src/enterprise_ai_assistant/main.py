@@ -15,6 +15,7 @@ from enterprise_ai_assistant.api.routes import router
 from enterprise_ai_assistant.core.config import get_settings
 from enterprise_ai_assistant.core.logging import configure_logging
 from enterprise_ai_assistant.db.postgres import create_pool
+from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow
 from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
 from enterprise_ai_assistant.repositories.actions import PostgresActionRepository
 from enterprise_ai_assistant.repositories.policies import (
@@ -43,13 +44,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     model = build_chat_model()
     supervisor = SupervisorAgent(LLMPlanningService(model))
     provider = LocalEnterpriseToolProvider(actions, policies)
-    workflow = Workflow(
-        supervisor,
-        DomainRuntimeFactory(model, DomainToolRegistry(provider)),
+    workflow = Workflow(supervisor)
+    domain_workflow = DomainTaskWorkflow(
+        DomainRuntimeFactory(model, DomainToolRegistry(provider))
     )
     async with AsyncPostgresSaver.from_conn_string(settings.postgres_dsn) as checkpointer:
         await checkpointer.setup()
-        app.state.graph = build_graph(workflow, checkpointer)
+        app.state.graph = build_graph(workflow, domain_workflow, checkpointer)
         app.state.db_pool = db_pool
         app.state.redis = redis
         app.state.milvus = milvus
