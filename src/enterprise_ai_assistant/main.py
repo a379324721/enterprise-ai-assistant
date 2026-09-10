@@ -18,6 +18,7 @@ from enterprise_ai_assistant.api.routes import router
 from enterprise_ai_assistant.core.config import get_settings
 from enterprise_ai_assistant.core.logging import configure_logging
 from enterprise_ai_assistant.core.observability import MetricsMiddleware
+from enterprise_ai_assistant.core.runs import MemoryStreamBridge, RunManager
 from enterprise_ai_assistant.db.postgres import create_pool
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow
 from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
@@ -79,6 +80,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await checkpointer.setup()
 
         app.state.graph = build_graph(workflow, domain_workflow, checkpointer)
+        # 图执行跑在后台运行里，SSE 连接只是订阅者：客户端断开不再中断执行。
+        # 单进程用内存事件桥；多副本部署时换成跨进程实现即可，路由层不用动。
+        bridge = MemoryStreamBridge(
+            buffer_size=settings.run_event_buffer_size,
+            heartbeat_interval=settings.sse_heartbeat_seconds,
+        )
+        runs = RunManager(bridge, logger, retention_seconds=settings.run_retention_seconds)
+        # 最后登记意味着最先释放：进程关停时先停掉后台运行，再拆连接池。
+        stack.push_async_callback(runs.aclose)
+        app.state.runs = runs
         app.state.db_pool = db_pool
         app.state.redis = redis
         app.state.milvus = milvus

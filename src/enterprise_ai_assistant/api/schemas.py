@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -10,12 +10,15 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8000)
     conversation_id: UUID = Field(default_factory=uuid4)
     request_id: UUID = Field(default_factory=uuid4)
+    # SSE 断开时是否终止后台执行；留空则采用服务端默认策略。
+    on_disconnect: Literal["cancel", "continue"] | None = None
 
 
 class ConfirmationRequest(BaseModel):
     confirmation_id: UUID
     approved: bool
     comment: str | None = Field(default=None, max_length=500)
+    on_disconnect: Literal["cancel", "continue"] | None = None
 
 
 class AssistantResponse(BaseModel):
@@ -27,6 +30,8 @@ class AssistantResponse(BaseModel):
     artifacts: dict[str, Any]
     tool_results: list[ToolResult]
     pending_confirmation: PendingConfirmation | None = None
+    # 仍在执行时给出当前运行标识，客户端据此重新订阅事件流。
+    run_id: str | None = None
 
 
 class HealthResponse(BaseModel):

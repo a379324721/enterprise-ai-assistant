@@ -1,17 +1,34 @@
+import asyncio
 import json
 from types import SimpleNamespace
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from langchain_core.messages import AIMessageChunk
 
 from enterprise_ai_assistant.api.routes import (
     _encode_sse,
+    _execute_run,
     _pending_confirmation,
-    _stream_graph,
+    _subscribe_sse,
 )
 from enterprise_ai_assistant.core.models import PendingConfirmation
+from enterprise_ai_assistant.core.runs import (
+    END_SENTINEL,
+    HEARTBEAT_SENTINEL,
+    DisconnectMode,
+    MemoryStreamBridge,
+    Publisher,
+    Run,
+    RunConflictError,
+    RunManager,
+    RunStatus,
+    StreamEvent,
+    StreamGap,
+)
+
+CONVERSATION_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 
 def test_sse_event_is_typed_utf8_json() -> None:
@@ -21,6 +38,12 @@ def test_sse_event_is_typed_utf8_json() -> None:
     assert encoded.endswith("\n\n")
     payload = encoded.split("data: ", maxsplit=1)[1].strip()
     assert json.loads(payload) == {"content": "差\n旅"}
+
+
+def test_sse_event_carries_id_for_reconnection() -> None:
+    encoded = _encode_sse("token", {"content": "差旅"}, event_id=7)
+
+    assert encoded.startswith("id: 7\nevent: token\n")
 
 
 def test_pending_confirmation_comes_from_interrupt_payload() -> None:
@@ -37,6 +60,169 @@ def test_pending_confirmation_comes_from_interrupt_payload() -> None:
     )
 
     assert _pending_confirmation(snapshot) == pending
+
+
+# -- 事件桥 ---------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bridge_replays_only_events_after_the_client_cursor() -> None:
+    bridge = MemoryStreamBridge()
+    for index in range(3):
+        await bridge.publish("run-1", "token", {"content": str(index)})
+    await bridge.publish_end("run-1")
+
+    resumed = [item async for item in bridge.subscribe("run-1", last_seq=0)]
+
+    assert [item.data["content"] for item in resumed if isinstance(item, StreamEvent) and item.data]
+    assert [
+        item.seq for item in resumed if isinstance(item, StreamEvent) and item is not END_SENTINEL
+    ] == [1, 2]
+    assert resumed[-1] is END_SENTINEL
+
+
+@pytest.mark.asyncio
+async def test_bridge_reports_a_gap_when_the_cursor_fell_out_of_the_buffer() -> None:
+    """缓冲滚过客户端游标时必须显式报缺口，而不是假装回放完整。"""
+    bridge = MemoryStreamBridge(buffer_size=2)
+    for index in range(5):
+        await bridge.publish("run-1", "token", {"content": str(index)})
+    await bridge.publish_end("run-1")
+
+    items = [item async for item in bridge.subscribe("run-1", last_seq=0)]
+
+    assert len(items) == 1
+    gap = items[0]
+    assert isinstance(gap, StreamGap)
+    assert gap.requested_seq == 1
+    assert gap.earliest_available_seq == 3
+
+
+@pytest.mark.asyncio
+async def test_bridge_emits_heartbeats_while_idle() -> None:
+    bridge = MemoryStreamBridge(heartbeat_interval=0.01)
+    stream = bridge.subscribe("run-1")
+
+    assert await anext(stream) is HEARTBEAT_SENTINEL
+
+    await bridge.publish("run-1", "token", {"content": "差旅"})
+    event = await anext(stream)
+
+    assert isinstance(event, StreamEvent)
+    assert event.data == {"content": "差旅"}
+    await stream.aclose()
+
+
+# -- 后台运行 -------------------------------------------------------------
+
+
+def _manager(**kwargs: Any) -> RunManager:
+    logger = SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        exception=lambda *a, **k: None,
+    )
+    return RunManager(MemoryStreamBridge(**kwargs), logger)
+
+
+@pytest.mark.asyncio
+async def test_run_keeps_executing_after_every_subscriber_is_gone() -> None:
+    """SSE 断线不再中断执行：这是整个改造的核心不变量。"""
+    manager = _manager()
+    released = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def runner(run: Run, publish: Publisher) -> RunStatus:
+        await publish("token", {"content": "第一段"})
+        await released.wait()
+        await publish("token", {"content": "第二段"})
+        finished.set()
+        return RunStatus.completed
+
+    run = await manager.start(conversation_id=CONVERSATION_ID, user_id="u-1", runner=runner)
+    stream = manager.subscribe(run)
+    assert isinstance(await anext(stream), StreamEvent)
+    await stream.aclose()  # 客户端关掉标签页
+
+    released.set()
+    await asyncio.wait_for(finished.wait(), timeout=1)
+    assert run.task is not None
+    await run.task
+    assert run.status is RunStatus.completed
+
+    # 重新 attach 能拿到断线期间产生的全部事件。
+    resumed = [item async for item in manager.subscribe(run, last_seq=0)]
+    contents = [item.data["content"] for item in resumed if isinstance(item, StreamEvent) and item.data]
+    assert contents == ["第二段"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_run_on_the_same_conversation_is_rejected() -> None:
+    manager = _manager()
+    blocked = asyncio.Event()
+
+    async def runner(run: Run, publish: Publisher) -> RunStatus:
+        await blocked.wait()
+        return RunStatus.completed
+
+    request_id = uuid4()
+    run = await manager.start(
+        conversation_id=CONVERSATION_ID, user_id="u-1", runner=runner, request_id=request_id
+    )
+
+    # 同一个 request_id 是客户端重试，应当拿回同一次运行而不是再跑一遍。
+    assert (
+        await manager.start(
+            conversation_id=CONVERSATION_ID, user_id="u-1", runner=runner, request_id=request_id
+        )
+        is run
+    )
+    with pytest.raises(RunConflictError):
+        await manager.start(
+            conversation_id=CONVERSATION_ID, user_id="u-1", runner=runner, request_id=uuid4()
+        )
+
+    blocked.set()
+    assert run.task is not None
+    await run.task
+
+
+@pytest.mark.asyncio
+async def test_manager_close_cancels_running_work() -> None:
+    manager = _manager()
+
+    async def runner(run: Run, publish: Publisher) -> RunStatus:
+        await asyncio.Event().wait()
+        return RunStatus.completed
+
+    run = await manager.start(conversation_id=CONVERSATION_ID, user_id="u-1", runner=runner)
+    await manager.aclose()
+
+    assert run.task is not None
+    assert run.task.done()
+    assert run.status is RunStatus.cancelled
+
+
+@pytest.mark.asyncio
+async def test_failed_run_publishes_an_error_event_and_ends_the_stream() -> None:
+    manager = _manager()
+
+    async def runner(run: Run, publish: Publisher) -> RunStatus:
+        raise RuntimeError("boom")
+
+    run = await manager.start(conversation_id=CONVERSATION_ID, user_id="u-1", runner=runner)
+    assert run.task is not None
+    await run.task
+
+    items = [item async for item in manager.subscribe(run)]
+
+    assert run.status is RunStatus.failed
+    assert isinstance(items[0], StreamEvent)
+    assert items[0].event == "error"
+    assert items[-1] is END_SENTINEL
+
+
+# -- 图执行与 SSE 转发 ----------------------------------------------------
 
 
 class FakeGraph:
@@ -84,35 +270,140 @@ class FakeGraph:
         )
 
 
+def _app(manager: RunManager, graph: FakeGraph | None = None) -> Any:
+    logger = SimpleNamespace(
+        info=lambda *a, **k: None,
+        warning=lambda *a, **k: None,
+        exception=lambda *a, **k: None,
+    )
+    return SimpleNamespace(
+        state=SimpleNamespace(graph=graph or FakeGraph(), logger=logger, runs=manager)
+    )
+
+
 class FakeRequest:
-    def __init__(self) -> None:
-        logger = SimpleNamespace(info=lambda *args, **kwargs: None, exception=lambda *args, **kwargs: None)
-        self.app = SimpleNamespace(state=SimpleNamespace(graph=FakeGraph(), logger=logger))
+    """最小 SSE 客户端：可以设定重连游标和断连时机。"""
+
+    def __init__(self, app: Any, *, last_event_id: str | None = None, disconnect_after: int | None = None) -> None:
+        self.app = app
+        self.headers = {"Last-Event-ID": last_event_id} if last_event_id else {}
+        self.query_params: dict[str, str] = {}
+        self._disconnect_after = disconnect_after
+        self.checks = 0
 
     async def is_disconnected(self) -> bool:
-        return False
+        self.checks += 1
+        return self._disconnect_after is not None and self.checks > self._disconnect_after
 
 
 def decode_event(encoded: str) -> tuple[str, dict[str, Any]]:
-    lines = encoded.strip().splitlines()
+    lines = [line for line in encoded.strip().splitlines() if not line.startswith("id: ")]
     return lines[0].removeprefix("event: "), json.loads(lines[1].removeprefix("data: "))
+
+
+async def _run_to_completion(manager: RunManager, app: Any) -> Run:
+    async def runner(run: Run, publish: Publisher) -> RunStatus:
+        return await _execute_run(app, run, publish, {}, CONVERSATION_ID, "u-1")
+
+    run = await manager.start(conversation_id=CONVERSATION_ID, user_id="u-1", runner=runner)
+    assert run.task is not None
+    await run.task
+    return run
 
 
 @pytest.mark.asyncio
 async def test_graph_stream_forwards_only_native_user_visible_chunks() -> None:
-    request = FakeRequest()
+    manager = _manager()
+    graph = FakeGraph()
+    app = _app(manager, graph)
+
+    run = await _run_to_completion(manager, app)
+    request = FakeRequest(app)
     events = [
-        decode_event(item)
-        async for item in _stream_graph(
-            request,  # type: ignore[arg-type]
-            {},
-            UUID("00000000-0000-0000-0000-000000000001"),
-            "u-1",
-        )
+        decode_event(frame)
+        async for frame in _subscribe_sse(request, run, apply_on_disconnect=False)  # type: ignore[arg-type]
     ]
 
     assert [data["content"] for event, data in events if event == "token"] == ["真", "流式"]
     assert sum(event == "answer_start" for event, _ in events) == 1
     assert all(data.get("content") != "内部规划" for _, data in events)
+    assert events[0][0] == "metadata"
+    assert events[0][1]["run_id"] == run.run_id
     assert events[-1][0] == "done"
-    assert request.app.state.graph.stream_kwargs["subgraphs"] is True
+    assert graph.stream_kwargs["subgraphs"] is True
+    assert run.status is RunStatus.completed
+
+
+@pytest.mark.asyncio
+async def test_reconnect_replays_only_the_missing_events() -> None:
+    manager = _manager()
+    app = _app(manager)
+    run = await _run_to_completion(manager, app)
+
+    first = FakeRequest(app)
+    frames = [frame async for frame in _subscribe_sse(first, run, apply_on_disconnect=False)]  # type: ignore[arg-type]
+    cutoff = frames[1].splitlines()[0].removeprefix("id: ")
+
+    resumed = FakeRequest(app, last_event_id=cutoff)
+    replayed = [
+        decode_event(frame)
+        async for frame in _subscribe_sse(resumed, run, apply_on_disconnect=False)  # type: ignore[arg-type]
+    ]
+
+    assert [event for event, _ in replayed] == [event for event, _ in map(decode_event, frames)][2:]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_beyond_the_buffer_window_reports_a_gap() -> None:
+    manager = _manager(buffer_size=2)
+    app = _app(manager)
+
+    async def runner(run: Run, publish: Publisher) -> RunStatus:
+        for index in range(5):
+            await publish("token", {"content": str(index)})
+        return RunStatus.completed
+
+    run = await manager.start(conversation_id=CONVERSATION_ID, user_id="u-1", runner=runner)
+    assert run.task is not None
+    await run.task
+
+    request = FakeRequest(app, last_event_id="0")
+    frames = [
+        decode_event(frame)
+        async for frame in _subscribe_sse(request, run, apply_on_disconnect=False)  # type: ignore[arg-type]
+    ]
+
+    assert [event for event, _ in frames] == ["gap"]
+    assert frames[0][1]["recovery"] == "reload_conversation"
+
+
+@pytest.mark.asyncio
+async def test_disconnect_cancels_the_run_only_when_the_creator_asked_for_it() -> None:
+    manager = _manager()
+    blocked = asyncio.Event()
+
+    async def runner(run: Run, publish: Publisher) -> RunStatus:
+        await publish("token", {"content": "第一段"})
+        await blocked.wait()
+        return RunStatus.completed
+
+    run = await manager.start(
+        conversation_id=CONVERSATION_ID,
+        user_id="u-1",
+        runner=runner,
+        on_disconnect=DisconnectMode.cancel,
+    )
+    app = _app(manager)
+
+    # 只读旁观者断开不得终止别人的执行。
+    observer = FakeRequest(app, disconnect_after=0)
+    async for _ in _subscribe_sse(observer, run, apply_on_disconnect=False):  # type: ignore[arg-type]
+        pass
+    assert run.status is RunStatus.running
+
+    creator = FakeRequest(app, disconnect_after=0)
+    async for _ in _subscribe_sse(creator, run, apply_on_disconnect=True):  # type: ignore[arg-type]
+        pass
+    assert run.task is not None
+    await asyncio.gather(run.task, return_exceptions=True)
+    assert run.status is RunStatus.cancelled

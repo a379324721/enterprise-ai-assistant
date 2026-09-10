@@ -1,5 +1,6 @@
 import secrets
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -31,6 +32,16 @@ class Settings(BaseSettings):
     # 单个会话累计 token 上限，0 表示不限制。防止异常会话无上限消耗额度。
     conversation_token_budget: int = Field(default=0, ge=0)
     conversation_budget_ttl_hours: int = Field(default=168, ge=1)
+
+    # SSE 订阅者断开时后台执行的默认处置：continue 表示继续跑完并落检查点，
+    # 客户端重连后仍能拿到结果。
+    run_on_disconnect: Literal["cancel", "continue"] = "continue"
+    # 每个运行保留的事件条数，供断线重连回放；超出窗口的游标会收到 gap 事件。
+    run_event_buffer_size: int = Field(default=512, ge=16)
+    # 运行结束后事件缓冲的保留时长，给断线客户端留出回来取终态的时间。
+    run_retention_seconds: float = Field(default=300.0, gt=0)
+    # SSE 空闲心跳间隔，防止反向代理掐掉长时间没有输出的连接。
+    sse_heartbeat_seconds: float = Field(default=15.0, gt=0)
 
     jwt_secret: SecretStr | None = None
     jwt_algorithm: str = "HS256"

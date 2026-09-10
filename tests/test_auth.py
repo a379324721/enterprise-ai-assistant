@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from enterprise_ai_assistant.api import routes
 from enterprise_ai_assistant.core.config import Settings
+from enterprise_ai_assistant.core.runs import MemoryStreamBridge, RunManager
 from enterprise_ai_assistant.core.security import create_access_token
 from enterprise_ai_assistant.main import create_app
 
@@ -59,7 +60,9 @@ async def _fake_lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.logger = SimpleNamespace(
         info=lambda *a, **k: None, exception=lambda *a, **k: None
     )
+    app.state.runs = RunManager(MemoryStreamBridge(), app.state.logger)
     yield
+    await app.state.runs.aclose()
 
 
 @pytest.fixture

@@ -17,6 +17,7 @@ from enterprise_ai_assistant.api import routes
 from enterprise_ai_assistant.core.config import Settings
 from enterprise_ai_assistant.core.metrics import REGISTRY
 from enterprise_ai_assistant.core.observability import LLMUsageTracker
+from enterprise_ai_assistant.core.runs import MemoryStreamBridge, RunManager
 from enterprise_ai_assistant.core.security import create_access_token
 from enterprise_ai_assistant.main import create_app
 
@@ -124,9 +125,9 @@ class FakeRedis:
         return True
 
 
-def _request(redis: FakeRedis) -> Any:
+def _app(redis: FakeRedis) -> Any:
     logger = SimpleNamespace(warning=lambda *a, **k: None, info=lambda *a, **k: None)
-    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(redis=redis, logger=logger)))
+    return SimpleNamespace(state=SimpleNamespace(redis=redis, logger=logger))
 
 
 @pytest.mark.asyncio
@@ -135,7 +136,7 @@ async def test_budget_guard_rejects_exhausted_conversation() -> None:
 
     with pytest.raises(HTTPException) as exc:
         await routes._enforce_token_budget(
-            _request(FakeRedis(spent=1200)), CONVERSATION_ID, settings
+            _app(FakeRedis(spent=1200)), CONVERSATION_ID, settings
         )
 
     assert exc.value.status_code == 429
@@ -146,7 +147,7 @@ async def test_budget_guard_allows_conversation_under_limit() -> None:
     settings = _settings(conversation_token_budget=1000)
 
     await routes._enforce_token_budget(
-        _request(FakeRedis(spent=200)), CONVERSATION_ID, settings
+        _app(FakeRedis(spent=200)), CONVERSATION_ID, settings
     )
 
 
@@ -154,7 +155,7 @@ async def test_budget_guard_allows_conversation_under_limit() -> None:
 async def test_budget_guard_is_disabled_by_default() -> None:
     redis = FakeRedis(spent=10**9)
 
-    await routes._enforce_token_budget(_request(redis), CONVERSATION_ID, _settings())
+    await routes._enforce_token_budget(_app(redis), CONVERSATION_ID, _settings())
 
 
 @pytest.mark.asyncio
@@ -163,7 +164,7 @@ async def test_budget_guard_fails_open_when_redis_is_down() -> None:
     settings = _settings(conversation_token_budget=1000)
 
     await routes._enforce_token_budget(
-        _request(FakeRedis(broken=True)), CONVERSATION_ID, settings
+        _app(FakeRedis(broken=True)), CONVERSATION_ID, settings
     )
 
 
@@ -177,7 +178,7 @@ async def test_usage_is_written_back_to_the_budget_counter() -> None:
     await tracker.on_llm_end(_result(100, 50), run_id=run_id)
 
     await routes._record_usage(
-        _request(redis), CONVERSATION_ID, "u-1", tracker, settings
+        _app(redis), CONVERSATION_ID, "u-1", tracker, settings
     )
 
     assert redis.increments == [150]
@@ -196,7 +197,9 @@ class EmptyGraph:
 async def _fake_lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.graph = EmptyGraph()
     app.state.logger = SimpleNamespace(info=lambda *a, **k: None)
+    app.state.runs = RunManager(MemoryStreamBridge(), app.state.logger)
     yield
+    await app.state.runs.aclose()
 
 
 @pytest.fixture

@@ -171,12 +171,15 @@ curl -X POST http://localhost:8000/api/v1/chat \
 
 | 事件 | 内容 |
 |---|---|
-| `metadata` | 会话 ID |
+| `metadata` | 会话 ID 与本次运行 ID |
 | `progress` | Supervisor、Planner、领域循环和工具执行进度 |
 | `answer_start` | 一个领域回答开始，包含 message/agent/task ID |
 | `token` | 带 `user-visible` 标签的模型原生内容增量 |
 | `done` | 完整任务、artifacts、工具结果和确认状态 |
 | `error` | 流建立后的执行错误 |
+| `gap` | 重连游标已超出事件缓冲窗口，需改用会话快照恢复 |
+
+每条事件都带 `id:` 序号，另有 `: heartbeat` 注释帧在空闲时保活。
 
 命令行验证：
 
@@ -189,6 +192,30 @@ curl -N -X POST http://localhost:8000/api/v1/chat/stream \
 
 高风险操作确认后的剩余任务通过
 `POST /api/v1/conversations/{conversation_id}/confirm/stream` 继续流式执行。Nginx 已关闭该路径的代理缓冲。
+
+### 断线恢复
+
+图执行跑在后台运行里，SSE 连接只是订阅者：**关闭标签页或网络抖动不会中断执行**，
+工作流会继续跑完并落检查点。客户端重连访问：
+
+```bash
+curl -N http://localhost:8000/api/v1/conversations/<conversation-id>/stream \
+  -H "Authorization: Bearer $TOKEN" -H 'Last-Event-ID: 42'
+```
+
+- 带 `Last-Event-ID` 只补发缺失的增量；游标超出缓冲窗口则收到 `gap` 事件，改用
+  `GET /api/v1/conversations/{conversation_id}` 重建状态。
+- 运行结束后事件仍保留 `RUN_RETENTION_SECONDS`，断线的客户端回来仍能取到 `done`。
+- 重连是只读旁观：断开不会影响后台执行。
+- 执行期间读会话返回 `status=running` 与 `run_id`，不会把半成品检查点误报为失败。
+- 同一会话同时只允许一次执行，并发提交返回 409；重复提交同一个 `request_id`
+  视为客户端重试，复用同一次运行而不会重跑。
+- 创建流时可传 `on_disconnect: "cancel"` 要求断线即终止执行，默认由
+  `RUN_ON_DISCONNECT` 决定（默认 `continue`）。
+
+单进程部署使用内存事件桥。多副本部署需要把 `StreamBridge` 换成跨进程实现
+（如 Redis Streams），或按 `conversation_id` 做粘性路由，否则重连可能落到没有该
+运行的实例上。
 
 确认高风险操作：
 
@@ -235,6 +262,8 @@ cd frontend && npm install && npm run build
 - 为 `EnterpriseToolProvider` 增加 OA、财务和 HR 远端适配器，并配套 outbox、状态回查和补偿任务。
 - 在 API Gateway 接入 OIDC/JWT、租户隔离、速率限制、审计日志与 PII 脱敏。
 - 增加会话级并发租约、模型/工具熔断、分布式限流和请求级成本预算。
+- 后台运行注册表落库并加租约与孤儿回收，使进程崩溃后的半途运行可被识别和恢复；
+  事件流改用 Redis Streams 承载，支持多副本下的断线重连。
 - PostgreSQL checkpoint 支持多实例恢复；大规模部署需设置连接池、checkpoint 清理策略和 Redis/Milvus 高可用。
 - 将提醒工具后端接入专用调度服务（如 Temporal/Celery）。
 
