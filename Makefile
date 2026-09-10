@@ -1,4 +1,4 @@
-.PHONY: install dev test lint compose-up
+.PHONY: install dev test lint typecheck eval compose-up
 install:
 	uv sync
 dev:
@@ -7,5 +7,9 @@ test:
 	uv run pytest
 lint:
 	uv run ruff check .
+typecheck:
+	uv run mypy
+eval:
+	uv run python -m evals.runner
 compose-up:
 	docker compose up --build

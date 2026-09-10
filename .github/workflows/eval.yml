@@ -1,0 +1,52 @@
+name: Eval
+
+# 回归评测会真实调用模型服务，因此不在每次推送时运行：
+# 手动触发用于验证 prompt 改动，定时任务用于观察模型服务端的行为漂移。
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: 要运行的评测集
+        type: choice
+        default: all
+        options: [all, context, planning, tool_choice, guardrail]
+      min_accuracy:
+        description: 整体准确率门槛（低于则失败）
+        type: string
+        default: "0.85"
+  schedule:
+    - cron: "0 18 * * 1"
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --all-groups
+
+      - name: Run evaluation
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          OPENAI_EMBEDDING_MODEL: ${{ vars.OPENAI_EMBEDDING_MODEL }}
+          LANGSMITH_TRACING: "false"
+        run: |
+          uv run python -m evals.runner \
+            --suite "${{ inputs.suite || 'all' }}" \
+            --json eval-report.json \
+            --min-accuracy "${{ inputs.min_accuracy || '0.85' }}"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: eval-report.json

@@ -24,10 +24,13 @@ dependencies = [
 [dependency-groups]
 dev = [
   "httpx>=0.28,<1",
+  # 评测数据集用 YAML 维护，便于人工审阅和补充 badcase。
+  "pyyaml>=6,<7",
   "mypy>=1.17,<2",
   "pytest>=8.4,<9",
   "pytest-asyncio>=1.1,<2",
   "ruff>=0.12,<1",
+  "types-pyyaml>=6,<7",
 ]
 
 [build-system]
@@ -40,6 +43,8 @@ packages = ["src/enterprise_ai_assistant"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# evals 是独立于发布包的评测工程，通过项目根目录导入。
+pythonpath = ["."]
 
 [tool.ruff]
 line-length = 100
@@ -52,7 +57,7 @@ ignore = ["E501"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-packages = ["enterprise_ai_assistant"]
+packages = ["enterprise_ai_assistant", "evals"]
 
 [[tool.mypy.overrides]]
 module = ["asyncpg", "pymilvus"]
