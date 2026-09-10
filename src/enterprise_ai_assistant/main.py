@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 import structlog
@@ -34,22 +34,32 @@ configure_logging()
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     logger = structlog.get_logger()
-    db_pool = await create_pool(settings.postgres_dsn)
-    redis = Redis.from_url(settings.redis_url, decode_responses=True)
-    milvus = MilvusClient(uri=settings.milvus_uri)
-    embeddings = build_embeddings(settings)
-    await bootstrap_policy_collection(milvus, embeddings)
-    policies = CachedMilvusPolicyRepository(milvus, redis, embeddings)
-    actions = PostgresActionRepository(db_pool)
-    model = build_chat_model()
-    supervisor = SupervisorAgent(LLMPlanningService(model))
-    provider = LocalEnterpriseToolProvider(actions, policies)
-    workflow = Workflow(supervisor)
-    domain_workflow = DomainTaskWorkflow(
-        DomainRuntimeFactory(model, DomainToolRegistry(provider))
-    )
-    async with AsyncPostgresSaver.from_conn_string(settings.postgres_dsn) as checkpointer:
+    # 用 AsyncExitStack 逐个登记资源：启动过程中任何一步失败（例如 Milvus 不可达），
+    # 已经建立的连接都会按逆序释放，而不是把连接池泄漏到崩溃的进程里。
+    async with AsyncExitStack() as stack:
+        db_pool = await create_pool(settings.postgres_dsn)
+        stack.push_async_callback(db_pool.close)
+        redis = Redis.from_url(settings.redis_url, decode_responses=True)
+        stack.push_async_callback(redis.aclose)
+        milvus = MilvusClient(uri=settings.milvus_uri)
+        stack.callback(milvus.close)
+
+        embeddings = build_embeddings(settings)
+        await bootstrap_policy_collection(milvus, embeddings)
+        policies = CachedMilvusPolicyRepository(milvus, redis, embeddings)
+        actions = PostgresActionRepository(db_pool)
+        model = build_chat_model()
+        supervisor = SupervisorAgent(LLMPlanningService(model))
+        provider = LocalEnterpriseToolProvider(actions, policies)
+        workflow = Workflow(supervisor)
+        domain_workflow = DomainTaskWorkflow(
+            DomainRuntimeFactory(model, DomainToolRegistry(provider))
+        )
+        checkpointer = await stack.enter_async_context(
+            AsyncPostgresSaver.from_conn_string(settings.postgres_dsn)
+        )
         await checkpointer.setup()
+
         app.state.graph = build_graph(workflow, domain_workflow, checkpointer)
         app.state.db_pool = db_pool
         app.state.redis = redis
@@ -57,9 +67,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.logger = logger
         logger.info("application_started", environment=settings.app_env)
         yield
-    await redis.aclose()
-    await db_pool.close()
-    milvus.close()
+        logger.info("application_stopping", environment=settings.app_env)
 
 
 def create_app(lifespan_handler: Any = lifespan) -> FastAPI:
