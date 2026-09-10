@@ -3,9 +3,12 @@ import hashlib
 import json
 from typing import Any, Protocol, cast
 
+import structlog
 from langchain_openai import OpenAIEmbeddings
 from pymilvus import MilvusClient
 from redis.asyncio import Redis
+
+logger = structlog.get_logger()
 
 
 class PolicyRepository(Protocol):
@@ -29,9 +32,9 @@ class CachedMilvusPolicyRepository:
 
     async def search(self, query: str, domain: str, limit: int = 3) -> list[dict[str, str]]:
         key = "policy:" + hashlib.sha256(f"{domain}:{query}".encode()).hexdigest()
-        cached = await self._redis.get(key)
-        if cached:
-            return cast(list[dict[str, str]], json.loads(cached))
+        cached = await self._read_cache(key)
+        if cached is not None:
+            return cached
         vector = await self._embeddings.aembed_query(query)
         rows = await asyncio.to_thread(
             self._client.search,
@@ -43,8 +46,29 @@ class CachedMilvusPolicyRepository:
         )
         raw_results: list[Any] = rows[0]
         results = cast(list[dict[str, str]], [dict(hit["entity"]) for hit in raw_results])
-        await self._redis.setex(key, 300, json.dumps(results, ensure_ascii=False))
+        await self._write_cache(key, results)
         return results
+
+    async def _read_cache(self, key: str) -> list[dict[str, str]] | None:
+        """缓存只用于加速。Redis 故障或数据损坏时回退到向量检索，而不是让查询失败。"""
+        try:
+            cached = await self._redis.get(key)
+        except Exception:
+            logger.warning("policy_cache_read_failed", cache_key=key)
+            return None
+        if not cached:
+            return None
+        try:
+            return cast(list[dict[str, str]], json.loads(cached))
+        except json.JSONDecodeError:
+            logger.warning("policy_cache_corrupted", cache_key=key)
+            return None
+
+    async def _write_cache(self, key: str, results: list[dict[str, str]]) -> None:
+        try:
+            await self._redis.setex(key, 300, json.dumps(results, ensure_ascii=False))
+        except Exception:
+            logger.warning("policy_cache_write_failed", cache_key=key)
 
 
 async def bootstrap_policy_collection(

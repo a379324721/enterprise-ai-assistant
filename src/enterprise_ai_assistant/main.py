@@ -6,6 +6,9 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg import AsyncConnection
+from psycopg.rows import DictRow, dict_row
+from psycopg_pool import AsyncConnectionPool
 from pymilvus import MilvusClient
 from redis.asyncio import Redis
 
@@ -46,7 +49,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         stack.callback(milvus.close)
 
         embeddings = build_embeddings(settings)
-        await bootstrap_policy_collection(milvus, embeddings)
+        try:
+            await bootstrap_policy_collection(milvus, embeddings)
+        except Exception:
+            # 语料初始化失败只影响制度检索，工具会返回明确的失败结果而不是编造内容；
+            # 让进程继续启动，其余领域能力和健康检查仍然可用。
+            logger.exception("policy_bootstrap_failed", milvus_uri=settings.milvus_uri)
         policies = CachedMilvusPolicyRepository(milvus, redis, embeddings)
         actions = PostgresActionRepository(db_pool)
         model = build_chat_model()
@@ -56,9 +64,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         domain_workflow = DomainTaskWorkflow(
             DomainRuntimeFactory(model, DomainToolRegistry(provider))
         )
-        checkpointer = await stack.enter_async_context(
-            AsyncPostgresSaver.from_conn_string(settings.postgres_dsn)
+        # from_conn_string 只建立单条连接，检查点写入会被 saver 内部的锁串行化。
+        # 这里显式使用连接池，让并发会话的状态读写可以并行。
+        checkpoint_pool: AsyncConnectionPool[AsyncConnection[DictRow]] = AsyncConnectionPool(
+            settings.postgres_dsn,
+            min_size=2,
+            max_size=10,
+            kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+            open=False,
         )
+        await checkpoint_pool.open(wait=True)
+        stack.push_async_callback(checkpoint_pool.close)
+        checkpointer = AsyncPostgresSaver(checkpoint_pool)
         await checkpointer.setup()
 
         app.state.graph = build_graph(workflow, domain_workflow, checkpointer)
