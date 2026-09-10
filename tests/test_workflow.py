@@ -387,8 +387,10 @@ async def test_compound_workflow_uses_tools_with_separate_confirmations() -> Non
         config,
     )
     assert [task.status.value for task in final["tasks"]] == ["completed", "completed"]
-    assert final["artifacts"]["task-1"]["data"]["destination"] == "上海"
-    assert final["artifacts"]["task-2"]["data"]["travel_reference"] == "travel-reference-1"
+    travel = final["artifacts"]["task-1"]["create_travel_application"]
+    reminder = final["artifacts"]["task-2"]["schedule_expense_reminder"]
+    assert travel["data"]["destination"] == "上海"
+    assert reminder["data"]["travel_reference"] == "travel-reference-1"
     assert len(final["tool_results"]) == 2
     assert len(actions.records) == 2
 
@@ -460,3 +462,103 @@ async def test_new_turn_clears_turn_scoped_artifacts_and_tool_results() -> None:
     assert update["artifacts"] == {}
     assert update["tool_results"] == []
     assert update["last_answer"] == ""
+
+
+@pytest.mark.asyncio
+async def test_multiple_writes_in_one_task_accumulate_artifacts() -> None:
+    """同一任务里连续调用两个写工具时，先前的业务单号不能被后一次产出覆盖。"""
+    provider = LocalEnterpriseToolProvider(
+        InMemoryActionRepository(), InMemoryPolicyRepository()
+    )
+    workflow = DomainTaskWorkflow(ScriptedRuntimeFactory(DomainToolRegistry(provider)))
+    task = PlannedTask(
+        id="task-1",
+        title="报销并设置提醒",
+        domain=AgentName.EXPENSE,
+        objective="创建费用报销单并设置提醒",
+    )
+    state: DomainTaskState = {
+        "domain_request": DomainTaskRequest(
+            user_id="u-1",
+            conversation_id=UUID("00000000-0000-0000-0000-000000000001"),
+            request_id=UUID("00000000-0000-0000-0000-000000000002"),
+            user_goal="报销打车费并提醒我",
+            task=task,
+        ),
+        "domain_result": None,
+        "domain_messages": [],
+        "domain_iterations": 1,
+        "domain_waiting_input": False,
+        "domain_rejected": False,
+        "domain_failed": False,
+        "domain_retry_required": False,
+        "domain_tool_executed": False,
+        "domain_tool_results": [],
+        "pending_tool_call": {
+            "name": "create_expense_claim",
+            "args": {
+                "expense_type": "打车",
+                "amount": "128.50",
+                "receipt_refs": ["receipt-1"],
+            },
+            "id": "call-claim",
+        },
+    }
+
+    first = await workflow.execute_tool(state)
+    state = {**state, **first, "pending_tool_call": {
+        "name": "schedule_expense_reminder",
+        "args": {"trigger_date": "2026-08-20", "note": "提醒确认报销进度"},
+        "id": "call-reminder",
+    }}
+    second = await workflow.execute_tool(state)
+
+    artifact = second["artifact"]
+    assert set(artifact) == {"create_expense_claim", "schedule_expense_reminder"}
+    assert artifact["create_expense_claim"]["data"]["expense_type"] == "打车"
+    assert artifact["schedule_expense_reminder"]["data"]["note"] == "提醒确认报销进度"
+
+
+@pytest.mark.asyncio
+async def test_failed_tool_does_not_overwrite_successful_artifact() -> None:
+    provider = LocalEnterpriseToolProvider(
+        InMemoryActionRepository(), InMemoryPolicyRepository()
+    )
+    workflow = DomainTaskWorkflow(ScriptedRuntimeFactory(DomainToolRegistry(provider)))
+    task = PlannedTask(
+        id="task-1",
+        title="报销",
+        domain=AgentName.EXPENSE,
+        objective="创建费用报销单",
+    )
+    state: DomainTaskState = {
+        "domain_request": DomainTaskRequest(
+            user_id="u-1",
+            conversation_id=UUID("00000000-0000-0000-0000-000000000001"),
+            request_id=UUID("00000000-0000-0000-0000-000000000002"),
+            user_goal="报销打车费",
+            task=task,
+        ),
+        "domain_result": None,
+        "domain_messages": [],
+        "domain_iterations": 1,
+        "domain_waiting_input": False,
+        "domain_rejected": False,
+        "domain_failed": False,
+        "domain_retry_required": False,
+        "domain_tool_executed": True,
+        "domain_tool_results": [],
+        "artifact": {"create_expense_claim": {"tool": "create_expense_claim", "success": True}},
+        "pending_tool_call": {
+            "name": "schedule_expense_reminder",
+            "args": {"trigger_date": "not-a-date", "note": "无效参数"},
+            "id": "call-bad",
+        },
+    }
+
+    update = await workflow.execute_tool(state)
+
+    assert update["domain_failed"] is True
+    assert update["artifact"] == {
+        "create_expense_claim": {"tool": "create_expense_claim", "success": True}
+    }

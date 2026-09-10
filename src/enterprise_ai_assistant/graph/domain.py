@@ -281,10 +281,15 @@ class DomainTaskWorkflow:
             data=outcome.model_dump(mode="json"),
             error=outcome.error,
         )
+        # 一个任务可能连续调用多个写工具（例如报销单 + 报销提醒）。按工具名归档，
+        # 否则后一次产出会覆盖前一次，依赖该任务的下游任务将拿不到先前的业务单号。
+        artifact = dict(state.get("artifact") or {})
+        if outcome.success:
+            artifact[name] = outcome.model_dump(mode="json")
         return {
             "domain_messages": [*state.get("domain_messages", []), message],
             "domain_tool_results": [*state.get("domain_tool_results", []), audit],
-            "artifact": outcome.model_dump(mode="json"),
+            "artifact": artifact or None,
             "pending_confirmation": None,
             "pending_tool_call": None,
             "confirmation_approved": False,
