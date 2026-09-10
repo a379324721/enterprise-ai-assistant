@@ -26,7 +26,11 @@ class ContextCase(BaseModel):
     id: str = Field(min_length=1)
     conversation: list[ConversationTurn] = Field(min_length=1)
     expect_task_planning: bool
+    # 全部必须出现在改写后的请求里。
     expect_keywords: list[str] = Field(default_factory=list)
+    # 至少命中一个即可。用于指代消解有多种正确表达的场景，例如既可以点名
+    # 实体（"杭州"），也可以引用更精确的业务单号（"TR-001"）。
+    expect_any_keywords: list[str] = Field(default_factory=list)
     note: str = ""
 
 

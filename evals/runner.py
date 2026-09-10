@@ -128,6 +128,13 @@ class EvalHarness:
             problems.append(
                 f"改写后的请求缺少关键词 {missing}：{resolution.standalone_request!r}"
             )
+        if case.expect_any_keywords and not any(
+            keyword in resolution.standalone_request for keyword in case.expect_any_keywords
+        ):
+            problems.append(
+                f"改写后的请求未命中任何指代 {case.expect_any_keywords}："
+                f"{resolution.standalone_request!r}"
+            )
         return CaseResult("context", case.id, not problems, "；".join(problems))
 
     # -- planning --------------------------------------------------------

@@ -50,8 +50,9 @@ context_cases:
       - role: user
         content: 把结束时间改成周五
     expect_task_planning: true
-    expect_keywords: ["杭州"]
-    note: 必须从历史消解"结束时间"指向的是杭州那次差旅
+    # 点名目的地或引用单号都算正确消解，不强制模型选哪一种表达。
+    expect_any_keywords: ["杭州", "TR-001"]
+    note: 必须从历史消解出"结束时间"指向的是哪次差旅
 
   - id: ctx-anaphora-that-one
     conversation:
@@ -63,7 +64,8 @@ context_cases:
         content: 那就现在帮我报了吧
     expect_task_planning: true
     expect_keywords: ["报销"]
-    note: 末轮省略了宾语，必须消解为对 TR-088 那笔差旅的报销
+    expect_any_keywords: ["上海", "TR-088"]
+    note: 末轮省略了宾语，必须消解出报销的是哪笔差旅
 
   - id: ctx-mixed-greeting-then-task
     conversation:

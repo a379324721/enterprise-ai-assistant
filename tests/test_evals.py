@@ -172,6 +172,37 @@ async def test_context_case_fails_when_anaphora_not_resolved() -> None:
 
 
 @pytest.mark.asyncio
+async def test_context_case_accepts_any_valid_anaphora_form() -> None:
+    """指代消解允许多种正确表达：点名实体或引用业务单号都算通过。"""
+    case = ContextCase(
+        id="c3",
+        conversation=[{"role": "user", "content": "把结束时间改成周五"}],
+        expect_task_planning=True,
+        expect_any_keywords=["杭州", "TR-001"],
+    )
+    resolution = _resolution(True, "把单号 TR-001 差旅申请的结束时间改为下周五")
+
+    result = await _harness(resolution).run_context_case(case)
+
+    assert result.passed is True
+
+
+@pytest.mark.asyncio
+async def test_context_case_fails_when_no_anaphora_form_matches() -> None:
+    case = ContextCase(
+        id="c4",
+        conversation=[{"role": "user", "content": "把结束时间改成周五"}],
+        expect_task_planning=True,
+        expect_any_keywords=["杭州", "TR-001"],
+    )
+
+    result = await _harness(_resolution(True, "把结束时间改成周五")).run_context_case(case)
+
+    assert result.passed is False
+    assert "未命中任何指代" in result.detail
+
+
+@pytest.mark.asyncio
 async def test_planning_case_detects_wrong_domain_and_missing_dependency() -> None:
     plan = TaskPlan(
         user_goal="创建差旅并提醒报销",
