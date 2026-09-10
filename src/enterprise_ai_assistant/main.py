@@ -78,7 +78,7 @@ def create_app(lifespan_handler: Any = lifespan) -> FastAPI:
         allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type", "X-User-ID"],
+        allow_headers=["Content-Type", "Authorization"],
     )
     application.include_router(router)
     return application

@@ -148,12 +148,20 @@ Vite 支持前端热更新；Uvicorn 使用 `--reload` 后支持后端代码自�
 
 ## API
 
-所有会话接口要求 `X-User-ID` 请求头。真实部署应由 API Gateway/OIDC 中间件覆盖此值，不允许客户端自行声明身份。
+所有会话接口要求 `Authorization: Bearer <token>` 请求头。用户身份取自令牌的 `sub`
+声明，客户端无法自行声明身份。生产部署由企业 SSO 颁发令牌；本地联调可在
+`APP_ENV=development` 且 `DEV_LOGIN_ENABLED=true` 时换取测试令牌：
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/dev-token \
+  -H 'Content-Type: application/json' \
+  -d '{"user_id":"u-1001"}' | python -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+```
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/chat \
   -H 'Content-Type: application/json' \
-  -H 'X-User-ID: u-1001' \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"message":"查询差旅住宿标准"}'
 ```
 
@@ -175,7 +183,7 @@ curl -X POST http://localhost:8000/api/v1/chat \
 ```bash
 curl -N -X POST http://localhost:8000/api/v1/chat/stream \
   -H 'Content-Type: application/json' \
-  -H 'X-User-ID: u-1001' \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"message":"查询差旅住宿标准"}'
 ```
 
@@ -187,7 +195,7 @@ curl -N -X POST http://localhost:8000/api/v1/chat/stream \
 ```bash
 curl -X POST http://localhost:8000/api/v1/conversations/<conversation-id>/confirm \
   -H 'Content-Type: application/json' \
-  -H 'X-User-ID: u-1001' \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"confirmation_id":"<pending-confirmation-id>","approved":true}'
 ```
 
@@ -196,7 +204,8 @@ curl -X POST http://localhost:8000/api/v1/conversations/<conversation-id>/confir
 ```bash
 uv run pytest
 uv run ruff check .
-uv run mypy src
+uv run mypy
+uv run python -m evals.runner   # 回归评测，需要可用的模型服务
 cd frontend && npm install && npm run build
 ```
 

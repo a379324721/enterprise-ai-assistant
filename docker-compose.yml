@@ -6,6 +6,9 @@ services:
       POSTGRES_DSN: postgresql://enterprise:enterprise@postgres:5432/enterprise_ai
       REDIS_URL: redis://redis:6379/0
       MILVUS_URI: http://milvus:19530
+      # 演示编排默认沿用 .env 中的开发配置；生产部署必须注入独立的 JWT_SECRET。
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      DEV_LOGIN_ENABLED: ${DEV_LOGIN_ENABLED:-false}
     ports: ["8000:8000"]
     depends_on:
       postgres: {condition: service_healthy}

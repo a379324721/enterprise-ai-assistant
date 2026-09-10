@@ -32,3 +32,16 @@ class AssistantResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     services: dict[str, str]
+
+
+class DevTokenRequest(BaseModel):
+    """本地联调用的令牌申请；生产环境由企业 SSO 颁发访问令牌。"""
+
+    user_id: str = Field(min_length=1, max_length=128)
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+

@@ -1,10 +1,10 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from typing import Annotated, Any
+from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, status
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 from starlette.responses import StreamingResponse
@@ -13,9 +13,13 @@ from enterprise_ai_assistant.api.schemas import (
     AssistantResponse,
     ChatRequest,
     ConfirmationRequest,
+    DevTokenRequest,
     HealthResponse,
+    TokenResponse,
 )
+from enterprise_ai_assistant.core.config import get_settings
 from enterprise_ai_assistant.core.models import PendingConfirmation, TaskStatus
+from enterprise_ai_assistant.core.security import CurrentUser, create_access_token
 
 router = APIRouter(prefix="/api/v1")
 
@@ -209,7 +213,7 @@ async def _stream_graph(
 async def chat(
     payload: ChatRequest,
     request: Request,
-    user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
+    user_id: CurrentUser,
 ) -> AssistantResponse:
     await _validate_chat_turn(request, payload.conversation_id, user_id)
     initial = _initial_state(payload, user_id)
@@ -227,7 +231,7 @@ async def chat(
 async def chat_stream(
     payload: ChatRequest,
     request: Request,
-    user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
+    user_id: CurrentUser,
 ) -> StreamingResponse:
     """聊天输入使用 POST，因此该 SSE 接口由流式 fetch 消费。"""
     await _validate_chat_turn(request, payload.conversation_id, user_id)
@@ -252,7 +256,7 @@ async def confirm(
     conversation_id: UUID,
     payload: ConfirmationRequest,
     request: Request,
-    user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
+    user_id: CurrentUser,
 ) -> AssistantResponse:
     snapshot = await request.app.state.graph.aget_state(_config(conversation_id, user_id))
     if not snapshot.values or snapshot.values.get("user_id") != user_id:
@@ -280,7 +284,7 @@ async def confirm_stream(
     conversation_id: UUID,
     payload: ConfirmationRequest,
     request: Request,
-    user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
+    user_id: CurrentUser,
 ) -> StreamingResponse:
     """恢复持久化的人工确认中断，并流式发送剩余任务。"""
     snapshot = await request.app.state.graph.aget_state(_config(conversation_id, user_id))
@@ -313,9 +317,23 @@ async def confirm_stream(
 async def get_conversation(
     conversation_id: UUID,
     request: Request,
-    user_id: Annotated[str, Header(alias="X-User-ID", min_length=1, max_length=128)],
+    user_id: CurrentUser,
 ) -> AssistantResponse:
     return await _response(request, conversation_id, user_id)
+
+
+@router.post("/auth/dev-token", response_model=TokenResponse)
+async def dev_token(payload: DevTokenRequest) -> TokenResponse:
+    """签发本地联调用的访问令牌。
+
+    仅在开发环境且显式开启 DEV_LOGIN_ENABLED 时可用；生产部署应关闭该接口，
+    由企业 SSO 颁发令牌。
+    """
+    settings = get_settings()
+    if not settings.dev_login_enabled or settings.app_env != "development":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="接口不可用")
+    token, expires_in = create_access_token(payload.user_id, settings)
+    return TokenResponse(access_token=token, expires_in=expires_in)
 
 
 @router.get("/health", response_model=HealthResponse)

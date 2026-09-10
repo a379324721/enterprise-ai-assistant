@@ -1,4 +1,4 @@
-import React, {FormEvent, useMemo, useRef, useState} from "react";
+import React, {FormEvent, useEffect, useMemo, useRef, useState} from "react";
 import {createRoot} from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -68,7 +68,28 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [progress, setProgress] = useState("");
   const activeAnswerId = useRef<string | null>(null);
-  const userId = useMemo(() => "demo-user", []);
+  const [token, setToken] = useState<string | null>(null);
+
+  // 演示环境从开发令牌接口换取 JWT；接入企业 SSO 后改为读取登录态下发的令牌。
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/v1/auth/dev-token", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({user_id: "demo-user"})});
+        if (!response.ok) throw new Error("无法获取访问令牌，请确认已开启 DEV_LOGIN_ENABLED");
+        const body = await response.json() as {access_token: string};
+        if (!cancelled) setToken(body.access_token);
+      } catch (error) {
+        if (!cancelled) setMessages([{role: "assistant", text: error instanceof Error ? error.message : "登录失败"}]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const authHeaders = useMemo(
+    () => ({"Content-Type": "application/json", ...(token ? {Authorization: `Bearer ${token}`} : {})}),
+    [token],
+  );
 
   function handleStreamEvent({event, data}: SseMessage) {
     if (event === "progress") {
@@ -101,11 +122,11 @@ function App() {
 
   async function send(event: FormEvent) {
     event.preventDefault();
-    if (!input.trim() || busy) return;
+    if (!input.trim() || busy || !token) return;
     const text = input.trim(); setInput(""); setBusy(true); setProgress("正在连接智能助手");
     setMessages((old) => [...old, {role: "user", text}, {role: "assistant", text: ""}]);
     try {
-      const response = await fetch("/api/v1/chat/stream", {method: "POST", headers: {"Content-Type": "application/json", "X-User-ID": userId}, body: JSON.stringify({message: text, request_id: crypto.randomUUID(), conversation_id: result?.conversation_id})});
+      const response = await fetch("/api/v1/chat/stream", {method: "POST", headers: authHeaders, body: JSON.stringify({message: text, request_id: crypto.randomUUID(), conversation_id: result?.conversation_id})});
       await consumeSse(response, handleStreamEvent);
     } catch (error) {
       const message = error instanceof Error ? error.message : "系统异常";
@@ -114,11 +135,11 @@ function App() {
   }
 
   async function confirm(approved: boolean) {
-    if (!result?.pending_confirmation || busy) return;
+    if (!result?.pending_confirmation || busy || !token) return;
     setBusy(true); setProgress(approved ? "正在确认并恢复任务" : "正在取消操作");
     setMessages((old) => [...old, {role: "assistant", text: ""}]);
     try {
-      const response = await fetch(`/api/v1/conversations/${result.conversation_id}/confirm/stream`, {method: "POST", headers: {"Content-Type": "application/json", "X-User-ID": userId}, body: JSON.stringify({confirmation_id: result.pending_confirmation.confirmation_id, approved})});
+      const response = await fetch(`/api/v1/conversations/${result.conversation_id}/confirm/stream`, {method: "POST", headers: authHeaders, body: JSON.stringify({confirmation_id: result.pending_confirmation.confirmation_id, approved})});
       await consumeSse(response, handleStreamEvent);
     } catch (error) {
       const message = error instanceof Error ? error.message : "系统异常";
