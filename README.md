@@ -199,6 +199,24 @@ curl -X POST http://localhost:8000/api/v1/conversations/<conversation-id>/confir
   -d '{"confirmation_id":"<pending-confirmation-id>","approved":true}'
 ```
 
+## 可观测性
+
+`GET /api/v1/metrics` 暴露 Prometheus 指标，与健康检查一样供基础设施抓取，不要求业务令牌：
+
+| 指标 | 用途 |
+|---|---|
+| `assistant_http_requests_total` / `assistant_http_request_duration_seconds` | 请求量与延迟分布，标签使用路由模板避免会话 ID 造成标签基数爆炸 |
+| `assistant_llm_calls_total` / `assistant_llm_call_duration_seconds` | 按 agent 维度的模型调用次数与耗时 |
+| `assistant_llm_tokens_total` / `assistant_llm_cost_usd_total` | token 消耗与按配置单价折算的成本 |
+| `assistant_tool_invocations_total` / `assistant_tool_duration_seconds` | 企业工具成功率与耗时 |
+| `assistant_confirmations_total` | 高风险操作的人工确认通过率 |
+| `assistant_budget_rejections_total` | 因会话用量超限被拒绝的请求数 |
+
+每次请求结束会输出一条 `llm_usage` 结构化日志，包含调用次数、输入/输出 token 和折算成本。
+
+设置 `CONVERSATION_TOKEN_BUDGET` 后，单个会话累计 token 达到上限时新请求返回 429。
+计数存放在 Redis，Redis 不可用时放行而不是阻断业务。
+
 ## 测试与质量
 
 ```bash

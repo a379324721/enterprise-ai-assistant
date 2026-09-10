@@ -14,6 +14,7 @@ from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.api.routes import router
 from enterprise_ai_assistant.core.config import get_settings
 from enterprise_ai_assistant.core.logging import configure_logging
+from enterprise_ai_assistant.core.observability import MetricsMiddleware
 from enterprise_ai_assistant.db.postgres import create_pool
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow
 from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
@@ -73,6 +74,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app(lifespan_handler: Any = lifespan) -> FastAPI:
     settings = get_settings()
     application = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan_handler)
+    application.add_middleware(MetricsMiddleware)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

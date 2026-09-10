@@ -7,7 +7,8 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request, status
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
-from starlette.responses import StreamingResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from starlette.responses import Response, StreamingResponse
 
 from enterprise_ai_assistant.api.schemas import (
     AssistantResponse,
@@ -17,8 +18,10 @@ from enterprise_ai_assistant.api.schemas import (
     HealthResponse,
     TokenResponse,
 )
-from enterprise_ai_assistant.core.config import get_settings
+from enterprise_ai_assistant.core.config import Settings, get_settings
+from enterprise_ai_assistant.core.metrics import BUDGET_REJECTIONS, REGISTRY
 from enterprise_ai_assistant.core.models import PendingConfirmation, TaskStatus
+from enterprise_ai_assistant.core.observability import LLMUsageTracker
 from enterprise_ai_assistant.core.security import CurrentUser, create_access_token
 
 router = APIRouter(prefix="/api/v1")
@@ -37,13 +40,68 @@ _NODE_PROGRESS = {
 }
 
 
-def _config(conversation_id: UUID, user_id: str) -> dict[str, Any]:
-    return {
+def _config(
+    conversation_id: UUID, user_id: str, tracker: LLMUsageTracker | None = None
+) -> dict[str, Any]:
+    config: dict[str, Any] = {
         "configurable": {"thread_id": str(conversation_id)},
         "tags": ["enterprise-assistant", "multi-agent"],
         "metadata": {"conversation_id": str(conversation_id), "user_id": user_id},
         "recursion_limit": 100,
     }
+    if tracker is not None:
+        config["callbacks"] = [tracker]
+    return config
+
+
+def _budget_key(conversation_id: UUID) -> str:
+    return f"budget:tokens:{conversation_id}"
+
+
+async def _enforce_token_budget(
+    request: Request, conversation_id: UUID, settings: Settings
+) -> None:
+    """会话累计 token 超过预算时拒绝新一轮请求。
+
+    预算计数仅用于成本护栏，Redis 不可用时放行而不是阻断业务。
+    """
+    if settings.conversation_token_budget <= 0:
+        return
+    try:
+        spent = await request.app.state.redis.get(_budget_key(conversation_id))
+    except Exception:
+        request.app.state.logger.warning(
+            "token_budget_check_failed", conversation_id=str(conversation_id)
+        )
+        return
+    if spent is not None and int(spent) >= settings.conversation_token_budget:
+        BUDGET_REJECTIONS.inc()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="当前会话的用量已达上限，请开启新会话",
+        )
+
+
+async def _record_usage(
+    request: Request,
+    conversation_id: UUID,
+    user_id: str,
+    tracker: LLMUsageTracker,
+    settings: Settings,
+) -> None:
+    tracker.log_summary(conversation_id=str(conversation_id), user_id=user_id)
+    if settings.conversation_token_budget <= 0 or tracker.total_tokens == 0:
+        return
+    try:
+        key = _budget_key(conversation_id)
+        await request.app.state.redis.incrby(key, tracker.total_tokens)
+        await request.app.state.redis.expire(
+            key, settings.conversation_budget_ttl_hours * 3600
+        )
+    except Exception:
+        request.app.state.logger.warning(
+            "token_budget_update_failed", conversation_id=str(conversation_id)
+        )
 
 
 def _initial_state(payload: ChatRequest, user_id: str) -> dict[str, Any]:
@@ -148,12 +206,14 @@ async def _stream_graph(
     只有标记为 user-visible 的领域回答会按模型原生增量发送。最终 `done` 事件是
     权威数据来源。
     """
+    settings = get_settings()
+    tracker = LLMUsageTracker(settings)
     yield _encode_sse("metadata", {"conversation_id": str(conversation_id)})
     try:
         active_message_ids: set[str] = set()
         async for part in request.app.state.graph.astream(
             graph_input,
-            _config(conversation_id, user_id),
+            _config(conversation_id, user_id, tracker),
             stream_mode=["messages", "updates"],
             subgraphs=True,
             version="v2",
@@ -207,6 +267,8 @@ async def _stream_graph(
             "graph_stream_failed", conversation_id=str(conversation_id)
         )
         yield _encode_sse("error", {"message": "智能助手执行失败，请稍后重试"})
+    finally:
+        await _record_usage(request, conversation_id, user_id, tracker, settings)
 
 
 @router.post("/chat", response_model=AssistantResponse)
@@ -215,15 +277,24 @@ async def chat(
     request: Request,
     user_id: CurrentUser,
 ) -> AssistantResponse:
+    settings = get_settings()
+    await _enforce_token_budget(request, payload.conversation_id, settings)
     await _validate_chat_turn(request, payload.conversation_id, user_id)
     initial = _initial_state(payload, user_id)
+    tracker = LLMUsageTracker(settings)
     try:
-        await request.app.state.graph.ainvoke(initial, _config(payload.conversation_id, user_id))
+        await request.app.state.graph.ainvoke(
+            initial, _config(payload.conversation_id, user_id, tracker)
+        )
     except Exception as exc:
         request.app.state.logger.exception(
             "graph_invocation_failed", conversation_id=str(payload.conversation_id)
         )
         raise HTTPException(status_code=502, detail="智能助手执行失败，请稍后重试") from exc
+    finally:
+        await _record_usage(
+            request, payload.conversation_id, user_id, tracker, settings
+        )
     return await _response(request, payload.conversation_id, user_id)
 
 
@@ -234,6 +305,7 @@ async def chat_stream(
     user_id: CurrentUser,
 ) -> StreamingResponse:
     """聊天输入使用 POST，因此该 SSE 接口由流式 fetch 消费。"""
+    await _enforce_token_budget(request, payload.conversation_id, get_settings())
     await _validate_chat_turn(request, payload.conversation_id, user_id)
     return StreamingResponse(
         _stream_graph(
@@ -266,16 +338,21 @@ async def confirm(
         raise HTTPException(status_code=409, detail="当前会话没有待确认操作")
     if pending.confirmation_id != payload.confirmation_id:
         raise HTTPException(status_code=409, detail="确认请求已过期，请刷新后重试")
-    await request.app.state.graph.ainvoke(
-        Command(
-            resume={
-                "confirmation_id": str(payload.confirmation_id),
-                "approved": payload.approved,
-                "comment": payload.comment,
-            }
-        ),
-        _config(conversation_id, user_id),
-    )
+    settings = get_settings()
+    tracker = LLMUsageTracker(settings)
+    try:
+        await request.app.state.graph.ainvoke(
+            Command(
+                resume={
+                    "confirmation_id": str(payload.confirmation_id),
+                    "approved": payload.approved,
+                    "comment": payload.comment,
+                }
+            ),
+            _config(conversation_id, user_id, tracker),
+        )
+    finally:
+        await _record_usage(request, conversation_id, user_id, tracker, settings)
     return await _response(request, conversation_id, user_id)
 
 
@@ -334,6 +411,12 @@ async def dev_token(payload: DevTokenRequest) -> TokenResponse:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="接口不可用")
     token, expires_in = create_access_token(payload.user_id, settings)
     return TokenResponse(access_token=token, expires_in=expires_in)
+
+
+@router.get("/metrics")
+async def metrics() -> Response:
+    """Prometheus 抓取端点。与健康检查一样由基础设施访问，不要求业务令牌。"""
+    return Response(content=generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
 
 @router.get("/health", response_model=HealthResponse)

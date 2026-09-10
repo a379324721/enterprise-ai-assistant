@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     milvus_uri: str = "http://localhost:19530"
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
 
+    # 模型单价用于把 token 折算成成本指标；默认 0 表示不统计金额。
+    llm_input_cost_per_1k_usd: float = Field(default=0.0, ge=0)
+    llm_output_cost_per_1k_usd: float = Field(default=0.0, ge=0)
+    # 单个会话累计 token 上限，0 表示不限制。防止异常会话无上限消耗额度。
+    conversation_token_budget: int = Field(default=0, ge=0)
+    conversation_budget_ttl_hours: int = Field(default=168, ge=1)
+
     jwt_secret: SecretStr | None = None
     jwt_algorithm: str = "HS256"
     jwt_issuer: str = "enterprise-ai-assistant"

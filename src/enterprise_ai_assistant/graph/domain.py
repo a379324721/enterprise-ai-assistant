@@ -1,4 +1,5 @@
 import json
+import time
 from collections.abc import Mapping
 from typing import Any, Literal
 
@@ -9,6 +10,11 @@ from langgraph.types import interrupt
 from langsmith import traceable
 
 from enterprise_ai_assistant.agents.domain_runtime import DomainRuntime, DomainRuntimeProvider
+from enterprise_ai_assistant.core.metrics import (
+    CONFIRMATIONS,
+    TOOL_DURATION,
+    TOOL_INVOCATIONS,
+)
 from enterprise_ai_assistant.core.models import (
     DomainTaskRequest,
     DomainTaskResult,
@@ -220,6 +226,7 @@ class DomainTaskWorkflow:
         if str(confirmation_id) != str(pending.confirmation_id):
             raise RuntimeError("confirmation id does not match the pending action")
         approved = bool(decision.get("approved")) if isinstance(decision, Mapping) else False
+        CONFIRMATIONS.labels(decision="approved" if approved else "rejected").inc()
         if approved:
             return {"confirmation_approved": True}
 
@@ -252,9 +259,11 @@ class DomainTaskWorkflow:
             raise RuntimeError("tool execution entered without a tool call")
         request = self._request(state)
         name = str(call["name"])
-        registered = self._runtime(state).tool(name)
+        runtime = self._runtime(state)
+        registered = runtime.tool(name)
+        started = time.perf_counter()
         try:
-            raw = await self._runtime(state).invoke_tool(name, dict(call["args"]))
+            raw = await runtime.invoke_tool(name, dict(call["args"]))
             outcome = BusinessToolOutcome.model_validate(raw)
         except Exception:
             logger.exception(
@@ -269,6 +278,10 @@ class DomainTaskWorkflow:
                 status="failed",
                 error="企业工具执行失败",
             )
+        TOOL_DURATION.labels(tool=name).observe(time.perf_counter() - started)
+        TOOL_INVOCATIONS.labels(
+            tool=name, outcome="success" if outcome.success else "failure"
+        ).inc()
         message = ToolMessage(
             content=outcome.model_dump_json(),
             tool_call_id=str(call["id"]),
