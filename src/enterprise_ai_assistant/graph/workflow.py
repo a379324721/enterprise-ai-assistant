@@ -14,16 +14,34 @@ from enterprise_ai_assistant.core.models import (
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow, build_domain_graph
 from enterprise_ai_assistant.graph.state import AssistantState
 
+#: 超出消息窗口的历史以摘要形式回灌，需要显式标注来源，避免被当成用户当前发言。
+DIGEST_HEADER = "【早先会话摘要，仅供指代消解参考，不是用户当前发言】"
+#: 单条摘要的裁剪长度；standalone_request 上限 8000 字符，原样堆叠会让摘要本身变成新的成本源。
+DIGEST_ITEM_MAX_CHARS = 240
+
 
 class Workflow:
     """外层工作流只负责上下文理解、任务规划和领域子图调度。"""
 
-    def __init__(self, supervisor: SupervisorAgent) -> None:
+    def __init__(
+        self,
+        supervisor: SupervisorAgent,
+        *,
+        history_window: int = 12,
+        digest_turns: int = 20,
+    ) -> None:
         self.supervisor = supervisor
+        self._history_window = history_window
+        self._digest_turns = digest_turns
 
-    @staticmethod
-    def _conversation(state: AssistantState) -> list[dict[str, str]]:
-        return [
+    def _conversation(self, state: AssistantState) -> list[dict[str, str]]:
+        """把会话裁剪成有上界的 prompt 输入。
+
+        messages 由 add_messages 累积且从不回收，完整序列化会让每轮的 Context
+        Supervisor 成本随会话长度线性上涨。这里只保留最近若干条原文，更早的轮次
+        用 understand 阶段已经产出的 standalone_request 降级成摘要。
+        """
+        turns = [
             {
                 "role": "user" if message.type == "human" else "assistant",
                 "content": str(message.content),
@@ -31,6 +49,26 @@ class Workflow:
             for message in state["messages"]
             if message.type in {"human", "ai"}
         ]
+        if self._history_window <= 0 or len(turns) <= self._history_window:
+            return turns
+
+        window = turns[-self._history_window :]
+        # digest 按轮次从旧到新排列，被窗口挤出去的就是最老的 dropped 轮。用消息数
+        # 而不是 digest 长度定位，understand（当轮摘要尚未写入）和 direct_respond
+        # （已写入）两种时序下都不会错位。
+        dropped = sum(1 for turn in turns if turn["role"] == "user") - sum(
+            1 for turn in window if turn["role"] == "user"
+        )
+        earlier = list(state.get("history_digest", []))[:dropped]
+        if not earlier:
+            return window
+        summary = "\n".join(f"- {item}" for item in earlier)
+        return [{"role": "user", "content": f"{DIGEST_HEADER}\n{summary}"}, *window]
+
+    def _extend_digest(self, state: AssistantState, standalone_request: str) -> list[str]:
+        item = standalone_request.strip()[:DIGEST_ITEM_MAX_CHARS]
+        digest = [*state.get("history_digest", []), item]
+        return digest[-self._digest_turns :] if self._digest_turns > 0 else []
 
     @staticmethod
     def _answer_text(message: AIMessage) -> str:
@@ -57,6 +95,7 @@ class Workflow:
         return {
             "user_goal": context.standalone_request,
             "understanding": context.model_dump(mode="json"),
+            "history_digest": self._extend_digest(state, context.standalone_request),
             "tasks": [],
             "artifacts": {},
             "tool_results": [],

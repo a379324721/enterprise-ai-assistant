@@ -18,7 +18,7 @@ from enterprise_ai_assistant.core.models import (
 )
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow, build_domain_graph
 from enterprise_ai_assistant.graph.state import DomainTaskState
-from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
+from enterprise_ai_assistant.graph.workflow import DIGEST_HEADER, Workflow, build_graph
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
 from enterprise_ai_assistant.tools import LocalEnterpriseToolProvider, ToolContext
@@ -562,3 +562,132 @@ async def test_failed_tool_does_not_overwrite_successful_artifact() -> None:
     assert update["artifact"] == {
         "create_expense_claim": {"tool": "create_expense_claim", "success": True}
     }
+
+
+class RecordingPlanningService:
+    """记录每次送进 Context Supervisor 的会话，用于断言 prompt 输入被裁剪。"""
+
+    def __init__(self) -> None:
+        self.seen: list[list[dict[str, str]]] = []
+
+    async def resolve_context(
+        self, conversation: list[dict[str, str]]
+    ) -> ContextResolution:
+        self.seen.append(conversation)
+        return ContextResolution(
+            standalone_request=f"第{len(self.seen)}轮独立请求",
+            intent_summary="记录会话输入",
+            requires_task_planning=False,
+        )
+
+    async def plan(self, context: ContextResolution) -> TaskPlan:
+        raise AssertionError(f"not used: {context}")
+
+    async def respond_direct(self, conversation: list[dict[str, str]]) -> AIMessage:
+        self.seen.append(conversation)
+        return AIMessage(content="好的")
+
+
+def _history(turns: int) -> list[BaseMessage]:
+    messages: list[BaseMessage] = []
+    for index in range(1, turns + 1):
+        messages.append(HumanMessage(content=f"问题{index}"))
+        messages.append(AIMessage(content=f"回答{index}"))
+    return messages
+
+
+def _context_state(messages: list[BaseMessage], digest: list[str]) -> Any:
+    state = initial_state()
+    state["messages"] = messages
+    state["history_digest"] = digest
+    return state
+
+
+def test_short_history_is_sent_verbatim() -> None:
+    workflow = Workflow(
+        SupervisorAgent(RecordingPlanningService()), history_window=12, digest_turns=20
+    )
+
+    conversation = workflow._conversation(_context_state(_history(3), ["轮1", "轮2", "轮3"]))
+
+    assert [turn["content"] for turn in conversation] == [
+        "问题1", "回答1", "问题2", "回答2", "问题3", "回答3",
+    ]
+    assert not any(DIGEST_HEADER in turn["content"] for turn in conversation)
+
+
+def test_long_history_is_windowed_with_digest_of_dropped_turns() -> None:
+    workflow = Workflow(
+        SupervisorAgent(RecordingPlanningService()), history_window=4, digest_turns=20
+    )
+    digest = [f"轮{index}摘要" for index in range(1, 6)]
+
+    conversation = workflow._conversation(_context_state(_history(5), digest))
+
+    assert len(conversation) == 5
+    assert [turn["content"] for turn in conversation[1:]] == [
+        "问题4", "回答4", "问题5", "回答5",
+    ]
+    summary = conversation[0]["content"]
+    assert summary.startswith(DIGEST_HEADER)
+    assert "轮1摘要" in summary and "轮3摘要" in summary
+    # 轮 4、5 的原文还在窗口里，不该重复出现在摘要中。
+    assert "轮4摘要" not in summary and "轮5摘要" not in summary
+
+
+def test_digest_alignment_is_stable_across_understand_and_respond() -> None:
+    """understand 时当轮摘要尚未入 digest，direct_respond 时已入，两者不能错位。"""
+    workflow = Workflow(
+        SupervisorAgent(RecordingPlanningService()), history_window=4, digest_turns=20
+    )
+    messages = [*_history(4), HumanMessage(content="问题5")]
+    before = [f"轮{index}摘要" for index in range(1, 5)]
+    after = [*before, "轮5摘要"]
+
+    at_understand = workflow._conversation(_context_state(messages, before))
+    at_respond = workflow._conversation(_context_state(messages, after))
+
+    assert at_understand == at_respond
+    assert at_understand[0]["content"].endswith("轮3摘要")
+
+
+@pytest.mark.asyncio
+async def test_understand_appends_and_caps_digest() -> None:
+    workflow = Workflow(
+        SupervisorAgent(RecordingPlanningService()), history_window=4, digest_turns=3
+    )
+    state = _context_state([HumanMessage(content="问题1")], ["轮1", "轮2", "轮3"])
+
+    update = await workflow.understand(state)
+
+    assert update["history_digest"] == ["轮2", "轮3", "第1轮独立请求"]
+
+
+@pytest.mark.asyncio
+async def test_digest_entry_is_truncated() -> None:
+    class LongRequestService(RecordingPlanningService):
+        async def resolve_context(
+            self, conversation: list[dict[str, str]]
+        ) -> ContextResolution:
+            self.seen.append(conversation)
+            return ContextResolution(
+                standalone_request="长" * 2000,
+                intent_summary="超长请求",
+                requires_task_planning=False,
+            )
+
+    workflow = Workflow(SupervisorAgent(LongRequestService()))
+    state = _context_state([HumanMessage(content="问题1")], [])
+
+    update = await workflow.understand(state)
+
+    assert len(update["history_digest"][0]) == 240
+
+
+@pytest.mark.asyncio
+async def test_window_disabled_keeps_full_history() -> None:
+    workflow = Workflow(SupervisorAgent(RecordingPlanningService()), history_window=0)
+
+    conversation = workflow._conversation(_context_state(_history(20), ["轮1"]))
+
+    assert len(conversation) == 40

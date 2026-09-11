@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     # 单个会话累计 token 上限，0 表示不限制。防止异常会话无上限消耗额度。
     conversation_token_budget: int = Field(default=0, ge=0)
     conversation_budget_ttl_hours: int = Field(default=168, ge=1)
+    # Context Supervisor 每轮都要读完整会话，历史无上限增长会让单轮 token 线性上涨。
+    # 只把最近 N 条消息原样送进 prompt，更早的轮次降级成一句话摘要，0 表示不截断。
+    context_window_messages: int = Field(default=12, ge=0)
+    # 保留的历史摘要条数（每轮一条），决定超出消息窗口后还能回溯多少轮指代。
+    context_digest_turns: int = Field(default=20, ge=0)
 
     # SSE 订阅者断开时后台执行的默认处置：continue 表示继续跑完并落检查点，
     # 客户端重连后仍能拿到结果。

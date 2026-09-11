@@ -61,7 +61,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         model = build_chat_model()
         supervisor = SupervisorAgent(LLMPlanningService(model))
         provider = LocalEnterpriseToolProvider(actions, policies)
-        workflow = Workflow(supervisor)
+        workflow = Workflow(
+            supervisor,
+            history_window=settings.context_window_messages,
+            digest_turns=settings.context_digest_turns,
+        )
         domain_workflow = DomainTaskWorkflow(
             DomainRuntimeFactory(model, DomainToolRegistry(provider))
         )

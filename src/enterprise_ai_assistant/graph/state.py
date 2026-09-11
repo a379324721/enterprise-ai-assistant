@@ -27,6 +27,7 @@ class AssistantState(TypedDict):
     active_task_id: str | None
     last_answer: str
     understanding: NotRequired[dict[str, Any]]
+    history_digest: NotRequired[list[str]]
     turn_answers: NotRequired[list[str]]
     domain_request: NotRequired[DomainTaskRequest | None]
     domain_result: NotRequired[DomainTaskResult | None]
