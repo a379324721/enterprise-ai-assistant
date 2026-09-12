@@ -17,6 +17,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from enterprise_ai_assistant.api import routes
 from enterprise_ai_assistant.core.config import Settings
+from enterprise_ai_assistant.core.runs import MemoryStreamBridge, RunManager
 from enterprise_ai_assistant.core.security import create_access_token
 from enterprise_ai_assistant.main import create_app
 
@@ -157,3 +158,71 @@ async def test_another_users_conversation_is_not_readable(
         response = await client.get(_url(), headers=_auth("stranger"))
 
     assert response.status_code == 404
+
+
+class RecordingCheckpointer:
+    def __init__(self) -> None:
+        self.deleted: list[str] = []
+
+    async def adelete_thread(self, thread_id: str) -> None:
+        self.deleted.append(thread_id)
+
+
+def _client_with_checkpointer(
+    values: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> tuple[AsyncClient, RecordingCheckpointer]:
+    monkeypatch.setattr(routes, "get_settings", lambda: SETTINGS)
+    monkeypatch.setattr("enterprise_ai_assistant.core.security.get_settings", lambda: SETTINGS)
+    app = create_app(_noop_lifespan)
+    app.state.graph = StubGraph(values)
+    app.state.logger = SimpleNamespace(
+        info=lambda *a, **k: None, warning=lambda *a, **k: None, exception=lambda *a, **k: None
+    )
+    app.state.runs = RunManager(MemoryStreamBridge(), app.state.logger)
+    checkpointer = RecordingCheckpointer()
+    app.state.checkpointer = checkpointer
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test"), checkpointer
+
+
+@pytest.mark.asyncio
+async def test_clearing_drops_the_whole_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    values = {"user_id": "owner-user", "messages": _history(3)}
+
+    client, checkpointer = _client_with_checkpointer(values, monkeypatch)
+    async with client:
+        response = await client.delete(
+            f"/api/v1/conversations/{CONVERSATION_ID}", headers=_auth()
+        )
+
+    assert response.status_code == 204
+    assert checkpointer.deleted == [str(CONVERSATION_ID)]
+
+
+@pytest.mark.asyncio
+async def test_clearing_someone_elses_conversation_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {"user_id": "owner-user", "messages": _history(3)}
+
+    client, checkpointer = _client_with_checkpointer(values, monkeypatch)
+    async with client:
+        response = await client.delete(
+            f"/api/v1/conversations/{CONVERSATION_ID}", headers=_auth("stranger")
+        )
+
+    assert response.status_code == 404
+    assert checkpointer.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_clearing_an_empty_conversation_still_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """调用方要的是"清空"这个结果，会话本来就不存在时重复调用不该报错。"""
+    client, _ = _client_with_checkpointer({}, monkeypatch)
+    async with client:
+        response = await client.delete(
+            f"/api/v1/conversations/{CONVERSATION_ID}", headers=_auth()
+        )
+
+    assert response.status_code == 204

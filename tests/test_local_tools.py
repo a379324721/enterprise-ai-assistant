@@ -16,6 +16,7 @@ from enterprise_ai_assistant.tools import (
     MeetingRoomSearchInput,
     ToolContext,
 )
+from enterprise_ai_assistant.tools.local_enterprise import RoomBooking
 from enterprise_ai_assistant.tools.registry import (
     CAPABILITY_SUMMARY,
     DomainToolRegistry,
@@ -117,14 +118,14 @@ def _meeting_provider() -> LocalEnterpriseToolProvider:
             MeetingRoom("SH-302", "上海 302", "上海分部", 20),
             MeetingRoom("BJ-101", "北京 101", "北京总部", 6),
         ),
-        bookings=(("SH-301", date(2026, 9, 22), time(9, 0), time(12, 0)),),
+        bookings=(RoomBooking("SH-301", 0, time(9, 0), time(12, 0)),),
     )
 
 
 def _search(**overrides: object) -> MeetingRoomSearchInput:
     payload: dict[str, object] = {
         "location": "上海分部",
-        "date": date(2026, 9, 22),
+        "date": date.today(),
         "start_time": time(10, 0),
         "end_time": time(11, 0),
         "capacity": 1,
@@ -181,7 +182,7 @@ async def test_booking_an_occupied_room_fails() -> None:
         context(),
         MeetingRoomBookingInput(
             room_id="SH-301",
-            date=date(2026, 9, 22),
+            date=date.today(),
             start_time=time(10, 0),
             end_time=time(11, 0),
             subject="项目评审",
@@ -197,7 +198,7 @@ async def test_booking_marks_the_room_busy_for_later_searches() -> None:
     provider = _meeting_provider()
     booking = MeetingRoomBookingInput(
         room_id="SH-302",
-        date=date(2026, 9, 22),
+        date=date.today(),
         start_time=time(10, 0),
         end_time=time(11, 0),
         subject="项目评审",
@@ -217,7 +218,7 @@ async def test_booking_an_unknown_room_fails() -> None:
         context(),
         MeetingRoomBookingInput(
             room_id="NOPE-1",
-            date=date(2026, 9, 22),
+            date=date.today(),
             start_time=time(10, 0),
             end_time=time(11, 0),
             subject="项目评审",

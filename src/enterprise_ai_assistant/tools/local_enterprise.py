@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import date as date_type
-from datetime import time
+from datetime import time, timedelta
 from typing import Any
 
 from enterprise_ai_assistant.repositories.actions import ActionRepository
@@ -35,12 +35,28 @@ DEFAULT_MEETING_ROOMS: tuple[MeetingRoom, ...] = (
     MeetingRoom("HZ-501", "杭州研发中心 501", "杭州研发中心", 12),
 )
 
-#: 预置的占用时段 (room_id, 日期, 起, 止)。演示时故意让热门时段冲突，
-#: 好让领域 Agent 有机会展示"工具返回没有可用资源"之后如何如实回应。
-DEFAULT_ROOM_BOOKINGS: tuple[tuple[str, date_type, time, time], ...] = (
-    ("SH-301", date_type(2026, 9, 22), time(9, 0), time(12, 0)),
-    ("SH-302", date_type(2026, 9, 22), time(9, 30), time(11, 0)),
-    ("BJ-201", date_type(2026, 9, 23), time(14, 0), time(17, 0)),
+@dataclass(frozen=True)
+class RoomBooking:
+    """一条预置占用。
+
+    日期用相对"今天"的天数而不是绝对日期：写死的日期一旦过去，任何时段都查得到
+    空闲，"没有可用会议室"这条路径就再也演示不出来了。
+    """
+
+    room_id: str
+    day_offset: int
+    start: time
+    end: time
+
+
+#: 预置占用。刻意让下周三上午的 SH-301、下周四上午的 SH-302 各自被占，于是常规
+#: 演示能查到房间又能看出筛选生效；下周三下午两点则被排满，用来演示查不到的情形。
+DEFAULT_ROOM_BOOKINGS: tuple[RoomBooking, ...] = (
+    RoomBooking("SH-301", 4, time(9, 0), time(12, 0)),
+    RoomBooking("SH-302", 5, time(9, 30), time(11, 0)),
+    RoomBooking("BJ-201", 5, time(14, 0), time(17, 0)),
+    RoomBooking("SH-301", 4, time(14, 0), time(16, 0)),
+    RoomBooking("SH-302", 4, time(14, 0), time(16, 0)),
 )
 
 
@@ -54,15 +70,16 @@ class LocalEnterpriseToolProvider:
         *,
         annual_leave_balance: float = 8,
         rooms: tuple[MeetingRoom, ...] = DEFAULT_MEETING_ROOMS,
-        bookings: tuple[tuple[str, date_type, time, time], ...] = DEFAULT_ROOM_BOOKINGS,
+        bookings: tuple[RoomBooking, ...] = DEFAULT_ROOM_BOOKINGS,
     ) -> None:
         self._actions = actions
         self._policies = policies
         self._annual_leave_balance = annual_leave_balance
         self._rooms = rooms
-        # 占用表随进程存活：本次演示里订过的房间，后续查询就查不到了。
+        self._preset = bookings
+        # 本次进程里新订的房间用绝对日期记录，后续查询能看到它们已被占用。
         # 真实部署由会议室系统持有这份状态，这里只是替身。
-        self._bookings = list(bookings)
+        self._booked: list[tuple[str, date_type, time, time]] = []
 
     async def search_policy(self, payload: PolicySearchInput) -> BusinessToolOutcome:
         items = await self._policies.search(payload.query, payload.domain, payload.limit)
@@ -115,13 +132,25 @@ class LocalEnterpriseToolProvider:
             payload=payload.model_dump(mode="json"),
         )
 
+    def _occupied(self) -> list[tuple[str, date_type, time, time]]:
+        """把预置占用按今天展开，再并上本次进程内的预订。
+
+        每次查询都重新展开，进程跨过午夜后预置时段仍然跟着日期走。
+        """
+        today = date_type.today()
+        preset = [
+            (item.room_id, today + timedelta(days=item.day_offset), item.start, item.end)
+            for item in self._preset
+        ]
+        return preset + self._booked
+
     def _is_free(
         self, room_id: str, day: date_type, start: time, end: time
     ) -> bool:
         # 半开区间比较：紧挨着的两场会议（10:00 结束、10:00 开始）不算冲突。
         return not any(
             booked_room == room_id and booked_day == day and start < booked_end and booked_start < end
-            for booked_room, booked_day, booked_start, booked_end in self._bookings
+            for booked_room, booked_day, booked_start, booked_end in self._occupied()
         )
 
     @staticmethod
@@ -191,7 +220,7 @@ class LocalEnterpriseToolProvider:
             context=context,
             payload={**payload.model_dump(mode="json"), "room_name": room.name},
         )
-        self._bookings.append(
+        self._booked.append(
             (room.room_id, payload.date, payload.start_time, payload.end_time)
         )
         return outcome

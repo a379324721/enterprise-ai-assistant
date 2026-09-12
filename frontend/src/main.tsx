@@ -15,7 +15,7 @@ type Message = {role: "user" | "assistant"; text: string; index?: number};
 type SseMessage = {event: string; data: unknown};
 type Session = {token: string; userId: string; displayName: string; conversationId: string};
 
-const examples = ["下周三到周五去上海出差，帮我申请，顺便订个周四上午的会议室", "我还有多少年假？下周五请一天年假", "查询差旅住宿标准"];
+const examples = ["申请周三出差上海，订个周四上午的会议室", "我还有多少年假？下周五请一天年假", "查询差旅住宿标准"];
 const SESSION_KEY = "eaa.session";
 const PAGE_SIZE = 20;
 
@@ -217,6 +217,20 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
     return () => controller.abort();
   }, [enterConversation]);
 
+  async function clearConversation() {
+    if (busy || !window.confirm("清空当前会话的全部消息？该操作不可撤销。")) return;
+    setBusy(true);
+    try {
+      const response = guard(await fetch(`/api/v1/conversations/${session.conversationId}`, {
+        method: "DELETE", headers: authHeaders,
+      }));
+      if (!response.ok) throw new Error(await readError(response, "清空失败"));
+      setMessages([]); setResult(null); setHasMore(false); setLoadError("");
+    } catch (issue) {
+      setLoadError(describeFailure(issue, "清空失败"));
+    } finally { setBusy(false); }
+  }
+
   async function loadEarlier() {
     const earliest = messages.find((message) => message.index !== undefined)?.index;
     if (earliest === undefined || loadingHistory) return;
@@ -288,6 +302,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
   return <main>
     <header><div className="brandMark">E</div><div><h1>Enterprise AI Assistant</h1><p>企业事务，一个对话完成</p></div>
       <span className="online">● {session.displayName}</span>
+      <button className="signOut" disabled={busy} onClick={() => void clearConversation()}>清空会话</button>
       <button className="signOut" onClick={onSignOut}>退出</button>
     </header>
     <section className="layout">

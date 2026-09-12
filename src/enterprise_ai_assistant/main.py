@@ -92,6 +92,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await checkpointer.setup()
 
         app.state.graph = build_graph(workflow, domain_workflow, checkpointer)
+        app.state.checkpointer = checkpointer
         # 图执行跑在后台运行里，SSE 连接只是订阅者：客户端断开不再中断执行。
         # 单进程用内存事件桥；多副本部署时换成跨进程实现即可，路由层不用动。
         bridge = MemoryStreamBridge(

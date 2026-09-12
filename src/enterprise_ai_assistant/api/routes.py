@@ -650,6 +650,28 @@ def _demo_auth_response(user: DemoUser, settings: Settings, *, created: bool) ->
     )
 
 
+@router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_conversation(
+    conversation_id: UUID, request: Request, user_id: CurrentUser
+) -> Response:
+    """清空会话，让演示可以重来一遍。
+
+    演示用户的 conversation_id 由名字派生、换不掉，一旦聊歪了就没有别的退路；
+    历史也会随轮次一直增长，检查点越读越慢。删掉整个 thread 是最干净的重置。
+
+    已经不存在的会话同样返回 204：调用方要的是"清空"这个结果，重复调用不该报错。
+    """
+    snapshot = await request.app.state.graph.aget_state(_config(conversation_id, user_id))
+    if snapshot.values and snapshot.values.get("user_id") != user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
+    if _runs(request.app).active(conversation_id) is not None:
+        raise HTTPException(status_code=409, detail="当前会话仍在执行中，请稍后再试")
+    checkpointer = getattr(request.app.state, "checkpointer", None)
+    if checkpointer is not None:
+        await checkpointer.adelete_thread(str(conversation_id))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/auth/login", response_model=DemoAuthResponse)
 async def demo_login(payload: DemoAuthRequest, request: Request) -> DemoAuthResponse:
     """用名字进入，返回令牌和这个用户固定的会话 ID。
