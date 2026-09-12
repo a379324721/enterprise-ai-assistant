@@ -33,6 +33,25 @@ COMMENT ON COLUMN workflow_actions.result IS
 COMMENT ON COLUMN workflow_actions.created_at IS
     '写入时间。与 user_id 组成倒序索引，用于召回该用户最近的单据。';
 
+CREATE TABLE IF NOT EXISTS demo_users (
+    user_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE demo_users IS
+    '演示用的临时用户名册。只有名字、没有凭据：任何人输入他人的名字即可读到对方的'
+    '会话与记忆，因此注册登录接口与 dev-token 一样受 APP_ENV=development 和'
+    'DEMO_LOGIN_ENABLED 双重保护，生产环境必须由企业 SSO 取代。';
+COMMENT ON COLUMN demo_users.user_id IS
+    '规范化后的名字（去首尾空白、内部连续空白折叠为一个）。同时是令牌 sub、'
+    '会话归属和幂等键的输入，所以以它而非原始输入作为主键，避免"张三"和"张三 "'
+    '被当成两个人。';
+COMMENT ON COLUMN demo_users.display_name IS
+    '用户输入的原始名字，用于界面展示和助手称呼；随令牌的 name 声明下发。';
+COMMENT ON COLUMN demo_users.created_at IS
+    '注册时间。登录接口据此区分新注册与老用户回归。';
+
 CREATE TABLE IF NOT EXISTS user_memories (
     id UUID PRIMARY KEY,
     user_id TEXT NOT NULL,

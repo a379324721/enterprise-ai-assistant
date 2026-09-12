@@ -14,6 +14,8 @@ from enterprise_ai_assistant.api.schemas import (
     AssistantResponse,
     ChatRequest,
     ConfirmationRequest,
+    DemoAuthRequest,
+    DemoAuthResponse,
     DevTokenRequest,
     HealthResponse,
     MemoryListResponse,
@@ -35,6 +37,12 @@ from enterprise_ai_assistant.core.runs import (
     StreamGap,
 )
 from enterprise_ai_assistant.core.security import CurrentUser, create_access_token
+from enterprise_ai_assistant.repositories.users import (
+    DemoUser,
+    DemoUserRepository,
+    conversation_id_for,
+    normalize_name,
+)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -563,6 +571,57 @@ async def get_conversation(
         # 执行还在继续，检查点里的半成品状态不能被当成失败。
         return response.model_copy(update={"status": "running", "run_id": run.run_id})
     return response
+
+
+def _demo_users(request: Request, settings: Settings) -> DemoUserRepository:
+    """取演示名册；接口未开启时一律 404，不泄露它的存在。"""
+    repository: DemoUserRepository | None = getattr(request.app.state, "demo_users", None)
+    if repository is None or not settings.demo_login_enabled or settings.app_env != "development":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="接口不可用")
+    return repository
+
+
+def _demo_auth_response(user: DemoUser, settings: Settings, *, created: bool) -> DemoAuthResponse:
+    token, expires_in = create_access_token(
+        user.user_id, settings, display_name=user.display_name
+    )
+    return DemoAuthResponse(
+        access_token=token,
+        expires_in=expires_in,
+        user_id=user.user_id,
+        display_name=user.display_name,
+        conversation_id=conversation_id_for(user.user_id),
+        created=created,
+    )
+
+
+@router.post("/auth/register", response_model=DemoAuthResponse, status_code=201)
+async def demo_register(payload: DemoAuthRequest, request: Request) -> DemoAuthResponse:
+    """用名字注册一个演示用户。
+
+    这不是身份系统：没有凭据，任何人输入同一个名字就能取得这个身份。仅供演示，
+    由 APP_ENV 和 DEMO_LOGIN_ENABLED 双重开关挡在生产之外。
+    """
+    settings = get_settings()
+    repository = _demo_users(request, settings)
+    display_name = normalize_name(payload.name)
+    if not display_name:
+        raise HTTPException(status_code=422, detail="名字不能为空")
+    user = await repository.create(display_name, display_name)
+    if user is None:
+        raise HTTPException(status_code=409, detail="这个名字已经被注册，请直接登录")
+    return _demo_auth_response(user, settings, created=True)
+
+
+@router.post("/auth/login", response_model=DemoAuthResponse)
+async def demo_login(payload: DemoAuthRequest, request: Request) -> DemoAuthResponse:
+    """用名字登录，返回令牌和这个用户固定的会话 ID。"""
+    settings = get_settings()
+    repository = _demo_users(request, settings)
+    user = await repository.get(normalize_name(payload.name))
+    if user is None:
+        raise HTTPException(status_code=404, detail="这个名字还没有注册")
+    return _demo_auth_response(user, settings, created=False)
 
 
 @router.post("/auth/dev-token", response_model=TokenResponse)

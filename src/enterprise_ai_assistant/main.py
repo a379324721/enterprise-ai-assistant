@@ -28,6 +28,7 @@ from enterprise_ai_assistant.repositories.policies import (
     CachedMilvusPolicyRepository,
     bootstrap_policy_collection,
 )
+from enterprise_ai_assistant.repositories.users import PostgresDemoUserRepository
 from enterprise_ai_assistant.services.llm import build_chat_model, build_embeddings
 from enterprise_ai_assistant.services.planning import LLMPlanningService
 from enterprise_ai_assistant.tools import LocalEnterpriseToolProvider
@@ -103,6 +104,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.runs = runs
         app.state.db_pool = db_pool
         app.state.memories = memories
+        app.state.demo_users = PostgresDemoUserRepository(db_pool)
         app.state.redis = redis
         app.state.milvus = milvus
         app.state.logger = logger

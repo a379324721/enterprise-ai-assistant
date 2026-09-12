@@ -66,3 +66,19 @@ class MemoryListResponse(BaseModel):
 
     memories: list[MemoryRecord]
     recent_actions: list[RecentAction]
+
+
+class DemoAuthRequest(BaseModel):
+    """演示登录只要一个名字；没有凭据，因此接口受环境开关保护。"""
+
+    name: str = Field(min_length=1, max_length=64)
+
+
+class DemoAuthResponse(TokenResponse):
+    user_id: str
+    display_name: str
+    # 演示用户固定一个会话，由服务端从 user_id 确定性派生后下发，
+    # 客户端换设备或清了本地存储也能回到同一个会话。
+    conversation_id: UUID
+    # true 表示本次调用完成了注册，前端据此区分"注册成功"和"欢迎回来"。
+    created: bool

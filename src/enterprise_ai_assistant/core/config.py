@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     access_token_ttl_minutes: int = Field(default=60, ge=1, le=1440)
     # 本地联调用的签发接口；生产环境的令牌应由企业 SSO 颁发。
     dev_login_enabled: bool = False
+    # 演示用的名字注册/登录。没有任何凭据，输入他人的名字即可读到对方的会话与记忆，
+    # 因此与 dev_login 一样只允许在开发环境开启。
+    demo_login_enabled: bool = False
 
     @model_validator(mode="after")
     def require_jwt_secret_outside_development(self) -> "Settings":
@@ -85,6 +88,12 @@ class Settings(BaseSettings):
     def dev_login_requires_development(self) -> "Settings":
         if self.dev_login_enabled and self.app_env != "development":
             raise ValueError("DEV_LOGIN_ENABLED is only allowed in the development environment")
+        return self
+
+    @model_validator(mode="after")
+    def demo_login_requires_development(self) -> "Settings":
+        if self.demo_login_enabled and self.app_env != "development":
+            raise ValueError("DEMO_LOGIN_ENABLED is only allowed in the development environment")
         return self
 
     @property
