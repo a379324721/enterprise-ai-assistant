@@ -93,8 +93,8 @@ cd frontend && npm run build  # tsc -b && vite build
 
 ### 演示登录与会话模型
 
-`/auth/register` 和 `/auth/login` 用名字换令牌，**没有凭据**：输入他人的名字即可接管
-该身份。它受 `APP_ENV=development` 和 `DEMO_LOGIN_ENABLED` 双重保护，配置校验拒绝在
+`/auth/login` 用名字换令牌，**没有凭据**：输入他人的名字即可接管该身份。没有独立的
+注册接口——没有凭据时注册和登录是同一件事，名字没见过就直接建号（`get_or_create`）。它受 `APP_ENV=development` 和 `DEMO_LOGIN_ENABLED` 双重保护，配置校验拒绝在
 非开发环境开启，关闭时返回 404 而非 403。改动这一带时不要放宽任何一层。
 
 演示用户固定一个会话：`conversation_id` 由 `user_id` 经 uuid5 派生（`repositories/users.py`），

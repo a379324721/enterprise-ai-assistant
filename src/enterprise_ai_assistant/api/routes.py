@@ -650,33 +650,23 @@ def _demo_auth_response(user: DemoUser, settings: Settings, *, created: bool) ->
     )
 
 
-@router.post("/auth/register", response_model=DemoAuthResponse, status_code=201)
-async def demo_register(payload: DemoAuthRequest, request: Request) -> DemoAuthResponse:
-    """用名字注册一个演示用户。
+@router.post("/auth/login", response_model=DemoAuthResponse)
+async def demo_login(payload: DemoAuthRequest, request: Request) -> DemoAuthResponse:
+    """用名字进入，返回令牌和这个用户固定的会话 ID。
 
-    这不是身份系统：没有凭据，任何人输入同一个名字就能取得这个身份。仅供演示，
-    由 APP_ENV 和 DEMO_LOGIN_ENABLED 双重开关挡在生产之外。
+    名字没见过就顺手建一个，不单独设注册动作：没有凭据的前提下，注册和登录本来就是
+    同一件事，把名字占用做成冲突错误挡不住任何冒用，只会在演示现场平添一次点击。
+
+    这不是身份系统——任何人输入同一个名字就能取得这个身份，由 APP_ENV 和
+    DEMO_LOGIN_ENABLED 双重开关挡在生产之外。
     """
     settings = get_settings()
     repository = _demo_users(request, settings)
     display_name = normalize_name(payload.name)
     if not display_name:
         raise HTTPException(status_code=422, detail="名字不能为空")
-    user = await repository.create(display_name, display_name)
-    if user is None:
-        raise HTTPException(status_code=409, detail="这个名字已经被注册，请直接登录")
-    return _demo_auth_response(user, settings, created=True)
-
-
-@router.post("/auth/login", response_model=DemoAuthResponse)
-async def demo_login(payload: DemoAuthRequest, request: Request) -> DemoAuthResponse:
-    """用名字登录，返回令牌和这个用户固定的会话 ID。"""
-    settings = get_settings()
-    repository = _demo_users(request, settings)
-    user = await repository.get(normalize_name(payload.name))
-    if user is None:
-        raise HTTPException(status_code=404, detail="这个名字还没有注册")
-    return _demo_auth_response(user, settings, created=False)
+    user, created = await repository.get_or_create(display_name, display_name)
+    return _demo_auth_response(user, settings, created=created)
 
 
 @router.post("/auth/dev-token", response_model=TokenResponse)

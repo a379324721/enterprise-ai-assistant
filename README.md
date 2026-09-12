@@ -221,9 +221,12 @@ curl -X POST http://localhost:8000/api/v1/chat \
 `APP_ENV=development` 且 `DEMO_LOGIN_ENABLED=true`：
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/auth/register -H 'Content-Type: application/json' -d '{"name":"王宁"}'
-curl -X POST http://localhost:8000/api/v1/auth/login    -H 'Content-Type: application/json' -d '{"name":"王宁"}'
+curl -X POST http://localhost:8000/api/v1/auth/login -H 'Content-Type: application/json' -d '{"name":"王宁"}'
 ```
+
+只有这一个入口，没有单独的注册动作：名字没见过就顺手建一个，响应的 `created`
+字段区分新建与回归。在没有凭据的前提下注册和登录本来就是同一件事，把名字占用做成
+冲突错误挡不住任何冒用，只会让演示现场打错字的人多点一次按钮。
 
 响应给出令牌和 `conversation_id`。会话 ID 由 `user_id` 经 uuid5 确定性派生，
 所以**一个演示用户固定一个会话**：换设备、清了浏览器存储都会回到同一个 thread，

@@ -3,6 +3,9 @@
 这不是身份系统：没有凭据，输入名字即可取得该名字的全部会话与记忆。它的存在只是
 为了让演示对象用自己的名字进来，接口层必须靠 APP_ENV 和 DEMO_LOGIN_ENABLED 双重
 开关把它挡在生产之外，正式部署由企业 SSO 取代。
+
+没有独立的注册动作：在没有凭据的前提下，注册和登录是同一件事，把名字占用做成
+冲突错误挡不住任何冒用，只会让演示现场打错字的人多点一次按钮。
 """
 
 import re
@@ -41,20 +44,18 @@ class DemoUser:
 
 
 class DemoUserRepository(Protocol):
-    async def create(self, user_id: str, display_name: str) -> DemoUser | None: ...
-
-    async def get(self, user_id: str) -> DemoUser | None: ...
+    async def get_or_create(self, user_id: str, display_name: str) -> tuple[DemoUser, bool]: ...
 
 
 class PostgresDemoUserRepository:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
-    async def create(self, user_id: str, display_name: str) -> DemoUser | None:
-        """注册一个名字；已被占用时返回 None。
+    async def get_or_create(self, user_id: str, display_name: str) -> tuple[DemoUser, bool]:
+        """按名字取用户，不存在就建一个；第二个返回值表示本次是否新建。
 
-        用 ON CONFLICT DO NOTHING 而不是先查后插：并发注册同一个名字时，先查后插
-        会让两个请求都认为自己是首个注册者。
+        先插再查而不是先查再插：并发提交同一个名字时，先查后插会让两个请求都认为
+        自己是首个注册者。冲突时 RETURNING 不出行，此时那一行必定已经存在，回查即可。
         """
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
@@ -67,27 +68,23 @@ class PostgresDemoUserRepository:
                 user_id,
                 display_name,
             )
-        return DemoUser(**dict(row)) if row else None
-
-    async def get(self, user_id: str) -> DemoUser | None:
-        async with self._pool.acquire() as connection:
-            row = await connection.fetchrow(
+            if row is not None:
+                return DemoUser(**dict(row)), True
+            existing = await connection.fetchrow(
                 "SELECT user_id, display_name, created_at FROM demo_users WHERE user_id = $1",
                 user_id,
             )
-        return DemoUser(**dict(row)) if row else None
+        return DemoUser(**dict(existing)), False
 
 
 class InMemoryDemoUserRepository:
     def __init__(self) -> None:
         self.users: dict[str, DemoUser] = {}
 
-    async def create(self, user_id: str, display_name: str) -> DemoUser | None:
-        if user_id in self.users:
-            return None
+    async def get_or_create(self, user_id: str, display_name: str) -> tuple[DemoUser, bool]:
+        existing = self.users.get(user_id)
+        if existing is not None:
+            return existing, False
         user = DemoUser(user_id, display_name, datetime.now().astimezone())
         self.users[user_id] = user
-        return user
-
-    async def get(self, user_id: str) -> DemoUser | None:
-        return self.users.get(user_id)
+        return user, True

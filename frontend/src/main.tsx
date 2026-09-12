@@ -35,11 +35,26 @@ function MarkdownMessage({text}: {text: string}) {
   >{text}</ReactMarkdown>;
 }
 
+/**
+ * 取服务端的 detail 作为提示。
+ *
+ * FastAPI 的校验失败（422）返回的 detail 是一个数组而不是字符串，直接当字符串用
+ * 会在界面上渲染成 [object Object]，所以这里按两种形状分别取。
+ */
 async function readError(response: Response, fallback: string): Promise<string> {
   const body = await response.text();
+  let detail: unknown;
   try {
-    return (JSON.parse(body) as {detail?: string}).detail || fallback;
-  } catch { return body || fallback; }
+    detail = (JSON.parse(body) as {detail?: unknown}).detail;
+  } catch { return body.trim() || fallback; }
+  if (typeof detail === "string" && detail) return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => (item as {msg?: string}).msg)
+      .filter((item): item is string => Boolean(item));
+    if (messages.length) return messages.join("；");
+  }
+  return fallback;
 }
 
 async function consumeSse(
@@ -77,20 +92,23 @@ function LoginView({onSignedIn}: {onSignedIn: (session: Session) => void}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  async function submit(action: "login" | "register") {
+  async function submit() {
     const trimmed = name.trim();
     if (!trimmed || busy) return;
     setBusy(true); setError("");
     try {
-      const response = await fetch(`/api/v1/auth/${action}`, {
+      const response = await fetch("/api/v1/auth/login", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({name: trimmed}),
       });
       if (!response.ok) {
+        // 名字不存在会被直接创建，所以 404 只剩一种含义：接口没开。
         throw new Error(await readError(
           response,
-          response.status === 404 ? "演示登录未开启，请确认 DEMO_LOGIN_ENABLED" : "操作失败",
+          response.status === 404
+            ? "演示登录未开启，请确认服务端的 DEMO_LOGIN_ENABLED"
+            : `进入失败（HTTP ${response.status}）`,
         ));
       }
       const body = await response.json() as {
@@ -113,14 +131,11 @@ function LoginView({onSignedIn}: {onSignedIn: (session: Session) => void}) {
     <div className="loginCard">
       <div className="brandMark">E</div>
       <h1>Enterprise AI Assistant</h1>
-      <p>输入你的名字即可开始。演示环境不设密码，同一个名字会回到同一个会话。</p>
-      <form onSubmit={(event) => { event.preventDefault(); void submit("login"); }}>
+      <p>输入你的名字即可开始。演示环境不设密码，一个名字对应一个用户，下次用同一个名字会回到同一个会话。</p>
+      <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <input value={name} onChange={(event) => setName(event.target.value)} placeholder="你的名字" autoFocus maxLength={64}/>
+        <button className="approve" disabled={busy || !name.trim()}>{busy ? "正在进入…" : "进入"}</button>
       </form>
-      <div className="loginActions">
-        <button className="cancel" disabled={busy || !name.trim()} onClick={() => void submit("register")}>注册</button>
-        <button className="approve" disabled={busy || !name.trim()} onClick={() => void submit("login")}>登录</button>
-      </div>
       {error && <p className="loginError">{error}</p>}
     </div>
   </main>;

@@ -81,24 +81,27 @@ def test_conversation_id_is_derived_deterministically() -> None:
 
 
 @pytest.mark.asyncio
-async def test_register_then_login_returns_the_same_identity(client: AsyncClient) -> None:
-    registered = await client.post("/api/v1/auth/register", json={"name": "  王宁 "})
-    assert registered.status_code == 201
-    first = registered.json()
-    assert first["created"] is True
-    assert first["user_id"] == "王宁"
+async def test_first_login_creates_the_user_and_the_next_one_reuses_it(
+    client: AsyncClient,
+) -> None:
+    """没有凭据时注册和登录是同一件事，所以只有一个入口，首次进入顺手建号。"""
+    first = await client.post("/api/v1/auth/login", json={"name": "  王宁 "})
+    assert first.status_code == 200
+    created = first.json()
+    assert created["created"] is True
+    assert created["user_id"] == "王宁"
 
     again = await client.post("/api/v1/auth/login", json={"name": "王宁"})
-    assert again.status_code == 200
-    second = again.json()
-    assert second["created"] is False
-    assert second["conversation_id"] == first["conversation_id"]
+    returning = again.json()
+
+    assert returning["created"] is False
+    assert returning["conversation_id"] == created["conversation_id"]
 
 
 @pytest.mark.asyncio
 async def test_token_carries_the_display_name(client: AsyncClient) -> None:
     """称呼走令牌而不是长期记忆：姓名是"永远相关"的身份信息，不该被相关性筛选掉。"""
-    response = await client.post("/api/v1/auth/register", json={"name": "王宁"})
+    response = await client.post("/api/v1/auth/login", json={"name": "王宁"})
 
     identity = decode_identity(response.json()["access_token"], SETTINGS)
 
@@ -107,19 +110,11 @@ async def test_token_carries_the_display_name(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_duplicate_registration_is_rejected(client: AsyncClient) -> None:
-    await client.post("/api/v1/auth/register", json={"name": "王宁"})
+async def test_whitespace_only_name_is_rejected(client: AsyncClient) -> None:
+    """规范化后为空的名字不能变成一个身份。"""
+    response = await client.post("/api/v1/auth/login", json={"name": "   "})
 
-    duplicate = await client.post("/api/v1/auth/register", json={"name": "王宁"})
-
-    assert duplicate.status_code == 409
-
-
-@pytest.mark.asyncio
-async def test_login_before_registering_is_rejected(client: AsyncClient) -> None:
-    response = await client.post("/api/v1/auth/login", json={"name": "查无此人"})
-
-    assert response.status_code == 404
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -130,10 +125,8 @@ async def test_endpoints_disappear_when_the_switch_is_off(
     app = _app(_settings(demo_login_enabled=False), monkeypatch)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        registered = await client.post("/api/v1/auth/register", json={"name": "王宁"})
         logged_in = await client.post("/api/v1/auth/login", json={"name": "王宁"})
 
-    assert registered.status_code == 404
     assert logged_in.status_code == 404
 
 
