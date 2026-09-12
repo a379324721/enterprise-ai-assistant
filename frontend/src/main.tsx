@@ -57,6 +57,12 @@ async function readError(response: Response, fallback: string): Promise<string> 
   return fallback;
 }
 
+/** 把异常翻成用户看得懂的一句话。fetch 连不上服务端时抛 TypeError。 */
+function describeFailure(issue: unknown, fallback = "加载失败"): string {
+  if (issue instanceof TypeError) return "无法连接服务器，请确认后端已启动";
+  return issue instanceof Error && issue.message ? issue.message : fallback;
+}
+
 async function consumeSse(
   response: Response,
   onEvent: (message: SseMessage) => void,
@@ -123,7 +129,7 @@ function LoginView({onSignedIn}: {onSignedIn: (session: Session) => void}) {
       window.localStorage.setItem(SESSION_KEY, JSON.stringify(session));
       onSignedIn(session);
     } catch (issue) {
-      setError(issue instanceof Error ? issue.message : "操作失败");
+      setError(describeFailure(issue, "进入失败"));
     } finally { setBusy(false); }
   }
 
@@ -149,6 +155,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
   const [progress, setProgress] = useState("");
   const [hasMore, setHasMore] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const activeAnswerId = useRef<string | null>(null);
 
   const authHeaders = useMemo(
@@ -179,28 +186,36 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
 
   // 进入会话时补齐最近一页历史，并把上一轮未完成的确认重新摆出来——
   // 演示时刷新页面不该让一个待确认的写操作凭空消失。
+  const enterConversation = useCallback(async (signal?: AbortSignal) => {
+    setLoadingHistory(true); setLoadError("");
+    try {
+      const loaded = await loadHistory(undefined, signal);
+      // 会话快照只用来恢复待确认操作和任务面板，历史为空时二者必然都不存在。
+      // 新用户的会话尚未落检查点，这一请求只会换回一个 404。
+      if (loaded > 0) {
+        const snapshot = await fetch(
+          `/api/v1/conversations/${session.conversationId}`,
+          {headers: authHeaders, signal},
+        );
+        if (snapshot.ok) setResult(await snapshot.json() as Result);
+      }
+    } catch (issue) {
+      // 中止来自 effect 清理，不是故障；其余情况必须说出来，否则后端没起时
+      // 界面只是一片空白，看起来像历史被清掉了。
+      if (signal?.aborted) return;
+      setLoadError(describeFailure(issue, "历史消息加载失败"));
+    } finally {
+      if (!signal?.aborted) setLoadingHistory(false);
+    }
+  }, [authHeaders, loadHistory, session.conversationId]);
+
   useEffect(() => {
     // StrictMode 在开发模式下会把 effect 跑两遍，切换用户也会重跑；没有中止信号的话，
     // 先发出的那次响应可能后到并覆盖新一次的结果。
     const controller = new AbortController();
-    void (async () => {
-      setLoadingHistory(true);
-      try {
-        const loaded = await loadHistory(undefined, controller.signal);
-        // 会话快照只用来恢复待确认操作和任务面板，历史为空时二者必然都不存在。
-        // 新用户的会话尚未落检查点，这一请求只会换回一个 404。
-        if (loaded > 0) {
-          const snapshot = await fetch(
-            `/api/v1/conversations/${session.conversationId}`,
-            {headers: authHeaders, signal: controller.signal},
-          );
-          if (snapshot.ok) setResult(await snapshot.json() as Result);
-        }
-      } catch { /* 中止和网络失败都不该拦住进入会话。 */ }
-      finally { if (!controller.signal.aborted) setLoadingHistory(false); }
-    })();
+    void enterConversation(controller.signal);
     return () => controller.abort();
-  }, [authHeaders, loadHistory, session.conversationId]);
+  }, [enterConversation]);
 
   async function loadEarlier() {
     const earliest = messages.find((message) => message.index !== undefined)?.index;
@@ -250,7 +265,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
       }));
       await consumeSse(response, handleStreamEvent);
     } catch (issue) {
-      const message = issue instanceof Error ? issue.message : "系统异常";
+      const message = describeFailure(issue, "系统异常");
       setMessages((old) => old.map((item, index) => index === old.length - 1 ? {...item, text: item.text || message} : item));
     } finally { setBusy(false); setProgress(""); activeAnswerId.current = null; }
   }
@@ -266,7 +281,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
       }));
       await consumeSse(response, handleStreamEvent);
     } catch (issue) {
-      const message = issue instanceof Error ? issue.message : "系统异常";
+      const message = describeFailure(issue, "系统异常");
       setMessages((old) => old.map((item, index) => index === old.length - 1 ? {...item, text: item.text || message} : item));
     } finally { setBusy(false); setProgress(""); activeAnswerId.current = null; }
   }
@@ -280,6 +295,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
       <div className="chatPanel">
         <div className="intro"><span>AI</span><div><strong>你好{session.displayName ? `，${session.displayName}` : ""}，我是企业智能助手</strong><p>我可以协助差旅、报销、请假和制度查询。涉及提交的操作会先请你确认。</p></div></div>
         {messages.length === 0 && !loadingHistory && <div className="examples">{examples.map((item) => <button key={item} onClick={() => setInput(item)}>{item}<b>↗</b></button>)}</div>}
+        {loadError && <div className="loadBanner"><span>{loadError}</span><button disabled={loadingHistory} onClick={() => void enterConversation()}>重试</button></div>}
         <div className="messages">
           {hasMore && <button className="loadEarlier" disabled={loadingHistory} onClick={() => void loadEarlier()}>{loadingHistory ? "加载中…" : "加载更早的消息"}</button>}
           {messages.map((message, index) => <div key={message.index ?? `live-${index}`} className={`message ${message.role}`}>{message.role === "assistant" ? <MarkdownMessage text={message.text}/> : message.text}{busy && index === messages.length - 1 && message.role === "assistant" && <span className="cursor"/>}</div>)}
