@@ -133,9 +133,12 @@ class Workflow:
             return {}
         try:
             known = [record.render() for record in state.get("memories", [])]
-            extraction = await self.supervisor.extract_memories(
-                self._conversation(state), known
-            )
+            # 只把用户说过的话交给抽取器。助手的回答里会出现会议室名、目的地、
+            # 称呼这些内容，模型很容易把它们当成用户的稳定属性写进画像——
+            # 实测就出现过把出差地"上海分部"记成常驻办公地。prompt 里的
+            # "不得推断"挡不住，这里从输入上断掉。
+            spoken = [turn for turn in self._conversation(state) if turn["role"] == "user"]
+            extraction = await self.supervisor.extract_memories(spoken, known)
             await self._memories.upsert(
                 state["user_id"],
                 extraction.memories,

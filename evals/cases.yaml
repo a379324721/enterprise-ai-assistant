@@ -75,6 +75,13 @@ context_cases:
     expect_keywords: ["发票"]
     note: 夹带业务请求的问候仍需规划
 
+  - id: ctx-stating-a-preference-needs-no-tasks
+    conversation:
+      - role: user
+        content: 记一下，我常驻杭州，出差一般坐高铁
+    expect_task_planning: false
+    note: 陈述偏好由轮末记忆环节留存，没有对应工具，拆成任务只会让领域 Agent 空转追问
+
 planning_cases:
   - id: plan-travel-only
     request: 帮我创建 2026-08-10 到 2026-08-14 去上海客户交流的差旅申请

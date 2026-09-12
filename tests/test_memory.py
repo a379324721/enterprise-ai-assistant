@@ -551,3 +551,25 @@ async def test_a_turn_without_a_name_still_works() -> None:
     await workflow.direct_respond(_state(understanding=_understanding([])))
 
     assert planning.seen_names == [""]
+
+
+@pytest.mark.asyncio
+async def test_extraction_only_sees_what_the_user_said() -> None:
+    """助手的回答里有会议室名、目的地和称呼，模型会把它们当成用户的稳定属性。
+
+    实测出现过把出差地"上海分部"记成常驻办公地、把称呼记成姓名，所以抽取输入
+    在代码层面就只保留用户消息，不依赖 prompt 里的"不得推断"。
+    """
+    planning = MemoryPlanningService()
+    workflow = Workflow(SupervisorAgent(planning), memories=InMemoryMemoryRepository())
+    state = _state(understanding=_understanding([]))
+    state["messages"] = [
+        HumanMessage(content="记一下，我常驻杭州"),
+        AIMessage(content="好的，演示小王。已为你预订上海分部 301 讨论室。"),
+    ]
+
+    await workflow.remember(state)
+
+    conversation, _ = planning.seen[0]
+    assert [turn["content"] for turn in conversation] == ["记一下，我常驻杭州"]
+    assert all("上海分部" not in turn["content"] for turn in conversation)
