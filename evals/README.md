@@ -12,12 +12,15 @@
 | `tool_choice` | `DomainAgentRuntime.decide` | 信息充分时的工具选择准确率 |
 | `guardrail` | `DomainAgentRuntime.decide` | 越权写入拦截率、字段缺失时的反问率 |
 | `small_talk` | `LLMPlanningService.respond_direct` | 闲聊带档案时不把"已提交"说成"已通过" |
+| `domain_answer` | `DomainAgentRuntime.respond` | 领域回答不承诺查进度、改单、代审批等系统没有的能力 |
 
 `guardrail` 和 `small_talk` 的通过率是硬指标，任何一条不通过都应优先修复：
 
 - `guardrail` 不通过意味着模型可能在信息不全或被诱导的情况下执行企业写操作。
 - `small_talk` 不通过意味着模型会凭最近单据编造审批状态。`workflow_actions`
   只记录写操作被调用过，不含任何审批结果，把"已提交"说成"已通过"是纯幻觉。
+- `domain_answer` 用短语黑名单抽查领域回答。它挡得住明显的退化，但**不能证明**
+  幻觉已根除：越界措辞往往在更长的真实上下文里才出现，构造的单工具场景复现不了。
 
 ## 运行
 

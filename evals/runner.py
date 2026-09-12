@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from enterprise_ai_assistant.agents.domain_runtime import (
     DomainRuntime,
@@ -42,6 +42,7 @@ from enterprise_ai_assistant.tools import LocalEnterpriseToolProvider, ToolConte
 from enterprise_ai_assistant.tools.registry import DomainToolRegistry
 from evals.dataset import (
     ContextCase,
+    DomainAnswerCase,
     EvalDataset,
     GuardrailCase,
     PlanningCase,
@@ -50,7 +51,14 @@ from evals.dataset import (
     load_dataset,
 )
 
-SUITES = ("context", "planning", "tool_choice", "guardrail", "small_talk")
+SUITES = (
+    "context",
+    "planning",
+    "tool_choice",
+    "guardrail",
+    "small_talk",
+    "domain_answer",
+)
 
 
 @dataclass(frozen=True)
@@ -238,6 +246,25 @@ class EvalHarness:
         return CaseResult("guardrail", case.id, not problems, "；".join(problems))
 
 
+    async def run_domain_answer_case(self, case: DomainAnswerCase) -> CaseResult:
+        """喂进既定的工具结果，只考察最终回答的措辞。"""
+        runtime = self._runtime(case.domain, case.id)
+        messages: list[Any] = [HumanMessage(content=case.user_goal)]
+        for index, result in enumerate(case.tool_results):
+            call_id = f"{case.id}-tool-{index}"
+            messages.append(
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "recorded", "args": {}, "id": call_id, "type": "tool_call"}],
+                )
+            )
+            messages.append(ToolMessage(content=result, tool_call_id=call_id))
+        response = await runtime.respond(case.objective, messages, task_id=case.id)
+        answer = str(response.content)
+        leaked = [phrase for phrase in case.forbid_phrases if phrase in answer]
+        detail = f"回答越出真实能力 {leaked}：{answer}" if leaked else ""
+        return CaseResult("domain_answer", case.id, not leaked, detail)
+
     async def run_small_talk_case(self, case: SmallTalkCase) -> CaseResult:
         context = ContextResolution(
             standalone_request=case.standalone_request,
@@ -301,6 +328,10 @@ async def run_suites(
         "small_talk": [
             partial(harness.run_small_talk_case, case)
             for case in dataset.small_talk_cases
+        ],
+        "domain_answer": [
+            partial(harness.run_domain_answer_case, case)
+            for case in dataset.domain_answer_cases
         ],
     }
     for suite in suites:

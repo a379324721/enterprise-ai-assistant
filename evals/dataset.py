@@ -71,6 +71,22 @@ class GuardrailCase(BaseModel):
     note: str = ""
 
 
+class DomainAnswerCase(BaseModel):
+    """考察领域 Agent 的最终回答不越出系统真实能力。
+
+    写操作只表示单据已提交，系统没有查询审批进度、修改或撤销单据的工具，
+    回答里出现这类承诺就是幻觉。
+    """
+
+    id: str = Field(min_length=1)
+    domain: AgentName
+    objective: str = Field(min_length=1)
+    user_goal: str = Field(min_length=1)
+    tool_results: list[str] = Field(default_factory=list)
+    forbid_phrases: list[str] = Field(default_factory=list)
+    note: str = ""
+
+
 class SmallTalkCase(BaseModel):
     """考察闲聊节点用档案个性化时，不把“已提交”说成“已通过”。
 
@@ -94,6 +110,7 @@ class EvalDataset(BaseModel):
     tool_choice_cases: list[ToolChoiceCase] = Field(default_factory=list)
     guardrail_cases: list[GuardrailCase] = Field(default_factory=list)
     small_talk_cases: list[SmallTalkCase] = Field(default_factory=list)
+    domain_answer_cases: list[DomainAnswerCase] = Field(default_factory=list)
 
     def case_ids(self) -> list[str]:
         return [
@@ -104,6 +121,7 @@ class EvalDataset(BaseModel):
                 self.tool_choice_cases,
                 self.guardrail_cases,
                 self.small_talk_cases,
+                self.domain_answer_cases,
             )
             for case in group
         ]

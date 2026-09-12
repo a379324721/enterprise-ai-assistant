@@ -294,3 +294,22 @@ small_talk_cases:
       - 正在审批
       - 尚未通过
     note: 状态问题必须引导发起查询，不得凭清单断言进度（含"审批中"这类反向臆测）
+
+domain_answer_cases:
+  - id: domain-answer-no-progress-lookup
+    domain: travel
+    objective: 根据用户请求创建差旅申请
+    user_goal: 帮我申请 2026-09-16 到 2026-09-17 去上海客户拜访的差旅
+    tool_results:
+      - '{"tool":"create_travel_application","success":true,"status":"submitted","data":{"status":"recorded","destination":"上海","start_date":"2026-09-16","end_date":"2026-09-17","purpose":"客户拜访"}}'
+    forbid_phrases:
+      - 查询进度
+      - 查询审批
+      - 审批进度
+      - 随时查询
+      - 撤销
+      - 修改申请
+    note: |
+      写操作只表示单据已提交，系统没有查进度或改单的工具，回答里不得暗示。
+      注意这是抽查而非证明：越界措辞是在更长的真实上下文里冒出来的，
+      本用例的单工具场景即使去掉 prompt 约束也未必复现，只能挡住明显的退化。
