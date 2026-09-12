@@ -9,7 +9,6 @@ from enterprise_ai_assistant.tools.contracts import (
     BusinessToolOutcome,
     EnterpriseToolProvider,
     ExpenseClaimInput,
-    ExpenseReminderInput,
     InformationRequestInput,
     LeaveBalanceInput,
     LeaveRequestInput,
@@ -28,7 +27,7 @@ from enterprise_ai_assistant.tools.contracts import (
 #: 新增领域时这里必须同步，测试会检查覆盖完整。
 CAPABILITY_SUMMARY: dict[AgentName, str] = {
     AgentName.TRAVEL: "查询差旅制度、创建差旅申请",
-    AgentName.EXPENSE: "查询报销制度、提交费用报销、设置报销提醒",
+    AgentName.EXPENSE: "查询报销制度、提交费用报销",
     AgentName.HR: "查询人事制度、查询假期余额、提交请假申请",
     AgentName.POLICY: "查询其他企业通用制度",
 }
@@ -137,13 +136,6 @@ class DomainToolRegistry:
                 )
                 return outcome.model_dump(mode="json")
 
-            async def schedule_reminder(**kwargs: Any) -> dict[str, Any]:
-                outcome = await self._provider.schedule_expense_reminder(
-                    context,
-                    ExpenseReminderInput.model_validate(kwargs),
-                )
-                return outcome.model_dump(mode="json")
-
             return [
                 policy_tool("expense"),
                 self._tool(
@@ -151,13 +143,6 @@ class DomainToolRegistry:
                     description="创建费用报销单；普通费用不要求必须关联差旅。",
                     args_schema=ExpenseClaimInput,
                     coroutine=create_claim,
-                    risk=ToolRisk.WRITE,
-                ),
-                self._tool(
-                    name="schedule_expense_reminder",
-                    description="设置报销提醒；可以关联差旅，也可以设置普通费用提醒。",
-                    args_schema=ExpenseReminderInput,
-                    coroutine=schedule_reminder,
                     risk=ToolRisk.WRITE,
                 ),
                 information_tool,

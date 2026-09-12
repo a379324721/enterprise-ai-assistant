@@ -1,4 +1,4 @@
-from datetime import date
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 import pytest
@@ -7,7 +7,7 @@ from enterprise_ai_assistant.core.models import AgentName
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
 from enterprise_ai_assistant.tools import (
-    ExpenseReminderInput,
+    ExpenseClaimInput,
     LeaveBalanceInput,
     LocalEnterpriseToolProvider,
     ToolContext,
@@ -33,10 +33,12 @@ def context(request_id: UUID = DEFAULT_REQUEST_ID) -> ToolContext:
 async def test_local_write_is_idempotent() -> None:
     actions = InMemoryActionRepository()
     provider = LocalEnterpriseToolProvider(actions, InMemoryPolicyRepository())
-    payload = ExpenseReminderInput(trigger_date=date(2026, 8, 20), note="提醒报销打车费")
+    payload = ExpenseClaimInput(
+        expense_type="交通", amount=Decimal("480.00"), receipt_refs=["INV-001"]
+    )
 
-    first = await provider.schedule_expense_reminder(context(), payload)
-    repeated = await provider.schedule_expense_reminder(context(), payload)
+    first = await provider.create_expense_claim(context(), payload)
+    repeated = await provider.create_expense_claim(context(), payload)
 
     assert first == repeated
     assert first.status == "submitted"
@@ -60,10 +62,12 @@ async def test_local_leave_balance_uses_configured_backend_value() -> None:
 async def test_idempotency_is_scoped_to_request() -> None:
     actions = InMemoryActionRepository()
     provider = LocalEnterpriseToolProvider(actions, InMemoryPolicyRepository())
-    payload = ExpenseReminderInput(trigger_date=date(2026, 8, 20), note="提醒报销")
+    payload = ExpenseClaimInput(
+        expense_type="交通", amount=Decimal("480.00"), receipt_refs=["INV-001"]
+    )
 
-    first = await provider.schedule_expense_reminder(context(), payload)
-    second = await provider.schedule_expense_reminder(
+    first = await provider.create_expense_claim(context(), payload)
+    second = await provider.create_expense_claim(
         context(UUID("00000000-0000-0000-0000-000000000003")), payload
     )
 

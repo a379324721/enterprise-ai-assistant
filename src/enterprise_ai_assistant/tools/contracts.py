@@ -69,12 +69,6 @@ class ExpenseClaimInput(StrictToolInput):
     travel_reference: str | None = Field(default=None, max_length=256)
 
 
-class ExpenseReminderInput(StrictToolInput):
-    trigger_date: date
-    note: str = Field(min_length=1, max_length=1000)
-    travel_reference: str | None = Field(default=None, max_length=256)
-
-
 class LeaveBalanceInput(StrictToolInput):
     leave_type: str = Field(default="annual", min_length=1, max_length=100)
 
@@ -112,10 +106,6 @@ class EnterpriseToolProvider(Protocol):
 
     async def create_expense_claim(
         self, context: ToolContext, payload: ExpenseClaimInput
-    ) -> BusinessToolOutcome: ...
-
-    async def schedule_expense_reminder(
-        self, context: ToolContext, payload: ExpenseReminderInput
     ) -> BusinessToolOutcome: ...
 
     async def get_leave_balance(

@@ -31,7 +31,6 @@ from enterprise_ai_assistant.core.models import (
 _ACTION_SUMMARY_FIELDS: dict[str, tuple[str, ...]] = {
     "travel_application": ("destination", "start_date", "end_date"),
     "expense_claim": ("expense_type", "amount", "currency"),
-    "expense_reminder": ("trigger_date", "travel_reference"),
     "leave_request": ("leave_type", "start_date", "end_date"),
 }
 

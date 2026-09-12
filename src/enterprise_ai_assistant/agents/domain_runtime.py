@@ -10,7 +10,7 @@ from enterprise_ai_assistant.tools.registry import DomainToolRegistry, Registere
 
 _DOMAIN_INSTRUCTIONS = {
     AgentName.TRAVEL: "负责差旅制度查询和差旅申请。自行识别并校验差旅字段。",
-    AgentName.EXPENSE: "负责报销制度、费用报销和报销提醒。普通费用不得强制关联差旅。",
+    AgentName.EXPENSE: "负责报销制度和费用报销。普通费用不得强制关联差旅。",
     AgentName.HR: "负责人事制度、假期余额和请假申请。自行识别并校验请假字段。",
     AgentName.POLICY: "负责无法归入其他领域的通用企业制度查询。",
 }

@@ -97,12 +97,12 @@ planning_cases:
     expect_task_count: 1
     note: 无法归入差旅/报销/人事的通用制度应路由到 policy
 
-  - id: plan-travel-then-expense
-    request: 帮我创建下周去深圳的差旅申请，出差回来提醒我报销
-    expect_domains: [travel, expense]
+  - id: plan-policy-then-travel
+    request: 去深圳出差的住宿标准是多少？按这个标准帮我申请下周的差旅
+    expect_domains: [policy, travel]
     expect_task_count: 2
     expect_dependency: true
-    note: 报销提醒依赖差旅申请，必须体现依赖关系
+    note: 申请内容取决于先查到的制度标准，必须体现依赖关系
 
   - id: plan-leave-then-travel
     request: 先帮我查一下年假余额，如果够就申请下周去北京出差
@@ -156,12 +156,6 @@ tool_choice_cases:
     objective: 查询公司报销制度中关于餐费发票的要求
     user_goal: 餐费报销需要什么发票
     expect_tool: search_expense_policy
-
-  - id: tool-expense-reminder
-    domain: expense
-    objective: 在 2026-08-20 设置一条提醒用户提交差旅费用报销的提醒
-    user_goal: 8 月 20 号提醒我报销这次出差的费用
-    expect_tool: schedule_expense_reminder
 
   - id: tool-policy-general
     domain: policy

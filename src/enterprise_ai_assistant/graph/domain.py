@@ -304,7 +304,7 @@ class DomainTaskWorkflow:
             data=outcome.model_dump(mode="json"),
             error=outcome.error,
         )
-        # 一个任务可能连续调用多个写工具（例如报销单 + 报销提醒）。按工具名归档，
+        # 一个任务可能连续调用多个写工具（例如先查制度再提交单据）。按工具名归档，
         # 否则后一次产出会覆盖前一次，依赖该任务的下游任务将拿不到先前的业务单号。
         artifact = dict(state.get("artifact") or {})
         if outcome.success:

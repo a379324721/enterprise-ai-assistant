@@ -32,8 +32,8 @@ class StubPlanningService:
     ) -> ContextResolution:
         assert "上海" in conversation[-1]["content"]
         return ContextResolution(
-            standalone_request="2026-08-10 至 2026-08-14 去上海客户交流，创建差旅并提醒报销",
-            intent_summary="申请差旅并设置报销提醒",
+            standalone_request="2026-08-10 至 2026-08-14 去上海客户交流，创建差旅申请并报销已购高铁票 480 元",
+            intent_summary="申请差旅并报销已购票款",
             requires_task_planning=True,
         )
 
@@ -50,11 +50,11 @@ class StubPlanningService:
                 ),
                 PlannedTask(
                     id="task-2",
-                    title="返程后提醒报销",
+                    title="报销已购高铁票",
                     domain=AgentName.EXPENSE,
-                    objective="在行程结束日设置报销提醒",
+                    objective="创建关联本次差旅的报销单",
                     depends_on=["task-1"],
-                    success_criteria=["返回提醒状态"],
+                    success_criteria=["返回报销单号"],
                 ),
             ],
         )
@@ -136,10 +136,11 @@ class ScriptedRuntime:
             content="",
             tool_calls=[
                 {
-                    "name": "schedule_expense_reminder",
+                    "name": "create_expense_claim",
                     "args": {
-                        "trigger_date": "2026-08-14",
-                        "note": "提醒提交本次差旅费用",
+                        "expense_type": "交通",
+                        "amount": "480.00",
+                        "receipt_refs": ["INV-20260810"],
                         "travel_reference": "travel-reference-1",
                     },
                     "id": f"{task_id}-expense-call",
@@ -258,7 +259,7 @@ def make_graph() -> tuple[Any, InMemoryActionRepository]:
 
 def initial_state() -> dict[str, Any]:
     return {
-        "messages": [HumanMessage(content="下周去上海出差，帮我申请，回来提醒报销")],
+        "messages": [HumanMessage(content="下周去上海出差帮我申请，高铁票 480 已经买了一起报了")],
         "user_id": "u-1",
         "conversation_id": UUID("00000000-0000-0000-0000-000000000001"),
         "request_id": UUID("00000000-0000-0000-0000-000000000002"),
@@ -389,7 +390,7 @@ async def test_compound_workflow_uses_tools_with_separate_confirmations() -> Non
     second_pause = await graph.aget_state(config)
     assert "domain_task" in second_pause.next
     second_confirmation = PendingConfirmation.model_validate(second_pause.interrupts[0].value)
-    assert second_confirmation.action == "schedule_expense_reminder"
+    assert second_confirmation.action == "create_expense_claim"
 
     final = await graph.ainvoke(
         Command(
@@ -402,9 +403,9 @@ async def test_compound_workflow_uses_tools_with_separate_confirmations() -> Non
     )
     assert [task.status.value for task in final["tasks"]] == ["completed", "completed"]
     travel = final["artifacts"]["task-1"]["create_travel_application"]
-    reminder = final["artifacts"]["task-2"]["schedule_expense_reminder"]
+    claim = final["artifacts"]["task-2"]["create_expense_claim"]
     assert travel["data"]["destination"] == "上海"
-    assert reminder["data"]["travel_reference"] == "travel-reference-1"
+    assert claim["data"]["travel_reference"] == "travel-reference-1"
     assert len(final["tool_results"]) == 2
     assert len(actions.records) == 2
 
@@ -521,16 +522,15 @@ async def test_multiple_writes_in_one_task_accumulate_artifacts() -> None:
 
     first = await workflow.execute_tool(state)
     state = {**state, **first, "pending_tool_call": {
-        "name": "schedule_expense_reminder",
-        "args": {"trigger_date": "2026-08-20", "note": "提醒确认报销进度"},
-        "id": "call-reminder",
+        "name": "search_expense_policy",
+        "args": {"query": "打车费报销标准", "limit": 1},
+        "id": "call-policy",
     }}
     second = await workflow.execute_tool(state)
 
     artifact = second["artifact"]
-    assert set(artifact) == {"create_expense_claim", "schedule_expense_reminder"}
+    assert set(artifact) == {"create_expense_claim", "search_expense_policy"}
     assert artifact["create_expense_claim"]["data"]["expense_type"] == "打车"
-    assert artifact["schedule_expense_reminder"]["data"]["note"] == "提醒确认报销进度"
 
 
 @pytest.mark.asyncio
@@ -564,8 +564,8 @@ async def test_failed_tool_does_not_overwrite_successful_artifact() -> None:
         "domain_tool_results": [],
         "artifact": {"create_expense_claim": {"tool": "create_expense_claim", "success": True}},
         "pending_tool_call": {
-            "name": "schedule_expense_reminder",
-            "args": {"trigger_date": "not-a-date", "note": "无效参数"},
+            "name": "search_expense_policy",
+            "args": {"query": "", "limit": 1},
             "id": "call-bad",
         },
     }

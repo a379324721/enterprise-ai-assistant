@@ -5,7 +5,6 @@ from enterprise_ai_assistant.repositories.policies import PolicyRepository
 from enterprise_ai_assistant.tools.contracts import (
     BusinessToolOutcome,
     ExpenseClaimInput,
-    ExpenseReminderInput,
     LeaveBalanceInput,
     LeaveRequestInput,
     PolicySearchInput,
@@ -75,16 +74,6 @@ class LocalEnterpriseToolProvider:
         return await self._record_write(
             tool="create_expense_claim",
             action_type="expense_claim",
-            context=context,
-            payload=payload.model_dump(mode="json"),
-        )
-
-    async def schedule_expense_reminder(
-        self, context: ToolContext, payload: ExpenseReminderInput
-    ) -> BusinessToolOutcome:
-        return await self._record_write(
-            tool="schedule_expense_reminder",
-            action_type="expense_reminder",
             context=context,
             payload=payload.model_dump(mode="json"),
         )

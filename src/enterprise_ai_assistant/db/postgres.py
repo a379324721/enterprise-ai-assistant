@@ -21,7 +21,7 @@ COMMENT ON COLUMN workflow_actions.idempotency_key IS
     '幂等键，由可信运行时按 用户/会话/请求/任务/工具 派生，同时用作对外可见的业务单号 reference_id。'
     '重复提交同一个键不会产生第二次写入。';
 COMMENT ON COLUMN workflow_actions.action_type IS
-    '写操作类型：travel_application、expense_claim、expense_reminder、leave_request。'
+    '写操作类型：travel_application、expense_claim、leave_request。'
     '记忆派生时按此值选择摘要字段白名单，未登记的类型不会进入模型上下文。';
 COMMENT ON COLUMN workflow_actions.user_id IS
     '发起该操作的员工标识，取自访问令牌的 sub 声明，不接受模型或客户端指定。';
@@ -79,7 +79,7 @@ COMMENT ON COLUMN user_memories.user_id IS
     '否则等于开放跨用户读取。';
 COMMENT ON COLUMN user_memories.kind IS
     '记忆类别：profile 为稳定身份属性（常驻城市、成本中心、职级），'
-    'preference 为可复用的办事偏好（交通方式、默认币种、提醒习惯）。';
+    'preference 为可复用的办事偏好（交通方式、默认币种、常报费用类型）。';
 COMMENT ON COLUMN user_memories.key IS
     '同类事实的稳定标识，小写下划线形式，如 home_city、cost_center、preferred_transport。'
     '与 user_id、kind 构成唯一键，是覆盖写而非追加的依据。';

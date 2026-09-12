@@ -113,7 +113,7 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" \
 | Agent | 可用工具 |
 |---|---|
 | Travel | 差旅制度查询、创建差旅申请 |
-| Expense | 报销制度查询、创建报销单、设置普通或差旅报销提醒 |
+| Expense | 报销制度查询、创建报销单 |
 | HR | 人事制度查询、假期余额查询、提交请假申请 |
 | Policy | 通用制度查询 |
 
@@ -121,14 +121,14 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" \
 
 ## 示例流程
 
-输入：`下周去上海出差，帮我申请，回来提醒报销`
+输入：`去上海出差的住宿标准是多少？按这个标准帮我申请下周的差旅`
 
 1. Supervisor 结合历史会话把输入改写为独立请求，不抽取差旅字段。
-2. Planner 生成 Travel 任务和依赖它的 Expense 任务。
-3. Travel Agent 自行识别字段；缺失时调用 `request_information`，完整时提出创建差旅工具调用。
-4. 子图冻结精确工具参数并触发 interrupt；确认请求必须携带对应的 `confirmation_id`，通过后再使用“会话 + 请求 + 任务 + 工具”幂等键执行。
-5. Travel 的结构化工具结果写入 `artifacts`，再作为依赖结果交给 Expense Agent。
-6. Expense Agent 选择提醒工具并独立确认，最终回答由领域 LLM 原生流式输出。
+2. Planner 生成 Policy 任务和依赖它的 Travel 任务。
+3. Policy Agent 检索住宿标准，结构化结果写入 `artifacts`。
+4. Travel Agent 拿到依赖结果后自行识别字段；缺失时调用 `request_information`，完整时提出创建差旅工具调用。
+5. 子图冻结精确工具参数并触发 interrupt；确认请求必须携带对应的 `confirmation_id`，通过后再使用“会话 + 请求 + 任务 + 工具”幂等键执行。
+6. 执行结果回写 `artifacts`，最终回答由领域 LLM 原生流式输出。
 
 所有写工具都需要确认；制度和余额读取不需要确认。
 
@@ -352,7 +352,8 @@ cd frontend && npm install && npm run build
 - 后台运行注册表落库并加租约与孤儿回收，使进程崩溃后的半途运行可被识别和恢复；
   事件流改用 Redis Streams 承载，支持多副本下的断线重连。
 - PostgreSQL checkpoint 支持多实例恢复；大规模部署需设置连接池、checkpoint 清理策略和 Redis/Milvus 高可用。
-- 将提醒工具后端接入专用调度服务（如 Temporal/Celery）。
+- 需要到期主动通知这类能力时，先接入专用调度服务（如 Temporal/Celery）再开放对应工具。
+  当前刻意不提供只写一条记录、到期什么都不会发生的提醒工具：承诺未来动作却不兑现，比不提供这个能力更糟。
 
 ## 已知边界
 

@@ -1,4 +1,3 @@
-from datetime import date
 from uuid import UUID
 
 import pytest
@@ -33,31 +32,10 @@ def test_each_domain_only_receives_its_allowlisted_tools() -> None:
     assert names == {
         "search_expense_policy",
         "create_expense_claim",
-        "schedule_expense_reminder",
         "request_information",
     }
     assert "create_travel_application" not in names
     assert next(item for item in expense if item.tool.name == "create_expense_claim").risk == ToolRisk.WRITE
-
-
-@pytest.mark.asyncio
-async def test_expense_reminder_does_not_require_travel() -> None:
-    reminder = next(
-        item
-        for item in registry().for_agent(AgentName.EXPENSE, context())
-        if item.tool.name == "schedule_expense_reminder"
-    )
-
-    result = await reminder.tool.ainvoke(
-        {
-            "trigger_date": date(2026, 8, 20),
-            "note": "提醒报销餐费和打车费",
-        }
-    )
-
-    assert result["success"] is True
-    assert result["status"] == "submitted"
-    assert result["data"]["travel_reference"] is None
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,7 @@ type Message = {role: "user" | "assistant"; text: string; index?: number};
 type SseMessage = {event: string; data: unknown};
 type Session = {token: string; userId: string; displayName: string; conversationId: string};
 
-const examples = ["下周去上海出差，帮我申请，回来提醒报销", "我还有多少年假？下周五请一天年假", "查询差旅住宿标准"];
+const examples = ["去上海出差的住宿标准是多少？按这个标准帮我申请下周的差旅", "我还有多少年假？下周五请一天年假", "查询差旅住宿标准"];
 const SESSION_KEY = "eaa.session";
 const PAGE_SIZE = 20;
 
