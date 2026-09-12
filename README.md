@@ -215,6 +215,40 @@ curl -X POST http://localhost:8000/api/v1/chat \
   -d '{"message":"查询差旅住宿标准"}'
 ```
 
+### 演示登录
+
+给人演示时可以让对方用自己的名字进来，各自拥有独立的会话和记忆。需要
+`APP_ENV=development` 且 `DEMO_LOGIN_ENABLED=true`：
+
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/register -H 'Content-Type: application/json' -d '{"name":"王宁"}'
+curl -X POST http://localhost:8000/api/v1/auth/login    -H 'Content-Type: application/json' -d '{"name":"王宁"}'
+```
+
+响应给出令牌和 `conversation_id`。会话 ID 由 `user_id` 经 uuid5 确定性派生，
+所以**一个演示用户固定一个会话**：换设备、清了浏览器存储都会回到同一个 thread，
+服务端不需要额外存映射，前端也不需要会话列表。
+
+令牌里带 `name` 声明，助手据此称呼用户。姓名不进长期记忆——用户不会对助手自报
+姓名，抽取阶段看不到它；而称呼是"永远相关"的信息，交给按相关性筛选的记忆链路
+会在问候这类输入上被筛掉。会话归属和幂等键一律只认 `user_id`。
+
+**这不是身份系统**：没有凭据，任何人输入他人的名字即可接管该身份。配置校验会拒绝
+在非开发环境开启，接口关闭时返回 404 而不是 403，不暴露其存在。正式部署由企业
+SSO 取代。
+
+### 会话历史
+
+```bash
+curl "http://localhost:8000/api/v1/conversations/$CID/messages?limit=20" -H "Authorization: Bearer $TOKEN"
+curl "http://localhost:8000/api/v1/conversations/$CID/messages?limit=20&before=12" -H "Authorization: Bearer $TOKEN"
+```
+
+演示用户长期停在同一个会话里，首屏铺开整段历史会越用越慢，因此默认只返回最近一页，
+用 `before` 游标向前翻，`has_more` 指示是否还有更早的消息。序号在过滤掉工具消息和
+空占位之后分配，游标不会指向界面上不存在的位置。注意分页只减少传输量：检查点仍然
+整体反序列化，要压这部分成本得在状态层面回收历史。
+
 ### SSE 流式响应
 
 前端默认调用 `POST /api/v1/chat/stream`，通过 streaming fetch 消费 SSE。服务端会推送以下事件：

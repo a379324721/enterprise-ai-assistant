@@ -91,6 +91,20 @@ cd frontend && npm run build  # tsc -b && vite build
 
 `recall` 在轮首、`remember` 在轮尾，所有终止分支都汇到 `remember`。记忆只作为字段的建议默认值，不构成用户已确认的事实——余额、额度、制度条款一律以实时查询工具为准。
 
+### 演示登录与会话模型
+
+`/auth/register` 和 `/auth/login` 用名字换令牌，**没有凭据**：输入他人的名字即可接管
+该身份。它受 `APP_ENV=development` 和 `DEMO_LOGIN_ENABLED` 双重保护，配置校验拒绝在
+非开发环境开启，关闭时返回 404 而非 403。改动这一带时不要放宽任何一层。
+
+演示用户固定一个会话：`conversation_id` 由 `user_id` 经 uuid5 派生（`repositories/users.py`），
+不存映射表，所以没有会话列表这个概念。名字先经 `normalize_name` 折叠空白再作主键，
+否则"张三"和"张 三 "会成为两个互不可见的身份。
+
+展示名走令牌的 `name` 声明进入 `AssistantState.user_name`，只用于 prompt 里的称呼；
+会话归属、幂等键和一切鉴权仍然只认 `user_id`。它刻意不进长期记忆，理由见上一节的
+筛选机制——姓名永远相关，会被相关性筛选丢掉。
+
 ### 降级原则
 
 Redis、Milvus、记忆仓储不可用时记日志并继续，不阻断业务：制度检索失败让工具返回明确的失败结果而不是编造内容，token 预算查不到时放行，记忆查不到时退化成无记忆行为。启动阶段用 `AsyncExitStack` 登记资源，任一步失败都会按逆序释放。
