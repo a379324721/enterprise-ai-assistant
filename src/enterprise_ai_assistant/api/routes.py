@@ -1,10 +1,10 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -14,6 +14,8 @@ from enterprise_ai_assistant.api.schemas import (
     AssistantResponse,
     ChatRequest,
     ConfirmationRequest,
+    ConversationHistoryResponse,
+    ConversationMessage,
     DemoAuthRequest,
     DemoAuthResponse,
     DevTokenRequest,
@@ -557,6 +559,50 @@ async def attach_stream(
             _snapshot_sse(snapshot), media_type="text/event-stream", headers=_SSE_HEADERS
         )
     return _stream_response(request, run, apply_on_disconnect=False)
+
+
+@router.get(
+    "/conversations/{conversation_id}/messages", response_model=ConversationHistoryResponse
+)
+async def list_conversation_messages(
+    conversation_id: UUID,
+    request: Request,
+    user_id: CurrentUser,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    before: Annotated[int | None, Query(ge=0)] = None,
+) -> ConversationHistoryResponse:
+    """按页取回会话消息，默认给最近的一页。
+
+    演示用户长期停在同一个会话里，首屏把整段历史铺出来既慢又没必要；客户端拿最近
+    一页，需要时用 before 往前翻。注意分页只减少传输量：检查点仍然整体反序列化，
+    真要压这部分成本得在状态层面回收历史，而不是在这个接口上。
+    """
+    snapshot = await request.app.state.graph.aget_state(_config(conversation_id, user_id))
+    values = snapshot.values
+    if not values:
+        # 还没说过话的新会话不是错误，返回空页让前端直接进入对话界面。
+        return ConversationHistoryResponse(messages=[], has_more=False)
+    if values.get("user_id") != user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
+
+    turns: list[ConversationMessage] = []
+    for message in values.get("messages", []):
+        if message.type not in {"human", "ai"}:
+            continue
+        text = _message_text_delta(message.content).strip()
+        if not text:
+            continue
+        turns.append(
+            ConversationMessage(
+                index=len(turns),
+                role="user" if message.type == "human" else "assistant",
+                text=text,
+            )
+        )
+
+    end = len(turns) if before is None else min(before, len(turns))
+    start = max(0, end - limit)
+    return ConversationHistoryResponse(messages=turns[start:end], has_more=start > 0)
 
 
 @router.get("/conversations/{conversation_id}", response_model=AssistantResponse)

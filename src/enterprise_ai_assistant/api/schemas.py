@@ -82,3 +82,21 @@ class DemoAuthResponse(TokenResponse):
     conversation_id: UUID
     # true 表示本次调用完成了注册，前端据此区分"注册成功"和"欢迎回来"。
     created: bool
+
+
+class ConversationMessage(BaseModel):
+    """会话中的一条可见消息。
+
+    index 是过滤掉工具消息后的序号，也是向前翻页的游标；领域子图的内部消息不外泄，
+    所以这里只会有用户和助手两种角色。
+    """
+
+    index: int
+    role: Literal["user", "assistant"]
+    text: str
+
+
+class ConversationHistoryResponse(BaseModel):
+    messages: list[ConversationMessage]
+    # 还有更早的消息可以继续向前翻。
+    has_more: bool
