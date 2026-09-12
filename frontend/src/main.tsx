@@ -185,6 +185,8 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [actions, setActions] = useState<ActionItem[]>([]);
+  // 回答正在逐字出现时不必再挂一行"正在生成回答"——气泡末尾的光标已经说明了。
+  const [streamingAnswer, setStreamingAnswer] = useState(false);
   const activeAnswerId = useRef<string | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   // 是否跟随底部。用 ref 而不是 state：它每次滚动都会变，进 state 会白白多渲染一轮。
@@ -372,7 +374,9 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
 
   function handleStreamEvent({event, data}: SseMessage) {
     if (event === "progress") {
+      // 进度事件意味着换了节点，当前这段回答不再有新增量。
       setProgress((data as {message: string}).message);
+      setStreamingAnswer(false);
     } else if (event === "answer_start") {
       const start = data as {message_id: string; agent?: string; task_id?: string};
       if (activeAnswerId.current === start.message_id) return;
@@ -401,6 +405,8 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
         else deferredSegments.current.push({text: chunk});
         return;
       }
+      // 放在延迟分支之后：确认那一轮屏幕上没有逐字出现的回答，转圈得一直转着。
+      setStreamingAnswer(true);
       setMessages((old) => old.map((message, index) => index === old.length - 1 ? {...message, text: message.text + chunk} : message));
     } else if (event === "done") {
       const completed = data as Result;
@@ -417,6 +423,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
     const text = input.trim(); setInput(""); setBusy(true); setProgress("正在连接智能助手");
     // 自己发出的消息一定要看见，哪怕此刻正停在历史里翻看。
     stickToBottom.current = true;
+    setStreamingAnswer(false);
     setMessages((old) => [...old, {role: "user", text}, {role: "assistant", text: ""}]);
     try {
       const response = guard(await fetch("/api/v1/chat/stream", {
@@ -427,7 +434,10 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
     } catch (issue) {
       const message = describeFailure(issue, "系统异常");
       setMessages((old) => old.map((item, index) => index === old.length - 1 ? {...item, text: item.text || message} : item));
-    } finally { setBusy(false); setProgress(""); activeAnswerId.current = null; }
+    } finally {
+      setBusy(false); setProgress(""); setStreamingAnswer(false);
+      activeAnswerId.current = null;
+    }
   }
 
   async function confirm(approved: boolean) {
@@ -461,7 +471,8 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
       // 请求没走通，服务端那边仍然停在等确认上；卡片必须放回去，否则用户再没有入口。
       setResult((old) => old && !old.pending_confirmation ? {...old, pending_confirmation: pending} : old);
     } finally {
-      setBusy(false); setProgress(""); activeAnswerId.current = null;
+      setBusy(false); setProgress(""); setStreamingAnswer(false);
+      activeAnswerId.current = null;
       deferStream.current = false; deferredResult.current = null; deferredSegments.current = [];
     }
   }
@@ -492,7 +503,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
             {message.role === "assistant" ? <MarkdownMessage text={message.text}/> : message.text}
             {busy && index === messages.length - 1 && message.role === "assistant" && <span className="cursor"/>}
           </div>)}
-          {busy && <div className="thinking"><span className="spinner"/>{progress || "正在处理…"}</div>}
+          {busy && !streamingAnswer && <div className="thinking"><span className="spinner"/>{progress || "正在处理…"}</div>}
         </div>
         {result?.pending_confirmation && <div className="confirmCard"><div className="risk">需要你的确认</div><strong>{result.pending_confirmation.summary}</strong><p>系统只会在你确认后执行该操作。</p><div><button className="cancel" disabled={busy} onClick={() => void confirm(false)}>取消</button><button className="approve" disabled={busy} onClick={() => void confirm(true)}>确认执行</button></div></div>}
         <form onSubmit={(event) => { event.preventDefault(); void send(); }}>

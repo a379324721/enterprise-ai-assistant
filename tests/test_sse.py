@@ -232,6 +232,11 @@ class FakeGraph:
     async def astream(self, *args: Any, **kwargs: Any) -> Any:
         del args
         self.stream_kwargs = kwargs
+        # 任务开始先于回答增量到达，进度文案才对得上正在发生的事。
+        yield {
+            "type": "tasks",
+            "data": {"id": "t-1", "name": "respond", "input": {}, "triggers": ()},
+        }
         yield {
             "type": "messages",
             "data": (
@@ -251,7 +256,11 @@ class FakeGraph:
                     },
                 ),
             }
-        yield {"type": "updates", "data": {"domain_respond": {}}}
+        # 结束事件带 result，不该再发一次"正在生成回答"。
+        yield {
+            "type": "tasks",
+            "data": {"id": "t-1", "name": "respond", "error": None, "result": [], "interrupts": ()},
+        }
 
     async def aget_state(self, config: dict[str, Any]) -> Any:
         del config
@@ -325,6 +334,11 @@ async def test_graph_stream_forwards_only_native_user_visible_chunks() -> None:
     ]
 
     assert [data["content"] for event, data in events if event == "token"] == ["真", "流式"]
+    # 进度只在任务开始时发一次，且排在回答增量之前——反过来就意味着回答已经流完
+    # 才显示"正在生成回答"。
+    names = [event for event, _ in events]
+    assert names.count("progress") == 1
+    assert names.index("progress") < names.index("token")
     assert sum(event == "answer_start" for event, _ in events) == 1
     assert all(data.get("content") != "内部规划" for _, data in events)
     assert events[0][0] == "metadata"

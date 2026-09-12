@@ -281,7 +281,10 @@ async def _execute_run(
         async for part in app.state.graph.astream(
             graph_input,
             _config(conversation_id, user_id, tracker),
-            stream_mode=["messages", "updates"],
+            # tasks 而不是 updates：updates 在节点**跑完**之后才 emit，用它发
+            # "正在生成回复"就意味着回答早已流完才显示这句话。tasks 会在任务开始
+            # 时先发一次，进度文案才对得上正在发生的事。
+            stream_mode=["messages", "tasks"],
             subgraphs=True,
             version="v2",
         ):
@@ -312,11 +315,15 @@ async def _execute_run(
                         "content": content,
                     },
                 )
-            elif part["type"] == "updates":
-                for node_name in part["data"]:
-                    message = _NODE_PROGRESS.get(node_name)
-                    if message:
-                        await publish("progress", {"node": node_name, "message": message})
+            elif part["type"] == "tasks":
+                task = part["data"]
+                # 同一个任务开始和结束各发一次，结束那次带 result/error。只认开始。
+                if "result" in task or "error" in task:
+                    continue
+                node_name = str(task.get("name", ""))
+                message = _NODE_PROGRESS.get(node_name)
+                if message:
+                    await publish("progress", {"node": node_name, "message": message})
 
         response = await _response(app, conversation_id, user_id)
         await publish("done", response.model_dump(mode="json"))
