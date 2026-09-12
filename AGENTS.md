@@ -1,0 +1,109 @@
+# AGENTS.md
+
+本文件为编码 agent 提供本仓库的上下文，是各工具共用的唯一真相源。
+Claude Code 不原生读取 AGENTS.md，它通过 CLAUDE.md 里的 `@AGENTS.md` 导入读到这里的内容。
+
+## 常用命令
+
+```bash
+make install     # uv sync
+make dev         # uvicorn enterprise_ai_assistant.main:app --reload
+make test        # uv run pytest
+make lint        # uv run ruff check .
+make typecheck   # uv run mypy（strict，覆盖 enterprise_ai_assistant 和 evals）
+make compose-up  # docker compose up --build（Postgres + Redis + Milvus + api）
+```
+
+跑单个测试：
+
+```bash
+uv run pytest tests/test_memory.py -q
+uv run pytest tests/test_memory.py::test_leave_summary_drops_the_reason_text -q
+```
+
+`pytest` 配置了 `asyncio_mode = "auto"`，异步测试不需要 `@pytest.mark.asyncio` 也能跑（现有测试仍显式标注）。CI（`.github/workflows/ci.yml`）跑的就是 lint + typecheck + pytest 三件套，都不需要模型服务或中间件。
+
+## 评测
+
+```bash
+make eval                                        # 全部评测集
+uv run python -m evals.runner --suite guardrail  # 单个评测集
+uv run python -m evals.runner --json report.json --min-accuracy 0.85
+```
+
+**评测会真实调用模型服务，产生费用**，所以不在 CI 每次推送时跑（`eval.yml` 是手动触发 + 每周定时）。改动 prompt 后应当手动跑一次。
+
+`guardrail` 和 `small_talk` 是硬指标：前者不通过意味着模型可能在信息不全或被诱导时执行企业写操作，后者不通过意味着模型会凭最近单据编造审批状态。新增评测用例写在 `evals/cases.yaml`，新增 suite 需要同步 `evals/dataset.py`、`evals/runner.py` 的 `SUITES` 和 `eval.yml` 的 choices。
+
+## 前端
+
+```bash
+cd frontend && npm run dev    # vite
+cd frontend && npm run build  # tsc -b && vite build
+```
+
+## 架构
+
+后端是 FastAPI + LangGraph 的多 Agent 系统。真正需要跨文件理解的是下面几条边界，它们是这个代码库的设计核心，改动时最容易被无意破坏。
+
+### 职责分层不可越界
+
+三层各自的禁区写在各自的 prompt 里（`services/planning.py`、`agents/domain_runtime.py`）：
+
+- **Context Supervisor**（`resolve_context`）只消解指代、判断意图、生成独立请求。**不得抽取或补写差旅、报销、请假等领域字段。**
+- **Planner**（`plan`）只产出任务 DAG：领域、目标、成功标准、依赖。**不选工具、不生成参数、不判断风险。**
+- **领域 Agent**（`DomainAgentRuntime`）才判断字段是否齐全、选择工具、解释结果。
+
+往上层塞领域逻辑是最常见的错误改法。需要字段级能力时，应该落在领域子图里。
+
+### 父图与领域子图只通过两个契约通信
+
+`graph/workflow.py` 是调度图，`graph/domain.py` 是领域任务子图。两者之间只有 `DomainTaskRequest` 和 `DomainTaskResult`（`core/models.py`）。
+
+`domain_messages`、工具决策、确认状态都是子图私有状态，不进 `AssistantState`。后续任务只能通过 `artifacts[task_id]` 拿到前置任务的结构化产物，拿不到它的对话过程。人工确认通过 LangGraph interrupt payload（`PendingConfirmation`）暴露，API 层不依赖子图内部节点名。
+
+### 谁能读原始 messages
+
+只有从对话中提取信息的两个节点：`understand`（提意图）和 `remember`（提记忆）。执行链路上的 `plan`、`select_task`、领域子图、`direct_respond` 一律只消费 `ContextResolution` 等结构化输出。
+
+因此闲聊节点看不到用户原话，回复语言只能靠 `ContextResolution.user_language` 传下去。
+
+### 可信上下文不经过模型
+
+`user_id` 取自访问令牌的 `sub`（`core/security.py` 的 `CurrentUser`），`conversation_id`、`request_id`、幂等键都来自运行时，通过 `ToolContext` 注入工具，**不作为模型可见的工具参数**。让模型或客户端指定身份等于开放越权。
+
+### 工具风险与人工确认
+
+工具风险由服务端注册表声明（`tools/registry.py` 的 `ToolRisk`），不由模型判断。所有 `WRITE` 工具在执行前保存检查点并逐个要求用户确认。写操作经 `PostgresActionRepository.execute_once` 落 `workflow_actions` 表做幂等，`idempotency_key` 同时就是对外的 `reference_id`。
+
+注意 `result.status` 是 `"recorded"`，只表示适配器被调用过，**不代表外部企业系统已受理或审批通过**。任何"已通过""审批中"的说法都是幻觉。
+
+### 执行与 SSE 连接解耦
+
+图执行跑在 `RunManager` 的后台任务里（`core/runs.py`），SSE 只是订阅者。客户端断开默认不中断执行（`RUN_ON_DISCONNECT=continue`），重连带 `Last-Event-ID` 只补发缺失增量，游标滚出缓冲窗口会收到 `gap` 事件。`StreamBridge` 是可替换抽象，单进程用 `MemoryStreamBridge`，多副本部署需要跨进程实现或粘性路由。
+
+### 长期记忆
+
+默认关闭（`MEMORY_ENABLED=false`）。分两层，来源不同：
+
+- `profile` / `preference` 存 `user_memories` 表，`UNIQUE(user_id, kind, key)` 覆盖写。
+- 近期业务事实**不复制**，从 `workflow_actions` 派生。单号的真相只有那一处，复制一份在单据作废后无法失效。派生摘要走 `_ACTION_SUMMARY_FIELDS` 白名单，请假原因、票据号、备注正文不进模型上下文。
+
+`recall` 在轮首、`remember` 在轮尾，所有终止分支都汇到 `remember`。记忆只作为字段的建议默认值，不构成用户已确认的事实——余额、额度、制度条款一律以实时查询工具为准。
+
+### 降级原则
+
+Redis、Milvus、记忆仓储不可用时记日志并继续，不阻断业务：制度检索失败让工具返回明确的失败结果而不是编造内容，token 预算查不到时放行，记忆查不到时退化成无记忆行为。启动阶段用 `AsyncExitStack` 登记资源，任一步失败都会按逆序释放。
+
+## 配置
+
+所有配置经 `core/config.py` 的 `Settings` 校验，敏感项绝不设默认值。`.env.example` 是权威列表。生产环境必须显式配置 `JWT_SECRET`（HS* 要求至少 32 字节），开发环境留空会生成一次性密钥。
+
+注意：`get_settings()` 会读取项目根目录的 `.env`。如果本地 `.env` 里 `DEV_LOGIN_ENABLED=true`，`tests/test_auth.py::test_dev_token_endpoint_is_hidden_by_default` 会失败——该测试假设默认关闭，CI 无 `.env` 时通过。这是环境差异，不是代码缺陷。
+
+## 代码风格
+
+- 注释、文档、README 用中文；commit message 用英文（主题行小写祈使句，正文说明"原来怎样、为什么有问题、现在怎样"）。
+- 注释解释**为什么**这样做、以及不这样做会出什么问题，不复述代码在做什么。现有注释密度和这个取向是刻意的，新代码应当匹配。
+- ruff line-length 100，`select = ["E", "F", "I", "UP", "B", "ASYNC"]`；mypy `strict`。
+- 仓储类一律提供 `InMemory*` 实现供测试和 evals 使用，不要在测试里 mock 数据库。
