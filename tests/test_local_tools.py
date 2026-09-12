@@ -15,6 +15,7 @@ from enterprise_ai_assistant.tools import (
     MeetingRoomBookingInput,
     MeetingRoomSearchInput,
     ToolContext,
+    TravelApplicationInput,
 )
 from enterprise_ai_assistant.tools.local_enterprise import RoomBooking
 from enterprise_ai_assistant.tools.registry import (
@@ -251,3 +252,41 @@ async def test_empty_result_distinguishes_full_from_unknown_location() -> None:
     assert full.data["rooms"] == [] and full.data["location_exists"] is True
     assert nowhere.data["rooms"] == [] and nowhere.data["location_exists"] is False
     assert "上海分部" in nowhere.data["known_locations"]
+
+
+@pytest.mark.asyncio
+async def test_reference_id_is_short_and_hides_the_idempotency_key() -> None:
+    """幂等键是 会话:请求:任务:工具 拼出来的，直接当单号会把内部结构给到用户。"""
+    actions = InMemoryActionRepository()
+    provider = LocalEnterpriseToolProvider(actions, InMemoryPolicyRepository())
+
+    result = await provider.create_travel_application(
+        context(),
+        TravelApplicationInput(
+            destination="上海",
+            start_date=date(2026, 9, 16),
+            end_date=date(2026, 9, 17),
+            purpose="客户拜访",
+        ),
+    )
+
+    reference = str(result.reference_id)
+    assert reference.startswith("TRV-")
+    assert ":" not in reference
+    assert "task-1" not in reference
+    assert len(reference) <= 24
+
+
+@pytest.mark.asyncio
+async def test_replaying_a_write_returns_the_same_reference_id() -> None:
+    actions = InMemoryActionRepository()
+    provider = LocalEnterpriseToolProvider(actions, InMemoryPolicyRepository())
+    payload = ExpenseClaimInput(
+        expense_type="交通", amount=Decimal("480.00"), receipt_refs=["INV-001"]
+    )
+
+    first = await provider.create_expense_claim(context(), payload)
+    replay = await provider.create_expense_claim(context(), payload)
+
+    assert first.reference_id == replay.reference_id
+    assert str(first.reference_id).startswith("EXP-")
