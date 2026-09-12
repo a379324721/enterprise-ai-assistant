@@ -34,6 +34,8 @@ def _settings(**overrides: Any) -> Settings:
         "app_env": "development",
         "dev_login_enabled": False,
         "demo_login_enabled": True,
+        # 未显式指定的字段会回落到本地 .env，那里的演示配置会让断言错位。
+        "access_token_ttl_minutes": 60,
     }
     return Settings(**{**defaults, **overrides})  # type: ignore[arg-type]
 
@@ -134,3 +136,18 @@ def test_demo_login_cannot_be_enabled_outside_development() -> None:
     """配置层就要拦住：这套接口一旦上生产，等于开放任意身份冒用。"""
     with pytest.raises(ValueError, match="DEMO_LOGIN_ENABLED"):
         _settings(app_env="production")
+
+
+def test_long_lived_tokens_are_confined_to_development() -> None:
+    """访问令牌没有吊销机制，长效令牌泄漏后的暴露窗口就是它的有效期。"""
+    # 开发环境不设上限，演示可以签发形同永久的令牌。
+    assert _settings(access_token_ttl_minutes=52_560_000).access_token_ttl_minutes == 52_560_000
+
+    with pytest.raises(ValueError, match="ACCESS_TOKEN_TTL_MINUTES"):
+        _settings(app_env="production", demo_login_enabled=False, access_token_ttl_minutes=1441)
+
+
+def test_production_still_allows_a_day() -> None:
+    settings = _settings(app_env="production", demo_login_enabled=False, access_token_ttl_minutes=1440)
+
+    assert settings.access_token_ttl_minutes == 1440

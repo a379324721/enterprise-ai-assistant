@@ -5,6 +5,9 @@ from typing import Literal
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+#: 生产环境允许的访问令牌有效期上限（分钟）。
+_PRODUCTION_TOKEN_TTL_CEILING_MINUTES = 1440
+
 
 class Settings(BaseSettings):
     """经过校验的运行时配置；敏感信息绝不设置默认值。"""
@@ -60,7 +63,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_issuer: str = "enterprise-ai-assistant"
     jwt_audience: str = "enterprise-ai-assistant"
-    access_token_ttl_minutes: int = Field(default=60, ge=1, le=1440)
+    # 开发环境不设上限，演示时可以签发长到形同永久的令牌；生产由下面的校验
+    # 收敛在 24 小时以内。
+    access_token_ttl_minutes: int = Field(default=60, ge=1)
     # 本地联调用的签发接口；生产环境的令牌应由企业 SSO 颁发。
     dev_login_enabled: bool = False
     # 演示用的名字注册/登录。没有任何凭据，输入他人的名字即可读到对方的会话与记忆，
@@ -88,6 +93,19 @@ class Settings(BaseSettings):
     def dev_login_requires_development(self) -> "Settings":
         if self.dev_login_enabled and self.app_env != "development":
             raise ValueError("DEV_LOGIN_ENABLED is only allowed in the development environment")
+        return self
+
+    @model_validator(mode="after")
+    def long_lived_tokens_require_development(self) -> "Settings":
+        # 访问令牌没有吊销机制，签出去就一直有效到过期；长效令牌泄漏后的暴露窗口
+        # 等于它的有效期，因此只在开发环境放行。
+        if self.access_token_ttl_minutes > _PRODUCTION_TOKEN_TTL_CEILING_MINUTES:
+            if self.app_env != "development":
+                raise ValueError(
+                    "ACCESS_TOKEN_TTL_MINUTES above "
+                    f"{_PRODUCTION_TOKEN_TTL_CEILING_MINUTES} is only allowed "
+                    "in the development environment"
+                )
         return self
 
     @model_validator(mode="after")
