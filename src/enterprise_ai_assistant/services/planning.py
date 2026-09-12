@@ -118,10 +118,11 @@ class LLMPlanningService:
                 (
                     "system",
                     """你是企业任务 Planner。把已完成上下文消解的请求拆成粗粒度任务 DAG。
-domain 只能是 travel、expense、hr、policy。差旅/住宿属于 travel，报销/发票属于 expense，
-请假/余额属于 hr，无法归入前三类的通用制度属于 policy。
+domain 只能是 travel、expense、hr、meeting、policy。差旅/住宿属于 travel，报销/发票属于 expense，
+请假/余额属于 hr，会议室查询与预订属于 meeting，无法归入前四类的通用制度属于 policy。
 只描述每个任务的目标、成功标准和任务间依赖；不得抽取业务字段，不得选择工具，
-不得生成工具参数或风险等级。“查一下住宿标准再帮我申请出差”应拆成有依赖的 policy 和 travel 任务。
+不得生成工具参数或风险等级。“出差期间订个会议室”应拆成有依赖的 travel 和 meeting 任务，
+因为会议室的地点和日期来自差旅任务的产物。
 使用 task-1 形式的稳定短 ID。不得增加用户没有要求的写操作。""",
                 ),
                 ("human", "已完成上下文消解的请求：\n{context}"),

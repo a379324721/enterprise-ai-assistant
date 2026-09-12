@@ -115,20 +115,21 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" \
 | Travel | 差旅制度查询、创建差旅申请 |
 | Expense | 报销制度查询、创建报销单 |
 | HR | 人事制度查询、假期余额查询、提交请假申请 |
+| Meeting | 会议室制度查询、空闲会议室查询、预订会议室 |
 | Policy | 通用制度查询 |
 
 所有领域都可调用 `request_information` 暂停当前任务并向用户询问缺失字段。工具输入使用 Pydantic 严格校验，未知字段会被拒绝。
 
 ## 示例流程
 
-输入：`去上海出差的住宿标准是多少？按这个标准帮我申请下周的差旅`
+输入：`下周三到周五去上海出差，帮我申请，顺便订个上海分部的会议室周四上午开会`
 
 1. Supervisor 结合历史会话把输入改写为独立请求，不抽取差旅字段。
-2. Planner 生成 Policy 任务和依赖它的 Travel 任务。
-3. Policy Agent 检索住宿标准，结构化结果写入 `artifacts`。
-4. Travel Agent 拿到依赖结果后自行识别字段；缺失时调用 `request_information`，完整时提出创建差旅工具调用。
-5. 子图冻结精确工具参数并触发 interrupt；确认请求必须携带对应的 `confirmation_id`，通过后再使用“会话 + 请求 + 任务 + 工具”幂等键执行。
-6. 执行结果回写 `artifacts`，最终回答由领域 LLM 原生流式输出。
+2. Planner 生成 Travel 任务和依赖它的 Meeting 任务。
+3. Travel Agent 自行识别字段；缺失时调用 `request_information`，完整时提出创建差旅工具调用。
+4. 子图冻结精确工具参数并触发 interrupt；确认请求必须携带对应的 `confirmation_id`，通过后再使用“会话 + 请求 + 任务 + 工具”幂等键执行。
+5. 差旅结果写入 `artifacts`，其中的目的地与日期作为 `dependency_results` 交给 Meeting Agent。
+6. Meeting Agent 先查空闲会议室；查不到符合条件的就如实说明并建议改期，查到才提出预订调用并再次请求确认。
 
 所有写工具都需要确认；制度和余额读取不需要确认。
 

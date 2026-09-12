@@ -7,13 +7,19 @@ from enterprise_ai_assistant.tools.contracts import (
     InformationRequestInput,
     LeaveBalanceInput,
     LeaveRequestInput,
+    MeetingRoomBookingInput,
+    MeetingRoomSearchInput,
     PolicyQueryInput,
     PolicySearchInput,
     ToolContext,
     ToolRisk,
     TravelApplicationInput,
 )
-from enterprise_ai_assistant.tools.local_enterprise import LocalEnterpriseToolProvider
+from enterprise_ai_assistant.tools.local_enterprise import (
+    DEFAULT_MEETING_ROOMS,
+    LocalEnterpriseToolProvider,
+    MeetingRoom,
+)
 
 __all__ = [
     "BusinessToolOutcome",
@@ -22,7 +28,11 @@ __all__ = [
     "InformationRequestInput",
     "LeaveBalanceInput",
     "LeaveRequestInput",
+    "DEFAULT_MEETING_ROOMS",
     "LocalEnterpriseToolProvider",
+    "MeetingRoom",
+    "MeetingRoomBookingInput",
+    "MeetingRoomSearchInput",
     "PolicySearchInput",
     "PolicyQueryInput",
     "ToolContext",

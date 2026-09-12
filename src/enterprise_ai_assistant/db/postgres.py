@@ -21,7 +21,7 @@ COMMENT ON COLUMN workflow_actions.idempotency_key IS
     '幂等键，由可信运行时按 用户/会话/请求/任务/工具 派生，同时用作对外可见的业务单号 reference_id。'
     '重复提交同一个键不会产生第二次写入。';
 COMMENT ON COLUMN workflow_actions.action_type IS
-    '写操作类型：travel_application、expense_claim、leave_request。'
+    '写操作类型：travel_application、expense_claim、leave_request、meeting_booking。'
     '记忆派生时按此值选择摘要字段白名单，未登记的类型不会进入模型上下文。';
 COMMENT ON COLUMN workflow_actions.user_id IS
     '发起该操作的员工标识，取自访问令牌的 sub 声明，不接受模型或客户端指定。';

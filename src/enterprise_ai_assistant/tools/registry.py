@@ -12,6 +12,8 @@ from enterprise_ai_assistant.tools.contracts import (
     InformationRequestInput,
     LeaveBalanceInput,
     LeaveRequestInput,
+    MeetingRoomBookingInput,
+    MeetingRoomSearchInput,
     PolicyQueryInput,
     PolicySearchInput,
     ToolContext,
@@ -29,6 +31,7 @@ CAPABILITY_SUMMARY: dict[AgentName, str] = {
     AgentName.TRAVEL: "查询差旅制度、创建差旅申请",
     AgentName.EXPENSE: "查询报销制度、提交费用报销",
     AgentName.HR: "查询人事制度、查询假期余额、提交请假申请",
+    AgentName.MEETING: "查询会议室制度、查询空闲会议室、预订会议室",
     AgentName.POLICY: "查询其他企业通用制度",
 }
 
@@ -143,6 +146,43 @@ class DomainToolRegistry:
                     description="创建费用报销单；普通费用不要求必须关联差旅。",
                     args_schema=ExpenseClaimInput,
                     coroutine=create_claim,
+                    risk=ToolRisk.WRITE,
+                ),
+                information_tool,
+            ]
+
+        if agent == AgentName.MEETING:
+            async def find_rooms(**kwargs: Any) -> dict[str, Any]:
+                outcome = await self._provider.find_available_rooms(
+                    context,
+                    MeetingRoomSearchInput.model_validate(kwargs),
+                )
+                return outcome.model_dump(mode="json")
+
+            async def book_room(**kwargs: Any) -> dict[str, Any]:
+                outcome = await self._provider.book_meeting_room(
+                    context,
+                    MeetingRoomBookingInput.model_validate(kwargs),
+                )
+                return outcome.model_dump(mode="json")
+
+            return [
+                policy_tool("meeting"),
+                self._tool(
+                    name="find_available_rooms",
+                    description=(
+                        "按地点、日期和时段查询空闲会议室；预订前必须先查。"
+                        "返回空列表表示该时段确实没有符合条件的会议室，不是调用失败。"
+                    ),
+                    args_schema=MeetingRoomSearchInput,
+                    coroutine=find_rooms,
+                    risk=ToolRisk.READ,
+                ),
+                self._tool(
+                    name="book_meeting_room",
+                    description="预订会议室。只能预订上一步查询结果中出现过的 room_id。",
+                    args_schema=MeetingRoomBookingInput,
+                    coroutine=book_room,
                     risk=ToolRisk.WRITE,
                 ),
                 information_tool,

@@ -1,3 +1,4 @@
+from datetime import date, time
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -10,6 +11,9 @@ from enterprise_ai_assistant.tools import (
     ExpenseClaimInput,
     LeaveBalanceInput,
     LocalEnterpriseToolProvider,
+    MeetingRoom,
+    MeetingRoomBookingInput,
+    MeetingRoomSearchInput,
     ToolContext,
 )
 from enterprise_ai_assistant.tools.registry import (
@@ -102,3 +106,123 @@ def test_capability_summary_does_not_promise_status_lookups() -> None:
 
     for forbidden in ("进度", "审批状态", "撤销", "修改申请"):
         assert forbidden not in text
+
+
+def _meeting_provider() -> LocalEnterpriseToolProvider:
+    return LocalEnterpriseToolProvider(
+        InMemoryActionRepository(),
+        InMemoryPolicyRepository(),
+        rooms=(
+            MeetingRoom("SH-301", "上海 301", "上海分部", 8),
+            MeetingRoom("SH-302", "上海 302", "上海分部", 20),
+            MeetingRoom("BJ-101", "北京 101", "北京总部", 6),
+        ),
+        bookings=(("SH-301", date(2026, 9, 22), time(9, 0), time(12, 0)),),
+    )
+
+
+def _search(**overrides: object) -> MeetingRoomSearchInput:
+    payload: dict[str, object] = {
+        "location": "上海分部",
+        "date": date(2026, 9, 22),
+        "start_time": time(10, 0),
+        "end_time": time(11, 0),
+        "capacity": 1,
+    }
+    payload.update(overrides)
+    return MeetingRoomSearchInput.model_validate(payload)
+
+
+@pytest.mark.asyncio
+async def test_occupied_room_is_filtered_out() -> None:
+    result = await _meeting_provider().find_available_rooms(context(), _search())
+
+    assert [item["room_id"] for item in result.data["rooms"]] == ["SH-302"]
+
+
+@pytest.mark.asyncio
+async def test_back_to_back_slot_is_not_a_conflict() -> None:
+    """前一场 12:00 结束、这一场 12:00 开始，不该算冲突。"""
+    result = await _meeting_provider().find_available_rooms(
+        context(), _search(start_time=time(12, 0), end_time=time(13, 0))
+    )
+
+    assert {item["room_id"] for item in result.data["rooms"]} == {"SH-301", "SH-302"}
+
+
+@pytest.mark.asyncio
+async def test_capacity_and_location_both_filter() -> None:
+    too_small = await _meeting_provider().find_available_rooms(
+        context(), _search(capacity=12)
+    )
+    elsewhere = await _meeting_provider().find_available_rooms(
+        context(), _search(location="北京总部")
+    )
+
+    assert [item["room_id"] for item in too_small.data["rooms"]] == ["SH-302"]
+    assert [item["room_id"] for item in elsewhere.data["rooms"]] == ["BJ-101"]
+
+
+@pytest.mark.asyncio
+async def test_no_room_available_is_a_success_with_an_empty_list() -> None:
+    """查不到是确定的业务事实，不是工具故障——否则 Agent 会当成失败去重试。"""
+    result = await _meeting_provider().find_available_rooms(
+        context(), _search(capacity=100)
+    )
+
+    assert result.success is True
+    assert result.data["rooms"] == []
+
+
+@pytest.mark.asyncio
+async def test_booking_an_occupied_room_fails() -> None:
+    """查询与预订之间可能已被占用，执行前必须再判一次。"""
+    result = await _meeting_provider().book_meeting_room(
+        context(),
+        MeetingRoomBookingInput(
+            room_id="SH-301",
+            date=date(2026, 9, 22),
+            start_time=time(10, 0),
+            end_time=time(11, 0),
+            subject="项目评审",
+        ),
+    )
+
+    assert result.success is False
+    assert "已被占用" in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_booking_marks_the_room_busy_for_later_searches() -> None:
+    provider = _meeting_provider()
+    booking = MeetingRoomBookingInput(
+        room_id="SH-302",
+        date=date(2026, 9, 22),
+        start_time=time(10, 0),
+        end_time=time(11, 0),
+        subject="项目评审",
+    )
+
+    booked = await provider.book_meeting_room(context(), booking)
+    after = await provider.find_available_rooms(context(), _search())
+
+    assert booked.success is True
+    assert booked.data["room_name"] == "上海 302"
+    assert after.data["rooms"] == []
+
+
+@pytest.mark.asyncio
+async def test_booking_an_unknown_room_fails() -> None:
+    result = await _meeting_provider().book_meeting_room(
+        context(),
+        MeetingRoomBookingInput(
+            room_id="NOPE-1",
+            date=date(2026, 9, 22),
+            start_time=time(10, 0),
+            end_time=time(11, 0),
+            subject="项目评审",
+        ),
+    )
+
+    assert result.success is False
+    assert "不存在" in str(result.error)

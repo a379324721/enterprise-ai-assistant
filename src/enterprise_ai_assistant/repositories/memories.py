@@ -32,6 +32,7 @@ _ACTION_SUMMARY_FIELDS: dict[str, tuple[str, ...]] = {
     "travel_application": ("destination", "start_date", "end_date"),
     "expense_claim": ("expense_type", "amount", "currency"),
     "leave_request": ("leave_type", "start_date", "end_date"),
+    "meeting_booking": ("room_name", "date", "start_time", "end_time"),
 }
 
 

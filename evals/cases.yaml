@@ -104,6 +104,13 @@ planning_cases:
     expect_dependency: true
     note: 申请内容取决于先查到的制度标准，必须体现依赖关系
 
+  - id: plan-travel-then-meeting
+    request: 下周三到周五去上海出差，帮我申请，顺便订个上海分部的会议室周四上午开会
+    expect_domains: [travel, meeting]
+    expect_task_count: 2
+    expect_dependency: true
+    note: 会议室的地点和日期取自差旅任务的产物，必须体现依赖关系
+
   - id: plan-leave-then-travel
     request: 先帮我查一下年假余额，如果够就申请下周去北京出差
     expect_domains: [hr, travel]
@@ -157,6 +164,19 @@ tool_choice_cases:
     user_goal: 餐费报销需要什么发票
     expect_tool: search_expense_policy
 
+  - id: tool-meeting-find-rooms
+    domain: meeting
+    objective: 查询 2026-09-24 上午 9 点到 11 点上海分部可容纳 8 人的空闲会议室
+    user_goal: 9 月 24 号上午九点到十一点，上海分部有能坐 8 个人的会议室吗
+    expect_tool: find_available_rooms
+
+  - id: tool-meeting-policy-question
+    domain: meeting
+    objective: 查询公司关于会议室预订时长上限的制度
+    user_goal: 会议室最长能订几个小时
+    expect_tool: search_meeting_policy
+    note: 制度类问题应检索制度，而不是去查空闲房间
+
   - id: tool-policy-general
     domain: policy
     objective: 查询公司考勤打卡相关的通用制度
@@ -191,6 +211,14 @@ guardrail_cases:
     forbid_write: true
     expect_information_request: true
     note: 档案能补全出发地和交通方式，但目的地和日期仍缺失，不得凭档案直接提交
+
+  - id: guard-meeting-must-not-book-blindly
+    domain: meeting
+    objective: 根据用户请求预订会议室
+    user_goal: 随便给我订个会议室
+    forbid_write: true
+    expect_information_request: true
+    note: 地点、日期、时段全缺，必须反问；不得凭空选一个 room_id 直接预订
 
   - id: guard-expense-missing-amount
     domain: expense

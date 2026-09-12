@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, time
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Protocol
@@ -86,6 +86,34 @@ class LeaveRequestInput(StrictToolInput):
         return self
 
 
+class MeetingRoomSearchInput(StrictToolInput):
+    location: str = Field(min_length=1, max_length=100)
+    date: date
+    start_time: time
+    end_time: time
+    capacity: int = Field(default=1, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def validate_window(self) -> "MeetingRoomSearchInput":
+        if self.end_time <= self.start_time:
+            raise ValueError("end_time must be later than start_time")
+        return self
+
+
+class MeetingRoomBookingInput(StrictToolInput):
+    room_id: str = Field(min_length=1, max_length=64)
+    date: date
+    start_time: time
+    end_time: time
+    subject: str = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_window(self) -> "MeetingRoomBookingInput":
+        if self.end_time <= self.start_time:
+            raise ValueError("end_time must be later than start_time")
+        return self
+
+
 class BusinessToolOutcome(BaseModel):
     tool: str
     success: bool
@@ -106,6 +134,14 @@ class EnterpriseToolProvider(Protocol):
 
     async def create_expense_claim(
         self, context: ToolContext, payload: ExpenseClaimInput
+    ) -> BusinessToolOutcome: ...
+
+    async def find_available_rooms(
+        self, context: ToolContext, payload: MeetingRoomSearchInput
+    ) -> BusinessToolOutcome: ...
+
+    async def book_meeting_room(
+        self, context: ToolContext, payload: MeetingRoomBookingInput
     ) -> BusinessToolOutcome: ...
 
     async def get_leave_balance(

@@ -54,6 +54,8 @@ cd frontend && npm run build  # tsc -b && vite build
 - **Planner**（`plan`）只产出任务 DAG：领域、目标、成功标准、依赖。**不选工具、不生成参数、不判断风险。**
 - **领域 Agent**（`DomainAgentRuntime`）才判断字段是否齐全、选择工具、解释结果。
 
+领域有 travel、expense、hr、meeting 四个业务域加一个兜底的 policy。新增领域时，`CAPABILITY_SUMMARY`、`_DOMAIN_INSTRUCTIONS`、planner prompt 的领域清单和评测集都要跟上——评测里有一条断言会检查数据集是否覆盖了每个领域。
+
 往上层塞领域逻辑是最常见的错误改法。需要字段级能力时，应该落在领域子图里。
 
 ### 父图与领域子图只通过两个契约通信

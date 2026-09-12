@@ -74,30 +74,39 @@ class CachedMilvusPolicyRepository:
 async def bootstrap_policy_collection(
     client: MilvusClient, embeddings: OpenAIEmbeddings, collection: str = "enterprise_policies"
 ) -> None:
-    """创建最小可检索语料库；生产环境应通过制度摄取管道替换这些记录。"""
-    exists = await asyncio.to_thread(client.has_collection, collection_name=collection)
-    if exists:
-        return
+    """写入最小可检索语料库；生产环境应通过制度摄取管道替换这些记录。
+
+    用固定 id 做 upsert 而不是"已存在就跳过"：后者会让新增领域的制度永远进不去
+    已建好的 collection，新领域上线后检索一直落空，还得手工删库才能生效。
+    """
     documents = [
         (1, "travel", "差旅制度", "国内差旅必须事前审批；交通和住宿应遵守员工职级标准。"),
         (2, "expense", "报销制度", "差旅结束后30日内提交报销，并附发票及已审批差旅单。"),
         (3, "hr", "休假制度", "年假应提前申请；可用余额以HR系统记录为准。"),
         (4, "general", "信息安全制度", "企业敏感信息不得输入未经批准的外部系统。"),
+        (
+            5,
+            "meeting",
+            "会议室管理制度",
+            "会议室须提前预订，单次预订不超过4小时；预订后30分钟内无人到场自动释放。",
+        ),
     ]
     vectors = await embeddings.aembed_documents([item[3] for item in documents])
-    await asyncio.to_thread(
-        client.create_collection,
-        collection_name=collection,
-        dimension=len(vectors[0]),
-        metric_type="COSINE",
-        auto_id=False,
-        enable_dynamic_field=True,
-    )
+    exists = await asyncio.to_thread(client.has_collection, collection_name=collection)
+    if not exists:
+        await asyncio.to_thread(
+            client.create_collection,
+            collection_name=collection,
+            dimension=len(vectors[0]),
+            metric_type="COSINE",
+            auto_id=False,
+            enable_dynamic_field=True,
+        )
     data = [
         {"id": item[0], "vector": vector, "domain": item[1], "title": item[2], "content": item[3]}
         for item, vector in zip(documents, vectors, strict=True)
     ]
-    await asyncio.to_thread(client.insert, collection_name=collection, data=data)
+    await asyncio.to_thread(client.upsert, collection_name=collection, data=data)
 
 
 class InMemoryPolicyRepository:
@@ -118,6 +127,13 @@ class InMemoryPolicyRepository:
         ],
         "hr": [
             {"title": "休假制度", "content": "年假须提前申请，余额以HR系统为准。", "domain": "hr"}
+        ],
+        "meeting": [
+            {
+                "title": "会议室管理制度",
+                "content": "会议室须提前预订，单次不超过4小时；30分钟无人到场自动释放。",
+                "domain": "meeting",
+            }
         ],
         "general": [
             {"title": "企业制度", "content": "请提供要查询的制度主题。", "domain": "general"}

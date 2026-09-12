@@ -21,6 +21,7 @@ class AgentName(StrEnum):
     TRAVEL = "travel"
     EXPENSE = "expense"
     HR = "hr"
+    MEETING = "meeting"
     POLICY = "policy"
 
 
