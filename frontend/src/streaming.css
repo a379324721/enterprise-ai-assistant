@@ -9,6 +9,6 @@
   height: 1em;
   margin-left: 2px;
   vertical-align: -2px;
-  background: #39775a;
+  background: var(--brand-bright);
   animation: assistant-cursor-blink 0.8s infinite;
 }
