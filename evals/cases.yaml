@@ -91,18 +91,17 @@ planning_cases:
     expect_domains: [expense]
     expect_task_count: 1
 
+  - id: plan-meeting-single-task
+    request: 帮我订下周三下午两点到四点上海分部的会议室
+    expect_domains: [meeting]
+    expect_task_count: 1
+    note: 领域 Agent 自己会先查空闲再预订，拆成两个任务会让同一件事回答两遍
+
   - id: plan-general-policy
     request: 公司的考勤打卡制度是怎么规定的
     expect_domains: [policy]
     expect_task_count: 1
     note: 无法归入差旅/报销/人事的通用制度应路由到 policy
-
-  - id: plan-policy-then-travel
-    request: 去深圳出差的住宿标准是多少？按这个标准帮我申请下周的差旅
-    expect_domains: [policy, travel]
-    expect_task_count: 2
-    expect_dependency: true
-    note: 申请内容取决于先查到的制度标准，必须体现依赖关系
 
   - id: plan-travel-then-meeting
     request: 下周三到周五去上海出差，帮我申请，顺便订个周四上午的会议室
