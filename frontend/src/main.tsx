@@ -162,31 +162,44 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
     return response;
   }, [onSignOut]);
 
-  const loadHistory = useCallback(async (before?: number) => {
+  /** 取一页历史，返回本页条数，供调用方判断会话是否已经有内容。 */
+  const loadHistory = useCallback(async (before?: number, signal?: AbortSignal) => {
     const query = new URLSearchParams({limit: String(PAGE_SIZE)});
     if (before !== undefined) query.set("before", String(before));
     const response = guard(await fetch(
       `/api/v1/conversations/${session.conversationId}/messages?${query}`,
-      {headers: authHeaders},
+      {headers: authHeaders, signal},
     ));
-    if (!response.ok) return;
+    if (!response.ok) return 0;
     const body = await response.json() as {messages: Required<Message>[]; has_more: boolean};
     setHasMore(body.has_more);
     setMessages((old) => before === undefined ? body.messages : [...body.messages, ...old]);
+    return body.messages.length;
   }, [authHeaders, guard, session.conversationId]);
 
   // 进入会话时补齐最近一页历史，并把上一轮未完成的确认重新摆出来——
   // 演示时刷新页面不该让一个待确认的写操作凭空消失。
   useEffect(() => {
+    // StrictMode 在开发模式下会把 effect 跑两遍，切换用户也会重跑；没有中止信号的话，
+    // 先发出的那次响应可能后到并覆盖新一次的结果。
+    const controller = new AbortController();
     void (async () => {
       setLoadingHistory(true);
       try {
-        await loadHistory();
-        const snapshot = await fetch(`/api/v1/conversations/${session.conversationId}`, {headers: authHeaders});
-        if (snapshot.ok) setResult(await snapshot.json() as Result);
-      } catch { /* 新用户还没有会话，留在空白界面即可。 */ }
-      finally { setLoadingHistory(false); }
+        const loaded = await loadHistory(undefined, controller.signal);
+        // 会话快照只用来恢复待确认操作和任务面板，历史为空时二者必然都不存在。
+        // 新用户的会话尚未落检查点，这一请求只会换回一个 404。
+        if (loaded > 0) {
+          const snapshot = await fetch(
+            `/api/v1/conversations/${session.conversationId}`,
+            {headers: authHeaders, signal: controller.signal},
+          );
+          if (snapshot.ok) setResult(await snapshot.json() as Result);
+        }
+      } catch { /* 中止和网络失败都不该拦住进入会话。 */ }
+      finally { if (!controller.signal.aborted) setLoadingHistory(false); }
     })();
+    return () => controller.abort();
   }, [authHeaders, loadHistory, session.conversationId]);
 
   async function loadEarlier() {
