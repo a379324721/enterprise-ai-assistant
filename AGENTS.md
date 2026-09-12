@@ -70,6 +70,11 @@ cd frontend && npm run build  # tsc -b && vite build
 
 因此闲聊节点看不到用户原话，回复语言只能靠 `ContextResolution.user_language` 传下去。
 
+人工确认的决定会随恢复命令追加进 `messages`（`_decision_message`），刻意用 `SystemMessage`：
+`_conversation()` 只挑 human/ai，于是这条记录进得了会话历史和界面（`ConversationMessage.role`
+的第三种取值 `decision`），进不了模型上下文。改成 `HumanMessage` 会让下一轮的 Context
+Supervisor 把它当成用户的新输入。
+
 ### 可信上下文不经过模型
 
 `user_id` 取自访问令牌的 `sub`（`core/security.py` 的 `CurrentUser`），`conversation_id`、`request_id`、幂等键都来自运行时，通过 `ToolContext` 注入工具，**不作为模型可见的工具参数**。让模型或客户端指定身份等于开放越权。

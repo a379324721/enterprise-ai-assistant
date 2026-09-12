@@ -99,11 +99,11 @@ class ConversationMessage(BaseModel):
     """会话中的一条可见消息。
 
     index 是过滤掉工具消息后的序号，也是向前翻页的游标；领域子图的内部消息不外泄，
-    所以这里只会有用户和助手两种角色。
+    所以这里只会有用户、助手，以及用户在确认卡片上做的选择（decision）三种角色。
     """
 
     index: int
-    role: Literal["user", "assistant"]
+    role: Literal["user", "assistant", "decision"]
     text: str
 
 
