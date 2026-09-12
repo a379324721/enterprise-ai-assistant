@@ -329,7 +329,9 @@ small_talk_cases:
       - 还在审批中
       - 正在审批
       - 尚未通过
-    note: 状态问题必须引导发起查询，不得凭清单断言进度（含"审批中"这类反向臆测）
+    note: |
+      不得凭单据清单断言进度（含"审批中"这类反向臆测）。系统没有查询审批状态的
+      工具，正确回答是如实说明查不到，不是许诺去查一下。
 
 domain_answer_cases:
   - id: domain-answer-no-progress-lookup

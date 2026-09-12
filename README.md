@@ -92,8 +92,9 @@ Context Supervisor，后者在改写请求的同时把相关的 key 写进 `Cont
 
 闲聊节点（`direct_respond`）也会收到筛选后的档案和最近提交过的单据，用于让回答贴合
 这位用户、提示待办。但 `workflow_actions` 只记录写操作被调用过，**不含审批结果**，
-所以 prompt 明确禁止声称任何单据已受理、已通过或进行到哪个环节；用户问状态时必须
-引导发起查询。评测集的 `small_talk` 套件用短语黑名单守这条线。
+所以 prompt 明确禁止声称任何单据已受理、已通过或进行到哪个环节。系统也没有查询
+审批状态的工具，用户问状态时只能如实说明查不到，而不是编一个进度。评测集的
+`small_talk` 套件用短语黑名单守这条线。
 
 管理接口：
 
@@ -101,7 +102,13 @@ Context Supervisor，后者在改写请求的同时把相关的 key 写进 `Cont
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/memories
 curl -X DELETE -H "Authorization: Bearer $TOKEN" \
   http://localhost:8000/api/v1/memories/<memory_id>
+# 提交过的单据；界面右栏的"我的单据"用的就是它
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/api/v1/actions?limit=10"
 ```
+
+`/actions` 刻意不受 `MEMORY_ENABLED` 门控：单据来自 `workflow_actions`，是用户自己
+办过的事，不因为关掉长期记忆就该从界面上消失。它返回的是 `result` 里存下的对外短
+单号，不是内部幂等键。
 
 身份一律取自令牌，不接受调用方指定 `user_id`。删除入口是必需的：
 一条记错的画像会持续影响该用户之后的每一轮对话。
