@@ -1,4 +1,4 @@
-import React, {FormEvent, useCallback, useEffect, useMemo, useRef, useState} from "react";
+import React, {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {createRoot} from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -253,8 +253,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
     }
   }
 
-  async function send(event: FormEvent) {
-    event.preventDefault();
+  async function send() {
     if (!input.trim() || busy) return;
     const text = input.trim(); setInput(""); setBusy(true); setProgress("正在连接智能助手");
     setMessages((old) => [...old, {role: "user", text}, {role: "assistant", text: ""}]);
@@ -302,7 +301,22 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
           {busy && <div className="thinking">{progress || "正在处理…"}</div>}
         </div>
         {result?.pending_confirmation && <div className="confirmCard"><div className="risk">需要你的确认</div><strong>{result.pending_confirmation.summary}</strong><p>系统只会在你确认后执行该操作。</p><div><button className="cancel" disabled={busy} onClick={() => void confirm(false)}>取消</button><button className="approve" disabled={busy} onClick={() => void confirm(true)}>确认执行</button></div></div>}
-        <form onSubmit={send}><textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="描述你想办理的事情…" rows={2}/><button disabled={busy}>发送</button></form>
+        <form onSubmit={(event) => { event.preventDefault(); void send(); }}>
+          <textarea
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              // 输入法组合期间的回车是在确认候选词，不能当成发送——中文拼音下
+              // 每选一次词都会把半截话发出去。
+              if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+              event.preventDefault();
+              void send();
+            }}
+            placeholder="描述你想办理的事情…（回车发送，Shift + 回车换行）"
+            rows={2}
+          />
+          <button disabled={busy}>发送</button>
+        </form>
       </div>
       <aside><div className="asideHead"><span>任务执行</span><small>{result ? `${result.tasks.filter(t => t.status === "completed").length}/${result.tasks.length}` : "0/0"}</small></div>
         {!result && <div className="empty"><i>⌁</i><p>发送请求后，这里会展示 AI 拆解出的任务及执行进度。</p></div>}
