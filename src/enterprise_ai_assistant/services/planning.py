@@ -47,6 +47,14 @@ class LLMPlanningService:
     """通过两阶段 LLM 推理，避免路由退化为关键词意图匹配。"""
 
     def __init__(self, model: ChatOpenAI) -> None:
+        # 结构化输出一律不走流式。DashScope 在 response_format 下边流边生成 JSON，
+        # 模型一跑偏就整段中断（InternalError.Algo.InvalidParameter："partial output
+        # may be incomplete or invalid JSON"），400 不在 SDK 的重试范围内，于是整轮
+        # 对话直接失败。这三个节点的结果都不面向用户，流式没有任何收益。
+        # 图执行本身是流式的，模型调用会跟着走 astream，所以必须在这里显式关掉。
+        structured = model.model_copy(update={"disable_streaming": True})
+        # with_retry 是兜底：真正跑偏时重试一次通常就能过，不重试的代价是用户
+        # 丢掉一整轮对话（前端只会显示"执行失败，请稍后重试"）。
         self._context_resolver = ChatPromptTemplate.from_messages(
             [
                 (
@@ -76,7 +84,9 @@ class LLMPlanningService:
                     "完整会话（JSON）：\n{conversation}",
                 ),
             ]
-        ) | model.with_structured_output(ContextResolution)
+        ) | structured.with_structured_output(ContextResolution).with_retry(
+            stop_after_attempt=2
+        )
         self._direct_responder = ChatPromptTemplate.from_messages(
             [
                 (
@@ -137,7 +147,9 @@ policy 只接跨领域或前四类都归不进去的通用制度，例如考勤�
                 ),
                 ("human", "已完成上下文消解的请求：\n{context}"),
             ]
-        ) | model.with_structured_output(TaskPlan)
+        ) | structured.with_structured_output(TaskPlan).with_retry(
+            stop_after_attempt=2
+        )
         self._memory_extractor = ChatPromptTemplate.from_messages(
             [
                 (
@@ -169,7 +181,9 @@ value 用简短中文陈述，不超过 200 字。
                     "已知记忆：\n{known}\n\n本轮会话（JSON）：\n{conversation}",
                 ),
             ]
-        ) | model.with_structured_output(MemoryExtraction)
+        ) | structured.with_structured_output(MemoryExtraction).with_retry(
+            stop_after_attempt=2
+        )
 
     @traceable(name="context-supervisor", run_type="chain")
     async def resolve_context(
