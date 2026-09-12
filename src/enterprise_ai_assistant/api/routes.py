@@ -16,6 +16,7 @@ from enterprise_ai_assistant.api.schemas import (
     ConfirmationRequest,
     DevTokenRequest,
     HealthResponse,
+    MemoryListResponse,
     TokenResponse,
 )
 from enterprise_ai_assistant.core.config import Settings, get_settings
@@ -38,6 +39,7 @@ from enterprise_ai_assistant.core.security import CurrentUser, create_access_tok
 router = APIRouter(prefix="/api/v1")
 
 _NODE_PROGRESS = {
+    "recall": "正在读取你的历史偏好",
     "understand": "正在结合会话上下文理解你的请求",
     "direct_respond": "正在生成回复",
     "plan": "正在拆解任务并分析依赖关系",
@@ -48,6 +50,7 @@ _NODE_PROGRESS = {
     "execute_tool": "正在调用企业工具",
     "respond": "专业 Agent 正在生成回答",
     "apply_domain_result": "正在归并专业 Agent 的处理结果",
+    "remember": "正在整理本轮值得记住的信息",
 }
 
 _SSE_HEADERS = {
@@ -574,6 +577,39 @@ async def dev_token(payload: DevTokenRequest) -> TokenResponse:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="接口不可用")
     token, expires_in = create_access_token(payload.user_id, settings)
     return TokenResponse(access_token=token, expires_in=expires_in)
+
+
+@router.get("/memories", response_model=MemoryListResponse)
+async def list_memories(request: Request, user_id: CurrentUser) -> MemoryListResponse:
+    """列出当前用户的长期记忆。
+
+    user_id 一律取自访问令牌，不接受查询参数指定：记忆按人隔离，让调用方
+    指定身份等于开放跨用户读取。
+    """
+    settings = get_settings()
+    repository = getattr(request.app.state, "memories", None)
+    if repository is None or not settings.memory_enabled:
+        return MemoryListResponse(memories=[], recent_actions=[])
+    return MemoryListResponse(
+        memories=await repository.list_memories(user_id, settings.memory_recall_limit),
+        recent_actions=await repository.recent_actions(
+            user_id, settings.memory_recent_action_limit
+        ),
+    )
+
+
+@router.delete("/memories/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_memory(
+    memory_id: UUID, request: Request, user_id: CurrentUser
+) -> Response:
+    """删除一条记错的记忆。
+
+    没有这个入口，一条错误画像会持续污染该用户之后的每一轮对话。
+    """
+    repository = getattr(request.app.state, "memories", None)
+    if repository is None or not await repository.delete(user_id, memory_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="记忆不存在")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/metrics")

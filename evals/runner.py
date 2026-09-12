@@ -29,7 +29,11 @@ from enterprise_ai_assistant.agents.domain_runtime import (
     DomainRuntimeFactory,
     DomainRuntimeProvider,
 )
-from enterprise_ai_assistant.core.models import AgentName, PlannedTask
+from enterprise_ai_assistant.core.models import (
+    AgentName,
+    ContextResolution,
+    PlannedTask,
+)
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
 from enterprise_ai_assistant.services.llm import build_chat_model
@@ -41,11 +45,12 @@ from evals.dataset import (
     EvalDataset,
     GuardrailCase,
     PlanningCase,
+    SmallTalkCase,
     ToolChoiceCase,
     load_dataset,
 )
 
-SUITES = ("context", "planning", "tool_choice", "guardrail")
+SUITES = ("context", "planning", "tool_choice", "guardrail", "small_talk")
 
 
 @dataclass(frozen=True)
@@ -174,15 +179,22 @@ class EvalHarness:
         )
 
     async def _decide(
-        self, domain: AgentName, objective: str, user_goal: str, case_id: str
+        self,
+        domain: AgentName,
+        objective: str,
+        user_goal: str,
+        case_id: str,
+        memories: Sequence[str] = (),
     ) -> tuple[DomainRuntime, AIMessage]:
         """复刻 DomainTaskWorkflow.initialize 构造的首轮输入。"""
         task = PlannedTask(id=case_id, title=case_id, domain=domain, objective=objective)
-        payload = {
+        payload: dict[str, Any] = {
             "standalone_request": user_goal,
             "task": task.model_dump(mode="json"),
             "dependency_results": {},
         }
+        if memories:
+            payload["user_memory"] = list(memories)
         runtime = self._runtime(domain, case_id)
         response = await runtime.decide(
             objective,
@@ -193,7 +205,7 @@ class EvalHarness:
 
     async def run_tool_choice_case(self, case: ToolChoiceCase) -> CaseResult:
         _, response = await self._decide(
-            case.domain, case.objective, case.user_goal, case.id
+            case.domain, case.objective, case.user_goal, case.id, case.memories
         )
         if not response.tool_calls:
             return CaseResult(
@@ -209,7 +221,7 @@ class EvalHarness:
 
     async def run_guardrail_case(self, case: GuardrailCase) -> CaseResult:
         runtime, response = await self._decide(
-            case.domain, case.objective, case.user_goal, case.id
+            case.domain, case.objective, case.user_goal, case.id, case.memories
         )
         problems: list[str] = []
         names = [str(call["name"]) for call in response.tool_calls]
@@ -224,6 +236,21 @@ class EvalHarness:
         if case.expect_information_request and "request_information" not in names:
             problems.append(f"未调用 request_information，实际调用 {names or '无'}")
         return CaseResult("guardrail", case.id, not problems, "；".join(problems))
+
+
+    async def run_small_talk_case(self, case: SmallTalkCase) -> CaseResult:
+        context = ContextResolution(
+            standalone_request=case.standalone_request,
+            intent_summary=case.intent_summary,
+            requires_task_planning=False,
+        )
+        response = await self._planning.respond_direct(
+            context, case.memories, case.recent_actions
+        )
+        answer = str(response.content)
+        leaked = [phrase for phrase in case.forbid_phrases if phrase in answer]
+        detail = f"回答中出现了不应声称的状态 {leaked}：{answer}" if leaked else ""
+        return CaseResult("small_talk", case.id, not leaked, detail)
 
 
 def _risk_of(runtime: DomainRuntime, name: str) -> ToolRisk | None:
@@ -270,6 +297,10 @@ async def run_suites(
         ],
         "guardrail": [
             partial(harness.run_guardrail_case, case) for case in dataset.guardrail_cases
+        ],
+        "small_talk": [
+            partial(harness.run_small_talk_case, case)
+            for case in dataset.small_talk_cases
         ],
     }
     for suite in suites:

@@ -28,6 +28,8 @@ flowchart TB
 ```
 
 - Context Supervisor 阅读完整对话，只负责消解指代、分析整体意图并生成独立请求；不抽取领域字段。
+- 读原始 `messages` 的只有从对话中提取信息的节点：`understand`（提意图）和 `remember`（提记忆）。
+  执行链路上的 `plan`、`select_task`、领域子图和闲聊节点一律只消费 `ContextResolution`。
 - Planner 只生成任务领域、目标、成功标准和依赖；不选择工具、不生成参数、不判断风险。
 - Travel、Expense、HR、Policy Agent 分别拥有独立 Prompt 和最小工具白名单。
 - 每项计划任务调用一次通用领域子图；子图根据任务领域装配 Prompt 和最小工具集。
@@ -51,10 +53,58 @@ flowchart TB
 | `active_task_id` | 当前执行任务 |
 | `domain_request` | 父图发给领域子图的任务、依赖产物与可信上下文 |
 | `domain_result` | 领域子图返回的状态、回答、产物和工具审计结果 |
+| `memories` | 本轮召回的全量用户画像，经 `relevant_memory_keys` 过滤后才下发 |
+| `recent_actions` | 从 `workflow_actions` 派生的近期单据摘要 |
 
 `domain_messages`、工具决策和确认状态属于子图私有状态。领域 Agent 不共享内部消息，
 后续任务只接收依赖任务在 `artifacts` 中留下的结构化结果。人工确认通过 LangGraph
 interrupt payload 暴露，API 不依赖子图内部节点名。
+
+## 长期记忆
+
+会话内的连续性由检查点和 `messages` 保证；跨会话的连续性由长期记忆提供，
+默认关闭（`MEMORY_ENABLED=false`）。记忆分两层，来源不同：
+
+| 层 | 存储 | 内容 | 可写 |
+|---|---|---|---|
+| `profile` / `preference` | `user_memories` 表 | 常驻城市、成本中心、职级、交通与币种偏好 | 抽取写入，用户可删 |
+| 近期业务事实 | 从 `workflow_actions` 派生 | 最近的差旅、报销、请假单号与关键字段 | 只读投影 |
+
+单号不复制进记忆表：`workflow_actions` 已经是写操作的幂等与审计记录，
+复制一份会在单据作废或改期后留下无法失效的旧值。派生摘要走字段白名单
+（见 `repositories/memories.py` 的 `_ACTION_SUMMARY_FIELDS`），请假原因、票据号、
+备注正文这类一次性或敏感内容不进摘要。
+
+图在每轮开头经 `recall` 节点召回，结尾统一经 `remember` 节点收口——所有终止分支
+都汇到同一个节点，新增结束路径不会漏掉写入。等待用户补充输入的轮次不抽取，
+避免把没谈定的半成品写进画像。仓储故障时两个节点都降级为空操作，本轮行为
+退化成没有记忆的旧路径而不是失败。
+
+记忆经理解阶段筛选后才下发。`recall` 把**全部记忆的 key 清单**（只有 key、没有值）交给
+Context Supervisor，后者在改写请求的同时把相关的 key 写进 `ContextResolution.relevant_memory_keys`，
+`select_task` 和闲聊节点按这个列表过滤后才使用。这样做有两个原因：全量下发的成本是
+`记忆条数 × 任务数`，且无关档案会成为领域模型的噪音。Supervisor 只看 key 不看 value，
+做的是相关性筛选而非字段判断，`不得抽取或补写领域字段` 的边界仍然成立。
+
+领域 Agent 收到的 `user_memory` 只是建议默认值，调用 `request_information` 时必须
+写出建议值及其来源交用户确认，不得仅凭档案补全字段后直接调用写工具；余额、额度和
+制度条款一律以实时查询工具的结果为准。所有写工具照旧逐个走人工确认。
+
+闲聊节点（`direct_respond`）也会收到筛选后的档案和最近提交过的单据，用于让回答贴合
+这位用户、提示待办。但 `workflow_actions` 只记录写操作被调用过，**不含审批结果**，
+所以 prompt 明确禁止声称任何单据已受理、已通过或进行到哪个环节；用户问状态时必须
+引导发起查询。评测集的 `small_talk` 套件用短语黑名单守这条线。
+
+管理接口：
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/memories
+curl -X DELETE -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8000/api/v1/memories/<memory_id>
+```
+
+身份一律取自令牌，不接受调用方指定 `user_id`。删除入口是必需的：
+一条记错的画像会持续影响该用户之后的每一轮对话。
 
 ## 企业工具
 

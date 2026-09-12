@@ -3,7 +3,13 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
-from enterprise_ai_assistant.core.models import PendingConfirmation, PlannedTask, ToolResult
+from enterprise_ai_assistant.core.models import (
+    MemoryRecord,
+    PendingConfirmation,
+    PlannedTask,
+    RecentAction,
+    ToolResult,
+)
 
 
 class ChatRequest(BaseModel):
@@ -50,3 +56,13 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int
 
+
+class MemoryListResponse(BaseModel):
+    """用户可见的记忆清单。
+
+    画像可以删除；近期单据只是 workflow_actions 的投影，要作废得走业务流程，
+    所以在这里是只读的。
+    """
+
+    memories: list[MemoryRecord]
+    recent_actions: list[RecentAction]

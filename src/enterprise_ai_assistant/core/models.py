@@ -71,7 +71,10 @@ class TaskPlan(BaseModel):
 
 
 class ContextResolution(BaseModel):
-    """Supervisor 对完整会话的解析结果，不包含任何领域业务字段。"""
+    """Supervisor 对完整会话的解析结果，不包含任何领域业务字段。
+
+    这是理解阶段的唯一出口：执行链路上的节点都只读这里，不再回头看 messages。
+    """
 
     standalone_request: str = Field(min_length=1, max_length=8000)
     intent_summary: str = Field(min_length=1, max_length=1000)
@@ -79,6 +82,59 @@ class ContextResolution(BaseModel):
     explicit_constraints: list[str] = Field(default_factory=list)
     referenced_task_ids: list[str] = Field(default_factory=list)
     unresolved_references: list[str] = Field(default_factory=list)
+    # 用户本轮使用的语言。下游节点不读原始消息，只能靠这里保持语言一致。
+    user_language: str = Field(default="简体中文", min_length=1, max_length=32)
+    # 与本次请求相关的记忆 key。Supervisor 只做相关性筛选，不读取也不改写 value，
+    # 领域字段的判断仍然只发生在领域子图里。
+    relevant_memory_keys: list[str] = Field(default_factory=list, max_length=20)
+
+
+class MemoryKind(StrEnum):
+    """长期记忆只保留稳定属性和偏好；易变的业务事实从 workflow_actions 派生。"""
+
+    PROFILE = "profile"
+    PREFERENCE = "preference"
+
+
+class MemoryCandidate(BaseModel):
+    """抽取阶段产出的候选记忆；key 是同类事实的稳定标识，用于覆盖而不是堆积。"""
+
+    kind: MemoryKind
+    key: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
+    value: str = Field(min_length=1, max_length=200)
+
+
+class MemoryExtraction(BaseModel):
+    """一轮会话的记忆抽取结果；没有值得长期保留的信息时返回空列表。"""
+
+    memories: list[MemoryCandidate] = Field(default_factory=list, max_length=10)
+
+
+class MemoryRecord(BaseModel):
+    """已持久化的一条用户记忆。"""
+
+    id: UUID
+    kind: MemoryKind
+    key: str
+    value: str
+    source_conversation_id: UUID | None = None
+    updated_at: datetime
+
+    def render(self) -> str:
+        return f"{self.key}={self.value}"
+
+
+class RecentAction(BaseModel):
+    """从 workflow_actions 派生的近期业务事实；单号的真相来源始终是那张表。"""
+
+    reference_id: str
+    action_type: str
+    summary: str
+    created_at: datetime
+
+    def render(self) -> str:
+        day = self.created_at.date().isoformat()
+        return f"{self.action_type} {self.reference_id}（{day}）：{self.summary}"
 
 
 class PendingConfirmation(BaseModel):
@@ -109,6 +165,10 @@ class DomainTaskRequest(BaseModel):
     user_goal: str = Field(min_length=1, max_length=8000)
     task: PlannedTask
     dependency_results: dict[str, Any] = Field(default_factory=dict)
+    # 已由理解阶段按相关性筛选并渲染的档案行；只作为字段默认值的建议，
+    # 不构成用户已确认的事实。子图不接触未筛选的全量记忆。
+    memories: list[str] = Field(default_factory=list, max_length=20)
+    recent_actions: list[RecentAction] = Field(default_factory=list)
 
 
 class DomainTaskResult(BaseModel):

@@ -11,9 +11,13 @@
 | `planning` | `LLMPlanningService.plan` | 领域路由准确率、拆分粒度、依赖识别 |
 | `tool_choice` | `DomainAgentRuntime.decide` | 信息充分时的工具选择准确率 |
 | `guardrail` | `DomainAgentRuntime.decide` | 越权写入拦截率、字段缺失时的反问率 |
+| `small_talk` | `LLMPlanningService.respond_direct` | 闲聊带档案时不把"已提交"说成"已通过" |
 
-`guardrail` 的通过率是硬指标：任何一条不通过都意味着模型可能在信息不全或
-被诱导的情况下执行企业写操作，应当优先修复。
+`guardrail` 和 `small_talk` 的通过率是硬指标，任何一条不通过都应优先修复：
+
+- `guardrail` 不通过意味着模型可能在信息不全或被诱导的情况下执行企业写操作。
+- `small_talk` 不通过意味着模型会凭最近单据编造审批状态。`workflow_actions`
+  只记录写操作被调用过，不含任何审批结果，把"已提交"说成"已通过"是纯幻觉。
 
 ## 运行
 

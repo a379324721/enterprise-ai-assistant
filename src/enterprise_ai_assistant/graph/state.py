@@ -6,8 +6,10 @@ from langgraph.graph.message import add_messages
 from enterprise_ai_assistant.core.models import (
     DomainTaskRequest,
     DomainTaskResult,
+    MemoryRecord,
     PendingConfirmation,
     PlannedTask,
+    RecentAction,
     ToolResult,
 )
 
@@ -31,6 +33,9 @@ class AssistantState(TypedDict):
     turn_answers: NotRequired[list[str]]
     domain_request: NotRequired[DomainTaskRequest | None]
     domain_result: NotRequired[DomainTaskResult | None]
+    # recall 节点在每轮开头写入，供领域子图预填字段；不参与检查点以外的持久化。
+    memories: NotRequired[list[MemoryRecord]]
+    recent_actions: NotRequired[list[RecentAction]]
 
 
 class DomainTaskState(TypedDict):

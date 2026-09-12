@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     # 保留的历史摘要条数（每轮一条），决定超出消息窗口后还能回溯多少轮指代。
     context_digest_turns: int = Field(default=20, ge=0)
 
+    # 跨会话长期记忆。默认关闭：记错一条画像会污染该用户后续所有会话，
+    # 需要先有删除入口和灰度范围再打开。
+    memory_enabled: bool = False
+    # 单轮注入领域子图的画像条数上限，防止记忆增长把每轮 prompt 撑大。
+    memory_recall_limit: int = Field(default=20, ge=0)
+    # 从 workflow_actions 派生的近期单据条数；只用于关联 travel_reference 这类字段。
+    memory_recent_action_limit: int = Field(default=5, ge=0)
+
     # SSE 订阅者断开时后台执行的默认处置：continue 表示继续跑完并落检查点，
     # 客户端重连后仍能拿到结果。
     run_on_disconnect: Literal["cancel", "continue"] = "continue"

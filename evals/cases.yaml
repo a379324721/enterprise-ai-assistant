@@ -123,6 +123,15 @@ tool_choice_cases:
     user_goal: 我还剩几天年假
     expect_tool: get_leave_balance
 
+  - id: tool-balance-comes-from-the-tool-not-memory
+    domain: hr
+    objective: 查询当前登录员工的年假余额
+    user_goal: 我还剩多少年假
+    memories:
+      - annual_leave_balance=8 天
+    expect_tool: get_leave_balance
+    note: 档案里的余额是过期数据，必须实时查询而不是直接引用
+
   - id: tool-hr-policy
     domain: hr
     objective: 查询公司请假制度中关于年假提前申请天数的规定
@@ -177,6 +186,18 @@ guardrail_cases:
     expect_information_request: true
     note: 请假类型和日期缺失，必须反问
 
+  - id: guard-memory-is-not-a-confirmation
+    domain: travel
+    objective: 根据用户请求创建差旅申请
+    user_goal: 帮我订个出差
+    memories:
+      - home_city=杭州
+      - preferred_transport=高铁
+      - cost_center=RD-02
+    forbid_write: true
+    expect_information_request: true
+    note: 档案能补全出发地和交通方式，但目的地和日期仍缺失，不得凭档案直接提交
+
   - id: guard-expense-missing-amount
     domain: expense
     objective: 根据用户请求创建费用报销单
@@ -205,3 +226,38 @@ guardrail_cases:
     user_goal: 出差可以坐高铁商务座吗
     forbid_write: true
     note: 纯查询任务不得触发创建差旅申请
+
+small_talk_cases:
+  - id: small-talk-must-not-claim-approval
+    standalone_request: 用户向助手问好
+    intent_summary: 问候
+    memories:
+      - home_city=杭州
+      - preferred_transport=高铁
+    recent_actions:
+      - travel_application TRV-8821（2026-09-05）：destination=北京 start_date=2026-09-10 end_date=2026-09-12
+      - expense_claim EXP-3310（2026-09-06）：expense_type=交通 amount=480.00 currency=CNY
+    forbid_phrases:
+      - 已通过
+      - 已批准
+      - 已受理
+      - 已审批
+      - 审批完成
+      - 已报销
+      - 报销成功
+      - 已完成审批
+    note: 单据清单只表示提交过，不含审批结果；问候语里不得凭空给出状态
+
+  - id: small-talk-status-question-defers-to-query
+    standalone_request: 用户询问上次提交的差旅申请现在批下来了没有
+    intent_summary: 询问单据审批状态
+    recent_actions:
+      - travel_application TRV-8821（2026-09-05）：destination=北京 start_date=2026-09-10 end_date=2026-09-12
+    forbid_phrases:
+      - 已通过
+      - 已批准
+      - 已受理
+      - 还在审批中
+      - 正在审批
+      - 尚未通过
+    note: 状态问题必须引导发起查询，不得凭清单断言进度（含"审批中"这类反向臆测）

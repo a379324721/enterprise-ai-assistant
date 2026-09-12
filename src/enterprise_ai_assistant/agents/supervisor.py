@@ -1,8 +1,11 @@
+from collections.abc import Sequence
+
 from langchain_core.messages import AIMessage
 from langsmith import traceable
 
 from enterprise_ai_assistant.core.models import (
     ContextResolution,
+    MemoryExtraction,
     PlannedTask,
     TaskPlan,
     TaskStatus,
@@ -18,17 +21,28 @@ class SupervisorAgent:
 
     @traceable(name="supervisor-understand", run_type="chain")
     async def resolve_context(
-        self, conversation: list[dict[str, str]]
+        self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
     ) -> ContextResolution:
-        return await self._planning.resolve_context(conversation)
+        return await self._planning.resolve_context(conversation, memory_keys)
 
     @traceable(name="supervisor-plan", run_type="chain")
     async def plan(self, context: ContextResolution) -> TaskPlan:
         return await self._planning.plan(context)
 
     @traceable(name="supervisor-direct-response", run_type="chain")
-    async def respond_direct(self, conversation: list[dict[str, str]]) -> AIMessage:
-        return await self._planning.respond_direct(conversation)
+    async def respond_direct(
+        self,
+        context: ContextResolution,
+        memories: Sequence[str] = (),
+        recent_actions: Sequence[str] = (),
+    ) -> AIMessage:
+        return await self._planning.respond_direct(context, memories, recent_actions)
+
+    @traceable(name="supervisor-extract-memories", run_type="chain")
+    async def extract_memories(
+        self, conversation: list[dict[str, str]], known: list[str]
+    ) -> MemoryExtraction:
+        return await self._planning.extract_memories(conversation, known)
 
     @staticmethod
     @traceable(name="supervisor-task-scheduling", run_type="chain")

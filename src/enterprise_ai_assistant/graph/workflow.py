@@ -1,5 +1,6 @@
 from typing import Any, Literal
 
+import structlog
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
 
@@ -13,11 +14,14 @@ from enterprise_ai_assistant.core.models import (
 )
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow, build_domain_graph
 from enterprise_ai_assistant.graph.state import AssistantState
+from enterprise_ai_assistant.repositories.memories import MemoryRepository
 
 #: 超出消息窗口的历史以摘要形式回灌，需要显式标注来源，避免被当成用户当前发言。
 DIGEST_HEADER = "【早先会话摘要，仅供指代消解参考，不是用户当前发言】"
 #: 单条摘要的裁剪长度；standalone_request 上限 8000 字符，原样堆叠会让摘要本身变成新的成本源。
 DIGEST_ITEM_MAX_CHARS = 240
+
+logger = structlog.get_logger()
 
 
 class Workflow:
@@ -29,10 +33,18 @@ class Workflow:
         *,
         history_window: int = 12,
         digest_turns: int = 20,
+        memories: MemoryRepository | None = None,
+        recall_limit: int = 20,
+        recent_action_limit: int = 5,
     ) -> None:
         self.supervisor = supervisor
         self._history_window = history_window
         self._digest_turns = digest_turns
+        # memories 为 None 表示长期记忆未启用；此时 recall/remember 退化成空操作，
+        # 图结构保持不变，开关切换不需要重建检查点。
+        self._memories = memories
+        self._recall_limit = recall_limit
+        self._recent_action_limit = recent_action_limit
 
     def _conversation(self, state: AssistantState) -> list[dict[str, str]]:
         """把会话裁剪成有上界的 prompt 输入。
@@ -90,8 +102,70 @@ class Workflow:
                 parts.append(block["text"])
         return "".join(parts).strip()
 
+    async def recall(self, state: AssistantState) -> dict[str, Any]:
+        """读取该用户的长期画像和近期单据。
+
+        记忆是锦上添花的输入，不是执行前提：仓储不可用时返回空结果继续本轮，
+        表现退化成没有记忆的旧行为，而不是让整轮请求失败。
+        """
+        if self._memories is None:
+            return {"memories": [], "recent_actions": []}
+        user_id = state["user_id"]
+        try:
+            memories = await self._memories.list_memories(user_id, self._recall_limit)
+            recent_actions = await self._memories.recent_actions(
+                user_id, self._recent_action_limit
+            )
+        except Exception:
+            logger.warning("memory_recall_failed", user_id=user_id)
+            return {"memories": [], "recent_actions": []}
+        return {"memories": memories, "recent_actions": recent_actions}
+
+    async def remember(self, state: AssistantState) -> dict[str, Any]:
+        """轮次结束后抽取值得长期保留的信息。
+
+        等待用户补充输入的轮次不抽取：此时字段还没谈定，把半成品写进画像会让
+        下一轮拿着错误的默认值去预填。写入失败同样只记日志，不影响已完成的回答。
+        """
+        if self._memories is None:
+            return {}
+        if any(task.status == TaskStatus.WAITING_INPUT for task in state.get("tasks", [])):
+            return {}
+        try:
+            known = [record.render() for record in state.get("memories", [])]
+            extraction = await self.supervisor.extract_memories(
+                self._conversation(state), known
+            )
+            await self._memories.upsert(
+                state["user_id"],
+                extraction.memories,
+                source_conversation_id=state["conversation_id"],
+            )
+        except Exception:
+            logger.warning("memory_write_failed", user_id=state["user_id"])
+        return {}
+
+    def _relevant_memories(self, state: AssistantState) -> list[str]:
+        """按 understand 选出的 key 过滤记忆。
+
+        全量下发的成本是 记忆条数 × 任务数，且无关记忆会成为领域模型的噪音。
+        筛选发生在理解阶段，执行链路上的节点只拿到与本次请求相关的那几条。
+        """
+        understanding = state.get("understanding")
+        if not understanding:
+            return []
+        selected = set(ContextResolution.model_validate(understanding).relevant_memory_keys)
+        return [
+            record.render() for record in state.get("memories", []) if record.key in selected
+        ]
+
     async def understand(self, state: AssistantState) -> dict[str, Any]:
-        context = await self.supervisor.resolve_context(self._conversation(state))
+        # 只给 key 不给 value：Supervisor 做的是相关性筛选，不读取记忆内容，
+        # 也就无从用它补写领域字段。
+        context = await self.supervisor.resolve_context(
+            self._conversation(state),
+            [record.key for record in state.get("memories", [])],
+        )
         return {
             "user_goal": context.standalone_request,
             "understanding": context.model_dump(mode="json"),
@@ -112,7 +186,13 @@ class Workflow:
         return "plan" if context.requires_task_planning else "direct_respond"
 
     async def direct_respond(self, state: AssistantState) -> dict[str, Any]:
-        response = await self.supervisor.respond_direct(self._conversation(state))
+        # 闲聊节点同样只吃理解阶段的输出，不回头读原始会话。
+        # 带上档案让回答贴合这位用户，单据清单不含审批结果，prompt 禁止推断状态。
+        response = await self.supervisor.respond_direct(
+            ContextResolution.model_validate(state["understanding"]),
+            self._relevant_memories(state),
+            [action.render() for action in state.get("recent_actions", [])],
+        )
         answer = self._answer_text(response)
         if not answer:
             raise RuntimeError("direct responder returned no user-visible text")
@@ -157,6 +237,8 @@ class Workflow:
                 user_goal=state["user_goal"],
                 task=task,
                 dependency_results=dependency_results,
+                memories=self._relevant_memories(state),
+                recent_actions=list(state.get("recent_actions", [])),
             ),
             "domain_result": None,
         }
@@ -223,6 +305,8 @@ def build_graph(
     workflow: Workflow, domain_workflow: DomainTaskWorkflow, checkpointer: Any
 ) -> Any:
     graph = StateGraph(AssistantState)
+    graph.add_node("recall", workflow.recall)
+    graph.add_node("remember", workflow.remember)
     graph.add_node("understand", workflow.understand)
     graph.add_node("direct_respond", workflow.direct_respond)
     graph.add_node("plan", workflow.plan)
@@ -230,21 +314,27 @@ def build_graph(
     graph.add_node("domain_task", build_domain_graph(domain_workflow))
     graph.add_node("apply_domain_result", workflow.apply_domain_result)
 
-    graph.add_edge(START, "understand")
+    # 每轮开头召回一次，结尾统一经 remember 收口：所有终止分支都汇到同一个节点，
+    # 新增结束路径时不会漏掉记忆写入。
+    graph.add_edge(START, "recall")
+    graph.add_edge("recall", "understand")
     graph.add_conditional_edges(
         "understand",
         workflow.after_understand,
         {"plan": "plan", "direct_respond": "direct_respond"},
     )
-    graph.add_edge("direct_respond", END)
+    graph.add_edge("direct_respond", "remember")
     graph.add_edge("plan", "select_task")
     graph.add_conditional_edges(
-        "select_task", workflow.route_task, {"domain_task": "domain_task", "done": END}
+        "select_task",
+        workflow.route_task,
+        {"domain_task": "domain_task", "done": "remember"},
     )
     graph.add_edge("domain_task", "apply_domain_result")
     graph.add_conditional_edges(
         "apply_domain_result",
         workflow.after_domain_result,
-        {"select_task": "select_task", "done": END},
+        {"select_task": "select_task", "done": "remember"},
     )
+    graph.add_edge("remember", END)
     return graph.compile(checkpointer=checkpointer)

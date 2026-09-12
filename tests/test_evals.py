@@ -4,6 +4,7 @@
 和判定逻辑，保证 CI 每次都能发现"评测本身写错了"的问题。
 """
 
+from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
 
@@ -29,7 +30,9 @@ class StubPlanning:
         self._resolution = resolution
         self._plan = plan
 
-    async def resolve_context(self, conversation: list[dict[str, str]]) -> ContextResolution:
+    async def resolve_context(
+        self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
+    ) -> ContextResolution:
         del conversation
         return self._resolution
 
@@ -38,8 +41,13 @@ class StubPlanning:
         assert self._plan is not None
         return self._plan
 
-    async def respond_direct(self, conversation: list[dict[str, str]]) -> AIMessage:
-        raise AssertionError(f"not used: {conversation}")
+    async def respond_direct(
+        self,
+        context: ContextResolution,
+        memories: Sequence[str] = (),
+        recent_actions: Sequence[str] = (),
+    ) -> AIMessage:
+        raise AssertionError(f"not used: {context}")
 
 
 class StubRuntime:
@@ -366,7 +374,9 @@ async def test_unknown_tool_name_is_not_counted_as_write() -> None:
 @pytest.mark.asyncio
 async def test_run_suites_isolates_case_level_failures() -> None:
     class ExplodingPlanning(StubPlanning):
-        async def resolve_context(self, conversation: list[dict[str, str]]) -> ContextResolution:
+        async def resolve_context(
+        self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
+    ) -> ContextResolution:
             raise RuntimeError("模型服务不可用")
 
     dataset = load_dataset()

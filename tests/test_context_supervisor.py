@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 import pytest
 from langchain_core.messages import AIMessage
 
@@ -10,7 +12,7 @@ class CapturingPlanningService:
         self.conversation: list[dict[str, str]] = []
 
     async def resolve_context(
-        self, conversation: list[dict[str, str]]
+        self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
     ) -> ContextResolution:
         self.conversation = conversation
         return ContextResolution(
@@ -23,8 +25,13 @@ class CapturingPlanningService:
     async def plan(self, context: ContextResolution) -> TaskPlan:
         raise AssertionError(f"not used: {context}")
 
-    async def respond_direct(self, conversation: list[dict[str, str]]) -> AIMessage:
-        raise AssertionError(f"not used: {conversation}")
+    async def respond_direct(
+        self,
+        context: ContextResolution,
+        memories: Sequence[str] = (),
+        recent_actions: Sequence[str] = (),
+    ) -> AIMessage:
+        raise AssertionError(f"not used: {context}")
 
 
 @pytest.mark.asyncio

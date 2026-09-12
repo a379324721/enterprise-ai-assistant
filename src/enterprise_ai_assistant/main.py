@@ -23,6 +23,7 @@ from enterprise_ai_assistant.db.postgres import create_pool
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow
 from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
 from enterprise_ai_assistant.repositories.actions import PostgresActionRepository
+from enterprise_ai_assistant.repositories.memories import PostgresMemoryRepository
 from enterprise_ai_assistant.repositories.policies import (
     CachedMilvusPolicyRepository,
     bootstrap_policy_collection,
@@ -61,10 +62,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         model = build_chat_model()
         supervisor = SupervisorAgent(LLMPlanningService(model))
         provider = LocalEnterpriseToolProvider(actions, policies)
+        memories = PostgresMemoryRepository(db_pool)
         workflow = Workflow(
             supervisor,
             history_window=settings.context_window_messages,
             digest_turns=settings.context_digest_turns,
+            # 关闭开关时不把仓储交给图，recall/remember 直接短路，
+            # 既不查库也不产生额外的抽取调用。
+            memories=memories if settings.memory_enabled else None,
+            recall_limit=settings.memory_recall_limit,
+            recent_action_limit=settings.memory_recent_action_limit,
         )
         domain_workflow = DomainTaskWorkflow(
             DomainRuntimeFactory(model, DomainToolRegistry(provider))
@@ -95,6 +102,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         stack.push_async_callback(runs.aclose)
         app.state.runs = runs
         app.state.db_pool = db_pool
+        app.state.memories = memories
         app.state.redis = redis
         app.state.milvus = milvus
         app.state.logger = logger

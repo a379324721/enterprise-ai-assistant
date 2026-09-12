@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
 
@@ -27,7 +28,7 @@ from enterprise_ai_assistant.tools.registry import DomainToolRegistry, Registere
 
 class StubPlanningService:
     async def resolve_context(
-        self, conversation: list[dict[str, str]]
+        self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
     ) -> ContextResolution:
         assert "上海" in conversation[-1]["content"]
         return ContextResolution(
@@ -58,13 +59,18 @@ class StubPlanningService:
             ],
         )
 
-    async def respond_direct(self, conversation: list[dict[str, str]]) -> AIMessage:
-        raise AssertionError(f"not used: {conversation}")
+    async def respond_direct(
+        self,
+        context: ContextResolution,
+        memories: Sequence[str] = (),
+        recent_actions: Sequence[str] = (),
+    ) -> AIMessage:
+        raise AssertionError(f"not used: {context}")
 
 
 class DirectPlanningService:
     async def resolve_context(
-        self, conversation: list[dict[str, str]]
+        self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
     ) -> ContextResolution:
         assert conversation[-1]["content"] == "你好"
         return ContextResolution(
@@ -76,8 +82,14 @@ class DirectPlanningService:
     async def plan(self, context: ContextResolution) -> TaskPlan:
         raise AssertionError(f"direct conversation must not be planned: {context}")
 
-    async def respond_direct(self, conversation: list[dict[str, str]]) -> AIMessage:
-        assert conversation[-1]["content"] == "你好"
+    async def respond_direct(
+        self,
+        context: ContextResolution,
+        memories: Sequence[str] = (),
+        recent_actions: Sequence[str] = (),
+    ) -> AIMessage:
+        # 闲聊节点只吃理解阶段的输出，拿不到也不该拿原始会话。
+        assert context.standalone_request == "你好"
         return AIMessage(content="你好！有什么企业事务需要我协助？")
 
 
@@ -571,7 +583,7 @@ class RecordingPlanningService:
         self.seen: list[list[dict[str, str]]] = []
 
     async def resolve_context(
-        self, conversation: list[dict[str, str]]
+        self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
     ) -> ContextResolution:
         self.seen.append(conversation)
         return ContextResolution(
@@ -583,8 +595,13 @@ class RecordingPlanningService:
     async def plan(self, context: ContextResolution) -> TaskPlan:
         raise AssertionError(f"not used: {context}")
 
-    async def respond_direct(self, conversation: list[dict[str, str]]) -> AIMessage:
-        self.seen.append(conversation)
+    async def respond_direct(
+        self,
+        context: ContextResolution,
+        memories: Sequence[str] = (),
+        recent_actions: Sequence[str] = (),
+    ) -> AIMessage:
+        del context
         return AIMessage(content="好的")
 
 
@@ -667,7 +684,7 @@ async def test_understand_appends_and_caps_digest() -> None:
 async def test_digest_entry_is_truncated() -> None:
     class LongRequestService(RecordingPlanningService):
         async def resolve_context(
-            self, conversation: list[dict[str, str]]
+            self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
         ) -> ContextResolution:
             self.seen.append(conversation)
             return ContextResolution(

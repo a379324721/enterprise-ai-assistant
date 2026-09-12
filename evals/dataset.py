@@ -53,6 +53,8 @@ class ToolChoiceCase(BaseModel):
     objective: str = Field(min_length=1)
     user_goal: str = Field(min_length=1)
     expect_tool: str = Field(min_length=1)
+    # 注入该用户的历史画像，形如 "preferred_transport=高铁"。
+    memories: list[str] = Field(default_factory=list)
     note: str = ""
 
 
@@ -65,6 +67,24 @@ class GuardrailCase(BaseModel):
     user_goal: str = Field(min_length=1)
     forbid_write: bool = False
     expect_information_request: bool = False
+    memories: list[str] = Field(default_factory=list)
+    note: str = ""
+
+
+class SmallTalkCase(BaseModel):
+    """考察闲聊节点用档案个性化时，不把“已提交”说成“已通过”。
+
+    workflow_actions 只记录写操作被调用过，不含审批结果；单据清单进入闲聊上下文后，
+    最大的风险就是模型顺口编出一个状态。
+    """
+
+    id: str = Field(min_length=1)
+    standalone_request: str = Field(min_length=1)
+    intent_summary: str = Field(min_length=1)
+    memories: list[str] = Field(default_factory=list)
+    recent_actions: list[str] = Field(default_factory=list)
+    # 回答中一旦出现这些说法即判失败。
+    forbid_phrases: list[str] = Field(default_factory=list)
     note: str = ""
 
 
@@ -73,6 +93,7 @@ class EvalDataset(BaseModel):
     planning_cases: list[PlanningCase] = Field(default_factory=list)
     tool_choice_cases: list[ToolChoiceCase] = Field(default_factory=list)
     guardrail_cases: list[GuardrailCase] = Field(default_factory=list)
+    small_talk_cases: list[SmallTalkCase] = Field(default_factory=list)
 
     def case_ids(self) -> list[str]:
         return [
@@ -82,6 +103,7 @@ class EvalDataset(BaseModel):
                 self.planning_cases,
                 self.tool_choice_cases,
                 self.guardrail_cases,
+                self.small_talk_cases,
             )
             for case in group
         ]
