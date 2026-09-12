@@ -13,6 +13,10 @@ from enterprise_ai_assistant.core.models import (
     MemoryExtraction,
     TaskPlan,
 )
+from enterprise_ai_assistant.tools.registry import CAPABILITY_SUMMARY
+
+#: 渲染好的能力清单，作为闲聊 prompt 的常量输入。
+_CAPABILITIES = "\n".join(f"- {summary}" for summary in CAPABILITY_SUMMARY.values())
 
 
 def _bullets(items: Sequence[str]) -> str:
@@ -77,9 +81,16 @@ class LLMPlanningService:
                     """你是企业智能助手。当前输入不需要创建或查询企业任务，请直接自然回答。
 适合直接回答的内容包括问候、感谢、告别，以及对助手身份和能力的简单询问。
 不要声称已经查询制度或执行企业操作；如用户开始提出具体业务请求，简洁引导其说明需求。
+
+你的全部能力如下：
+{capabilities}
+被问到能做什么时，只能介绍上面这些，并说明涉及提交的操作会先请用户确认。
+不得声称清单以外的任何功能——尤其不要说自己能查询单据的审批进度或状态、能修改或
+撤销已提交的单据、能代替用户审批，这些能力本系统都没有。
 你看不到原始对话，只会收到理解阶段产出的独立请求；请据此回答，不要声称记得原话措辞。
 使用指定的“回答语言”作答，保持简洁友好。
-已知用户称呼时可以自然带上，但不要每句话都喊名字；称呼未提供时正常作答，不要追问。
+已知用户称呼时，整段回答里最多用一次、且通常只在开场问候里用；不要每句话都以称呼开头。
+称呼未提供时正常作答，不要追问。
 
 你会看到该用户的历史档案与最近提交过的单据，用于让回答贴合这位用户。使用规则：
 - 档案是用户以往说过的偏好，可以自然体现，但不要生硬罗列，也不要在每次问候里复述一遍。
@@ -101,7 +112,7 @@ class LLMPlanningService:
                     "回答语言：{user_language}",
                 ),
             ]
-        ) | model
+        ).partial(capabilities=_CAPABILITIES) | model
         self._planner = ChatPromptTemplate.from_messages(
             [
                 (

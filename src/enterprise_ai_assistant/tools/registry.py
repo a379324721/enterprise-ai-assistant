@@ -20,6 +20,19 @@ from enterprise_ai_assistant.tools.contracts import (
     TravelApplicationInput,
 )
 
+#: 面向用户的能力自述，供闲聊节点回答"你能干什么"。
+#:
+#: 工具的 description 是写给模型看的调用条件，不适合直接念给用户，所以这里单独维护
+#: 一份用户视角的说明。它必须只描述下面 for_agent 真的装配了工具的能力——模型没有
+#: 清单时会自行编造（例如"查询单据审批进度"，本系统并无此工具）。
+#: 新增领域时这里必须同步，测试会检查覆盖完整。
+CAPABILITY_SUMMARY: dict[AgentName, str] = {
+    AgentName.TRAVEL: "查询差旅制度、创建差旅申请",
+    AgentName.EXPENSE: "查询报销制度、提交费用报销、设置报销提醒",
+    AgentName.HR: "查询人事制度、查询假期余额、提交请假申请",
+    AgentName.POLICY: "查询其他企业通用制度",
+}
+
 
 @dataclass(frozen=True)
 class RegisteredTool:

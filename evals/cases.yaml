@@ -248,6 +248,18 @@ small_talk_cases:
       - 已完成审批
     note: 单据清单只表示提交过，不含审批结果；问候语里不得凭空给出状态
 
+  - id: small-talk-capability-answer-stays-within-the-toolset
+    standalone_request: 用户询问这个助手能做什么
+    intent_summary: 询问助手能力
+    forbid_phrases:
+      - 审批进度
+      - 查询进度
+      - 任务进度
+      - 撤销
+      - 修改已提交
+      - 代替你审批
+    note: 系统只有制度查询、差旅/报销/请假的创建与查询，不得编造进度查询或单据修改能力
+
   - id: small-talk-status-question-defers-to-query
     standalone_request: 用户询问上次提交的差旅申请现在批下来了没有
     intent_summary: 询问单据审批状态
