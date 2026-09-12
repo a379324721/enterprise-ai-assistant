@@ -19,6 +19,7 @@ from enterprise_ai_assistant.core.models import (
     DomainTaskRequest,
     DomainTaskResult,
     PendingConfirmation,
+    PendingInput,
     TaskStatus,
     ToolResult,
 )
@@ -309,6 +310,16 @@ class DomainTaskWorkflow:
         artifact = dict(state.get("artifact") or {})
         if outcome.success:
             artifact[name] = outcome.model_dump(mode="json")
+        waiting = registered.terminal and outcome.success
+        # 问题只能取 request_information 的 question 参数：那是模型按契约写下的
+        # 一条面向用户的明确问题。曾经取 respond 的自由文本，结果建单成功那一轮
+        # 的总结（"申请已提交，单号…"）被当成了问题，界面上就成了"需要你补充"
+        # 指着一句"已提交"。
+        pending_input = (
+            PendingInput(task_id=request.task.id, question=str(outcome.data["question"]))
+            if waiting and isinstance(outcome.data.get("question"), str)
+            else None
+        )
         return {
             "domain_messages": [*state.get("domain_messages", []), message],
             "domain_tool_results": [*state.get("domain_tool_results", []), audit],
@@ -316,18 +327,53 @@ class DomainTaskWorkflow:
             "pending_confirmation": None,
             "pending_tool_call": None,
             "confirmation_approved": False,
-            "domain_waiting_input": registered.terminal and outcome.success,
+            "domain_waiting_input": waiting,
+            "pending_input": pending_input,
             "domain_failed": not outcome.success,
             "domain_retry_required": False,
             "domain_tool_executed": True,
         }
 
-    def after_execute(self, state: DomainTaskState) -> Literal["decide", "respond"]:
-        return (
-            "respond"
-            if state.get("domain_waiting_input") or state.get("domain_failed")
-            else "decide"
-        )
+    @traceable(name="input-request", run_type="chain")
+    async def await_input(self, state: DomainTaskState) -> dict[str, Any]:
+        """挂起等待用户补充字段，而不是结束整轮。
+
+        以前这里直接结束：任务停在 WAITING_INPUT，用户的回答成为新的一轮，重新
+        走 understand → plan，于是同一请求里尚未执行的任务被新计划覆盖掉——
+        "出差顺便订个会议室"补完日期之后，会议室任务凭空消失了。改成 interrupt，
+        整个任务 DAG 留在检查点里，补完字段原地接着跑。
+        """
+        raw_pending = state.get("pending_input")
+        if raw_pending is None:
+            raise RuntimeError("input request entered without a question")
+        # 标识在 respond 里就定下来并落进检查点。这个节点会在 resume 时重新执行，
+        # 当场生成的 id 和客户端回带的那个必然对不上。
+        pending = PendingInput.model_validate(raw_pending)
+        answer = interrupt(pending.model_dump(mode="json"))
+        input_id = answer.get("input_id") if isinstance(answer, Mapping) else None
+        if str(input_id) != str(pending.input_id):
+            raise RuntimeError("input id does not match the pending question")
+        text = str(answer.get("text", "")).strip() if isinstance(answer, Mapping) else ""
+        if not text:
+            raise RuntimeError("user input is empty")
+        # 补充内容作为用户发言进入子图对话：字段判断本来就是领域 Agent 的职责，
+        # 它需要看到原话才能把"是的"对应到自己刚问的那个字段。
+        return {
+            "domain_messages": [*state.get("domain_messages", []), HumanMessage(content=text)],
+            "domain_waiting_input": False,
+            "domain_result": None,
+            "pending_input": None,
+        }
+
+    def after_execute(
+        self, state: DomainTaskState
+    ) -> Literal["decide", "respond", "await_input"]:
+        # 追问直接去挂起，不经过 respond。面向用户的问题就是 request_information 的
+        # question 参数，再让模型复述一遍既多花一次调用，又会同时存在两份措辞不同的
+        # 问题——界面上就成了上面问一遍、提示条里再问一遍。
+        if state.get("domain_waiting_input"):
+            return "await_input"
+        return "respond" if state.get("domain_failed") else "decide"
 
     async def respond(self, state: DomainTaskState) -> dict[str, Any]:
         request = self._request(state)
@@ -339,15 +385,13 @@ class DomainTaskWorkflow:
         answer = self._answer_text(response)
         if not answer:
             raise RuntimeError("domain responder returned no user-visible text")
-        if state.get("domain_waiting_input"):
-            status = TaskStatus.WAITING_INPUT
-        elif state.get("domain_rejected"):
+        if state.get("domain_rejected"):
             status = TaskStatus.REJECTED
         elif state.get("domain_failed"):
             status = TaskStatus.FAILED
         else:
             status = TaskStatus.COMPLETED
-        return {
+        updates: dict[str, Any] = {
             "domain_messages": [*state.get("domain_messages", []), response],
             "domain_result": DomainTaskResult(
                 task_id=request.task.id,
@@ -357,6 +401,7 @@ class DomainTaskWorkflow:
                 tool_results=list(state.get("domain_tool_results", [])),
             ),
         }
+        return updates
 
 
 def build_domain_graph(workflow: DomainTaskWorkflow) -> Any:
@@ -366,6 +411,7 @@ def build_domain_graph(workflow: DomainTaskWorkflow) -> Any:
     graph.add_node("confirm_tool", workflow.confirm_tool)
     graph.add_node("execute_tool", workflow.execute_tool)
     graph.add_node("respond", workflow.respond)
+    graph.add_node("await_input", workflow.await_input)
 
     graph.add_edge(START, "initialize")
     graph.add_edge("initialize", "decide")
@@ -373,4 +419,6 @@ def build_domain_graph(workflow: DomainTaskWorkflow) -> Any:
     graph.add_conditional_edges("confirm_tool", workflow.after_confirm)
     graph.add_conditional_edges("execute_tool", workflow.after_execute)
     graph.add_edge("respond", END)
+    # 缺字段时不结束本轮，挂起等用户回答，再回到 decide 接着跑这个任务。
+    graph.add_edge("await_input", "decide")
     return graph.compile()

@@ -368,3 +368,16 @@ domain_answer_cases:
     note: |
       检索为空时模型会拿常识补一套条款念出来，措辞像制度原文却没有任何依据。
       这些短语都不可能出自一个空结果，出现即说明回答来自模型自身知识。
+
+  - id: domain-answer-stays-on-its-own-task
+    domain: travel
+    objective: 根据用户请求创建差旅申请
+    user_goal: 申请周三去上海出差，顺便订个当天上午的会议室
+    tool_results:
+      - '{"tool":"create_travel_application","success":true,"status":"submitted","data":{"status":"recorded","destination":"上海","start_date":"2026-09-16","end_date":"2026-09-16","purpose":"培训"}}'
+    forbid_phrases:
+      - 会议室
+    note: |
+      会议室是同一轮里的另一个任务，由 meeting 领域处理，系统完全做得到。
+      实测差旅 Agent 会补一句"预订会议室不在差旅申请范围内，我无法为您办理"，
+      用户以为这件事被拒，下一轮就不再提——回答里出现"会议室"就是越界。

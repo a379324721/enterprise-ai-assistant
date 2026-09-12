@@ -289,6 +289,12 @@ curl -N -X POST http://localhost:8000/api/v1/chat/stream \
 高风险操作确认后的剩余任务通过
 `POST /api/v1/conversations/{conversation_id}/confirm/stream` 继续流式执行。Nginx 已关闭该路径的代理缓冲。
 
+领域任务缺字段时的追问走同一条恢复路径：
+`POST /api/v1/conversations/{conversation_id}/input/stream`，请求体是 `{input_id, text}`，
+`input_id` 来自 `pending_input`。它**不是**新的一轮——把回答当成新消息发出去会重新规划，
+同一请求里尚未执行的任务就被新计划覆盖掉了，所以挂在追问上的会话拒绝普通 chat 请求。
+补充内容会作为一条用户发言进入会话历史。
+
 ### 断线恢复
 
 图执行跑在后台运行里，SSE 连接只是订阅者：**关闭标签页或网络抖动不会中断执行**，

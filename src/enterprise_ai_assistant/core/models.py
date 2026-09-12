@@ -1,6 +1,6 @@
 from datetime import UTC, date, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, model_validator
@@ -149,6 +149,20 @@ class PendingConfirmation(BaseModel):
     tool_call_id: str
     summary: str
     payload: dict[str, Any]
+    requested_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class PendingInput(BaseModel):
+    """领域任务缺字段时挂起的提问。
+
+    kind 是显式判别位：两种中断走同一个 interrupt 通道，API 层靠它区分，
+    不去猜哪个模型能 validate 通过。
+    """
+
+    kind: Literal["input"] = "input"
+    input_id: UUID = Field(default_factory=uuid4)
+    task_id: str
+    question: str = Field(min_length=1)
     requested_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
