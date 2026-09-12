@@ -105,11 +105,11 @@ planning_cases:
     note: 申请内容取决于先查到的制度标准，必须体现依赖关系
 
   - id: plan-travel-then-meeting
-    request: 下周三到周五去上海出差，帮我申请，顺便订个上海分部的会议室周四上午开会
+    request: 下周三到周五去上海出差，帮我申请，顺便订个周四上午的会议室
     expect_domains: [travel, meeting]
     expect_task_count: 2
     expect_dependency: true
-    note: 会议室的地点和日期取自差旅任务的产物，必须体现依赖关系
+    note: 用户未重复地点，会议室的地点和日期须取自差旅任务的产物，必须体现依赖关系
 
   - id: plan-leave-then-travel
     request: 先帮我查一下年假余额，如果够就申请下周去北京出差

@@ -122,13 +122,14 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" \
 
 ## 示例流程
 
-输入：`下周三到周五去上海出差，帮我申请，顺便订个上海分部的会议室周四上午开会`
+输入：`下周三到周五去上海出差，帮我申请，顺便订个周四上午的会议室`
 
 1. Supervisor 结合历史会话把输入改写为独立请求，不抽取差旅字段。
 2. Planner 生成 Travel 任务和依赖它的 Meeting 任务。
 3. Travel Agent 自行识别字段；缺失时调用 `request_information`，完整时提出创建差旅工具调用。
 4. 子图冻结精确工具参数并触发 interrupt；确认请求必须携带对应的 `confirmation_id`，通过后再使用“会话 + 请求 + 任务 + 工具”幂等键执行。
-5. 差旅结果写入 `artifacts`，其中的目的地与日期作为 `dependency_results` 交给 Meeting Agent。
+5. 差旅结果写入 `artifacts`，其中的目的地与日期作为 `dependency_results` 交给 Meeting Agent——
+   用户没有再说一遍「上海」，地点是从上游任务的产物推断出来的。
 6. Meeting Agent 先查空闲会议室；查不到符合条件的就如实说明并建议改期，查到才提出预订调用并再次请求确认。
 
 所有写工具都需要确认；制度和余额读取不需要确认。

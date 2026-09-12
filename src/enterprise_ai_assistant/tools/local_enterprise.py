@@ -124,10 +124,23 @@ class LocalEnterpriseToolProvider:
             for booked_room, booked_day, booked_start, booked_end in self._bookings
         )
 
+    @staticmethod
+    def _location_matches(room_location: str, requested: str) -> bool:
+        """按包含关系匹配地点。
+
+        地点常常是从上游任务推断来的：差旅任务产出的目的地是"上海"，而会议室登记的
+        是"上海分部"。要求完全相等会让这条依赖白白断掉，用户则要多说一遍地点。
+        """
+        return requested in room_location or room_location in requested
+
     async def find_available_rooms(
         self, context: ToolContext, payload: MeetingRoomSearchInput
     ) -> BusinessToolOutcome:
         del context
+        at_location = [
+            room for room in self._rooms
+            if self._location_matches(room.location, payload.location)
+        ]
         rooms = [
             {
                 "room_id": room.room_id,
@@ -135,18 +148,22 @@ class LocalEnterpriseToolProvider:
                 "location": room.location,
                 "capacity": room.capacity,
             }
-            for room in self._rooms
-            if room.location == payload.location
-            and room.capacity >= payload.capacity
+            for room in at_location
+            if room.capacity >= payload.capacity
             and self._is_free(room.room_id, payload.date, payload.start_time, payload.end_time)
         ]
         # 查不到不是失败：这是一个确定的业务事实，Agent 应当如实转述并建议改期，
-        # 而不是把它当成工具故障重试，更不能编一个房间出来。
+        # 而不是把它当成工具故障重试，更不能编一个房间出来。空结果时附上全部地点，
+        # 否则 Agent 无从判断是这个时段满了，还是压根没有这个地点。
+        data: dict[str, Any] = {"rooms": rooms, "location": payload.location}
+        if not rooms:
+            data["location_exists"] = bool(at_location)
+            data["known_locations"] = sorted({room.location for room in self._rooms})
         return BusinessToolOutcome(
             tool="find_available_rooms",
             success=True,
             status="completed",
-            data={"rooms": rooms, "location": payload.location},
+            data=data,
         )
 
     async def book_meeting_room(

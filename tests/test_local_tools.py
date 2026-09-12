@@ -226,3 +226,27 @@ async def test_booking_an_unknown_room_fails() -> None:
 
     assert result.success is False
     assert "不存在" in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_location_is_matched_by_containment() -> None:
+    """差旅产出的目的地是"上海"，会议室登记的是"上海分部"；
+    要求完全相等会让依赖白白断掉，用户就得多说一遍地点。"""
+    result = await _meeting_provider().find_available_rooms(
+        context(), _search(location="上海")
+    )
+
+    assert {item["room_id"] for item in result.data["rooms"]} == {"SH-302"}
+
+
+@pytest.mark.asyncio
+async def test_empty_result_distinguishes_full_from_unknown_location() -> None:
+    """全满和查无此地点要能分辨，否则 Agent 只会笼统地说"没有"。"""
+    provider = _meeting_provider()
+
+    full = await provider.find_available_rooms(context(), _search(capacity=100))
+    nowhere = await provider.find_available_rooms(context(), _search(location="火星"))
+
+    assert full.data["rooms"] == [] and full.data["location_exists"] is True
+    assert nowhere.data["rooms"] == [] and nowhere.data["location_exists"] is False
+    assert "上海分部" in nowhere.data["known_locations"]
