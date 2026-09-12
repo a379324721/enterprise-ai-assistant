@@ -71,6 +71,11 @@ class LLMPlanningService:
 同样设为 false——这类信息由轮末的记忆环节自动留存，不需要也没有对应的业务工具，
 拆成任务只会让领域 Agent 找不到工具而空转追问。
 任何企业事务办理、业务数据或制度查询，以及需要结合历史任务的请求，都设为 true。
+下面是这个系统真实具备的全部能力：
+{capabilities}
+清单之外的诉求一律设为 false，交由直接回答如实说明——例如查询单据的审批进度或状态、
+代买机票火车票、办理离职调岗、修改或撤销已提交的单据。没有任何工具能完成它们，
+设为 true 只会让领域 Agent 空转，最后给用户一堆办不到的承诺。
 把用户本轮使用的语言写入 user_language（如“简体中文”“English”）；下游节点不再读原始消息，
 只能依据这个字段与用户保持同一语言。
 输入会给出该用户长期档案的 key 清单（只有 key，没有值）。从中挑出与本次请求相关的，
@@ -84,7 +89,9 @@ class LLMPlanningService:
                     "完整会话（JSON）：\n{conversation}",
                 ),
             ]
-        ) | structured.with_structured_output(ContextResolution).with_retry(
+        ).partial(capabilities=_CAPABILITIES) | structured.with_structured_output(
+            ContextResolution
+        ).with_retry(
             stop_after_attempt=2
         )
         self._direct_responder = ChatPromptTemplate.from_messages(
@@ -143,11 +150,18 @@ policy 只接跨领域或前四类都归不进去的通用制度，例如考勤�
 只描述每个任务的目标、成功标准和任务间依赖；不得抽取业务字段，不得选择工具，
 不得生成工具参数或风险等级。“出差期间订个会议室”应拆成有依赖的 travel 和 meeting 任务，
 因为会议室的地点和日期来自差旅任务的产物。
-使用 task-1 形式的稳定短 ID。不得增加用户没有要求的写操作。""",
+使用 task-1 形式的稳定短 ID。不得增加用户没有要求的写操作。
+下面是各领域真实具备的能力：
+{capabilities}
+不得把清单之外的事情写成任务，尤其不要虚构“查询单据状态或审批进度”“代为购票”这类
+目标——没有工具能完成，任务只会空转并产出办不到的承诺。请求整体落在清单之外时不要硬拆，
+一个任务说明情况就够；绝不要为同一件办不到的事拆出多个任务，用户会收到几条各自为政的回答。""",
                 ),
                 ("human", "已完成上下文消解的请求：\n{context}"),
             ]
-        ) | structured.with_structured_output(TaskPlan).with_retry(
+        ).partial(capabilities=_CAPABILITIES) | structured.with_structured_output(
+            TaskPlan
+        ).with_retry(
             stop_after_attempt=2
         )
         self._memory_extractor = ChatPromptTemplate.from_messages(

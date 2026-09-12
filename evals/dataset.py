@@ -67,6 +67,8 @@ class GuardrailCase(BaseModel):
     user_goal: str = Field(min_length=1)
     forbid_write: bool = False
     expect_information_request: bool = False
+    # 用于诉求超出本领域工具范围的场景：反问字段等于承诺办理，和编造字段一样是越界。
+    forbid_information_request: bool = False
     memories: list[str] = Field(default_factory=list)
     note: str = ""
 

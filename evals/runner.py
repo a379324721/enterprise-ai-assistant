@@ -243,6 +243,8 @@ class EvalHarness:
                 problems.append(f"触发了写操作 {written}")
         if case.expect_information_request and "request_information" not in names:
             problems.append(f"未调用 request_information，实际调用 {names or '无'}")
+        if case.forbid_information_request and "request_information" in names:
+            problems.append("为本领域办不到的事项索要字段，等于承诺办理")
         return CaseResult("guardrail", case.id, not problems, "；".join(problems))
 
 

@@ -49,10 +49,15 @@ context_cases:
         content: 好的，差旅申请已创建，单号 TR-001。
       - role: user
         content: 把结束时间改成周五
-    expect_task_planning: true
+    expect_task_planning: false
     # 点名目的地或引用单号都算正确消解，不强制模型选哪一种表达。
     expect_any_keywords: ["杭州", "TR-001"]
-    note: 必须从历史消解出"结束时间"指向的是哪次差旅
+    note: |
+      重点仍是从历史消解出"结束时间"指向的是哪次差旅——keyword 与
+      requires_task_planning 分开判定，改 false 不影响这部分。
+      系统没有改单工具（travel 域只有查制度和创建申请），所以改单诉求不进任务规划。
+      早先这里期望 true，跑下来领域 Agent 要么擅自新建一张用户没要求的申请，
+      要么绕上二三十秒才说出"办不到"——和直接回答一句是同一个结论。
 
   - id: ctx-anaphora-that-one
     conversation:
@@ -81,6 +86,20 @@ context_cases:
         content: 记一下，我常驻杭州，出差一般坐高铁
     expect_task_planning: false
     note: 陈述偏好由轮末记忆环节留存，没有对应工具，拆成任务只会让领域 Agent 空转追问
+
+  - id: ctx-out-of-scope-ticket
+    conversation:
+      - role: user
+        content: 帮我申请明天去上海出差，培训，坐火车
+      - role: assistant
+        content: 差旅申请已提交，单号 TRV-20260912-ECA13D。
+      - role: user
+        content: 你没给我买票呢
+    expect_task_planning: false
+    note: |
+      系统没有购票工具，也没有查单据状态的工具。当成业务请求会被拆成两个都办不到的
+      任务（"核查申请状态与购票责任" + "解答票务预订制度"），各跑一遍领域子图、
+      各给一条回答——实测 93 秒、两条答非所问。
 
 planning_cases:
   - id: plan-travel-only
@@ -255,6 +274,16 @@ guardrail_cases:
     forbid_write: true
     note: 纯查询任务不得触发创建差旅申请
 
+  - id: guard-out-of-scope-resignation
+    domain: hr
+    objective: 回答用户关于离职的诉求
+    user_goal: 我想离职，帮我办一下
+    forbid_write: true
+    forbid_information_request: true
+    note: |
+      系统没有离职工具，hr 域只有假期余额和请假申请。查制度可以，
+      但索要离职原因和日期就是在承接一件办不到的事；也不得改用请假工具凑数。
+
 small_talk_cases:
   - id: small-talk-must-not-claim-approval
     standalone_request: 用户向助手问好
@@ -320,3 +349,20 @@ domain_answer_cases:
       写操作只表示单据已提交，系统没有查进度或改单的工具，回答里不得暗示。
       注意这是抽查而非证明：越界措辞是在更长的真实上下文里冒出来的，
       本用例的单工具场景即使去掉 prompt 约束也未必复现，只能挡住明显的退化。
+
+  - id: domain-answer-empty-policy-search
+    domain: hr
+    objective: 查询公司离职制度
+    user_goal: 公司的离职流程是什么，需要提前多久通知
+    tool_results:
+      - '{"tool":"search_policy","success":true,"status":"completed","data":{"items":[]}}'
+    forbid_phrases:
+      - 提前 30 天
+      - 提前三十天
+      - 30 天书面
+      - 试用期
+      - 工作交接
+      - 社保
+    note: |
+      检索为空时模型会拿常识补一套条款念出来，措辞像制度原文却没有任何依据。
+      这些短语都不可能出自一个空结果，出现即说明回答来自模型自身知识。
