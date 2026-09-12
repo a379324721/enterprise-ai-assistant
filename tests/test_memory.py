@@ -50,6 +50,7 @@ class MemoryPlanningService:
         self.seen: list[tuple[list[dict[str, str]], list[str]]] = []
         self.seen_keys: list[list[str]] = []
         self.seen_direct: list[tuple[list[str], list[str]]] = []
+        self.seen_names: list[str] = []
         self._relevant = list(relevant_keys)
 
     async def resolve_context(
@@ -82,9 +83,11 @@ class MemoryPlanningService:
         context: ContextResolution,
         memories: Sequence[str] = (),
         recent_actions: Sequence[str] = (),
+        user_name: str = "",
     ) -> AIMessage:
         del context
         self.seen_direct.append((list(memories), list(recent_actions)))
+        self.seen_names.append(user_name)
         return AIMessage(content="好的")
 
     async def extract_memories(
@@ -504,3 +507,47 @@ async def test_small_talk_never_reads_raw_messages() -> None:
     # respond_direct 的入参里没有会话，stub 只收到 context 与档案。
     assert planning.seen == []
     assert planning.seen_direct == [([], [])]
+
+
+@pytest.mark.asyncio
+async def test_display_name_reaches_small_talk_without_going_through_memory() -> None:
+    """称呼来自令牌而不是画像：它永远相关，交给相关性筛选会在问候上被丢掉。"""
+    repository = InMemoryMemoryRepository()
+    planning = MemoryPlanningService()
+    workflow = Workflow(SupervisorAgent(planning), memories=repository)
+
+    await workflow.direct_respond(
+        _state(understanding=_understanding([]), user_name="王宁")
+    )
+
+    assert planning.seen_names == ["王宁"]
+    # 画像里没有任何一条姓名记录，记忆表的职责没有被扩大。
+    assert await repository.list_memories("u-1", 10) == []
+
+
+@pytest.mark.asyncio
+async def test_display_name_reaches_the_domain_subgraph() -> None:
+    workflow = Workflow(SupervisorAgent(MemoryPlanningService()))
+
+    update = await workflow.select_task(
+        _state(
+            user_name="王宁",
+            understanding=_understanding([]),
+            tasks=[
+                PlannedTask(id="task-1", title="差旅", domain=AgentName.TRAVEL, objective="创建")
+            ],
+        )
+    )
+
+    assert update["domain_request"].user_name == "王宁"
+
+
+@pytest.mark.asyncio
+async def test_a_turn_without_a_name_still_works() -> None:
+    """早于该字段的检查点没有 user_name，不能因此报错。"""
+    planning = MemoryPlanningService()
+    workflow = Workflow(SupervisorAgent(planning))
+
+    await workflow.direct_respond(_state(understanding=_understanding([])))
+
+    assert planning.seen_names == [""]

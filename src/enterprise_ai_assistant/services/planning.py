@@ -31,6 +31,7 @@ class PlanningService(Protocol):
         context: ContextResolution,
         memories: Sequence[str] = (),
         recent_actions: Sequence[str] = (),
+        user_name: str = "",
     ) -> AIMessage: ...
 
     async def extract_memories(
@@ -78,6 +79,7 @@ class LLMPlanningService:
 不要声称已经查询制度或执行企业操作；如用户开始提出具体业务请求，简洁引导其说明需求。
 你看不到原始对话，只会收到理解阶段产出的独立请求；请据此回答，不要声称记得原话措辞。
 使用指定的“回答语言”作答，保持简洁友好。
+已知用户称呼时可以自然带上，但不要每句话都喊名字；称呼未提供时正常作答，不要追问。
 
 你会看到该用户的历史档案与最近提交过的单据，用于让回答贴合这位用户。使用规则：
 - 档案是用户以往说过的偏好，可以自然体现，但不要生硬罗列，也不要在每次问候里复述一遍。
@@ -93,6 +95,7 @@ class LLMPlanningService:
                 ),
                 (
                     "human",
+                    "用户称呼：{user_name}\n"
                     "本轮请求（已完成上下文消解）：{standalone_request}\n"
                     "意图概括：{intent_summary}\n"
                     "回答语言：{user_language}",
@@ -167,9 +170,11 @@ value 用简短中文陈述，不超过 200 字。
         context: ContextResolution,
         memories: Sequence[str] = (),
         recent_actions: Sequence[str] = (),
+        user_name: str = "",
     ) -> AIMessage:
         result = await self._direct_responder.ainvoke(
             {
+                "user_name": user_name or "（未提供）",
                 "standalone_request": context.standalone_request,
                 "intent_summary": context.intent_summary,
                 "user_language": context.user_language,

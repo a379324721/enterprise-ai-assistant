@@ -38,7 +38,12 @@ from enterprise_ai_assistant.core.runs import (
     RunStatus,
     StreamGap,
 )
-from enterprise_ai_assistant.core.security import CurrentUser, create_access_token
+from enterprise_ai_assistant.core.security import (
+    CurrentIdentity,
+    CurrentUser,
+    Identity,
+    create_access_token,
+)
 from enterprise_ai_assistant.repositories.users import (
     DemoUser,
     DemoUserRepository,
@@ -135,10 +140,12 @@ async def _record_usage(
         )
 
 
-def _initial_state(payload: ChatRequest, user_id: str) -> dict[str, Any]:
+def _initial_state(payload: ChatRequest, identity: Identity) -> dict[str, Any]:
     return {
         "messages": [HumanMessage(content=payload.message)],
-        "user_id": user_id,
+        "user_id": identity.user_id,
+        # 每轮都刷新称呼：令牌是它的真相来源，改名后不必等检查点失效。
+        "user_name": identity.name,
         "conversation_id": payload.conversation_id,
         "request_id": payload.request_id,
     }
@@ -433,16 +440,17 @@ def _stream_response(request: Request, run: Run, *, apply_on_disconnect: bool) -
 async def chat(
     payload: ChatRequest,
     request: Request,
-    user_id: CurrentUser,
+    identity: CurrentIdentity,
 ) -> AssistantResponse:
     settings = get_settings()
+    user_id = identity.user_id
     await _enforce_token_budget(request.app, payload.conversation_id, settings)
     await _validate_chat_turn(
         request.app, payload.conversation_id, user_id, payload.request_id
     )
     run = await _start_run(
         request.app,
-        _initial_state(payload, user_id),
+        _initial_state(payload, identity),
         payload.conversation_id,
         user_id,
         request_id=payload.request_id,
@@ -460,17 +468,18 @@ async def chat(
 async def chat_stream(
     payload: ChatRequest,
     request: Request,
-    user_id: CurrentUser,
+    identity: CurrentIdentity,
 ) -> StreamingResponse:
     """聊天输入使用 POST，因此该 SSE 接口由流式 fetch 消费。"""
     settings = get_settings()
+    user_id = identity.user_id
     await _enforce_token_budget(request.app, payload.conversation_id, settings)
     await _validate_chat_turn(
         request.app, payload.conversation_id, user_id, payload.request_id
     )
     run = await _start_run(
         request.app,
-        _initial_state(payload, user_id),
+        _initial_state(payload, identity),
         payload.conversation_id,
         user_id,
         request_id=payload.request_id,

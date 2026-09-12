@@ -64,6 +64,7 @@ class StubPlanningService:
         context: ContextResolution,
         memories: Sequence[str] = (),
         recent_actions: Sequence[str] = (),
+        user_name: str = "",
     ) -> AIMessage:
         raise AssertionError(f"not used: {context}")
 
@@ -87,6 +88,7 @@ class DirectPlanningService:
         context: ContextResolution,
         memories: Sequence[str] = (),
         recent_actions: Sequence[str] = (),
+        user_name: str = "",
     ) -> AIMessage:
         # 闲聊节点只吃理解阶段的输出，拿不到也不该拿原始会话。
         assert context.standalone_request == "你好"
@@ -600,6 +602,7 @@ class RecordingPlanningService:
         context: ContextResolution,
         memories: Sequence[str] = (),
         recent_actions: Sequence[str] = (),
+        user_name: str = "",
     ) -> AIMessage:
         del context
         return AIMessage(content="好的")

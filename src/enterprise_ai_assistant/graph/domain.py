@@ -81,6 +81,8 @@ class DomainTaskWorkflow:
         }
         # 记忆单独成键，和用户当前请求区分开：模型必须能分辨哪些是本轮说的、
         # 哪些只是历史档案给出的建议值。
+        if request.user_name:
+            domain_input["user_name"] = request.user_name
         if request.memories:
             domain_input["user_memory"] = list(request.memories)
         if request.recent_actions:

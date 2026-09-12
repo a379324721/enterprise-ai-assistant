@@ -46,6 +46,7 @@ class StubPlanning:
         context: ContextResolution,
         memories: Sequence[str] = (),
         recent_actions: Sequence[str] = (),
+        user_name: str = "",
     ) -> AIMessage:
         raise AssertionError(f"not used: {context}")
 

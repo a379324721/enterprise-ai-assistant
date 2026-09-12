@@ -192,6 +192,7 @@ class Workflow:
             ContextResolution.model_validate(state["understanding"]),
             self._relevant_memories(state),
             [action.render() for action in state.get("recent_actions", [])],
+            state.get("user_name", ""),
         )
         answer = self._answer_text(response)
         if not answer:
@@ -232,6 +233,7 @@ class Workflow:
             "current_agent": task.domain.value,
             "domain_request": DomainTaskRequest(
                 user_id=state["user_id"],
+                user_name=state.get("user_name", ""),
                 conversation_id=state["conversation_id"],
                 request_id=state["request_id"],
                 user_goal=state["user_goal"],

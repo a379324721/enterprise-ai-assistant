@@ -19,6 +19,9 @@ class AssistantState(TypedDict):
 
     messages: Annotated[list[Any], add_messages]
     user_id: str
+    # 用户的展示名，来自令牌的 name 声明。只用于称呼，不参与会话归属和幂等键。
+    # 早于该字段的检查点没有它，读取时一律走 get 兜底。
+    user_name: NotRequired[str]
     conversation_id: UUID
     request_id: UUID
     user_goal: str

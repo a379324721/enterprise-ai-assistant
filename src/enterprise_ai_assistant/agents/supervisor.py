@@ -35,8 +35,11 @@ class SupervisorAgent:
         context: ContextResolution,
         memories: Sequence[str] = (),
         recent_actions: Sequence[str] = (),
+        user_name: str = "",
     ) -> AIMessage:
-        return await self._planning.respond_direct(context, memories, recent_actions)
+        return await self._planning.respond_direct(
+            context, memories, recent_actions, user_name
+        )
 
     @traceable(name="supervisor-extract-memories", run_type="chain")
     async def extract_memories(
