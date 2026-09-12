@@ -11,6 +11,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response, StreamingResponse
 
 from enterprise_ai_assistant.api.schemas import (
+    ActionListResponse,
     AssistantResponse,
     ChatRequest,
     ConfirmationRequest,
@@ -722,6 +723,25 @@ async def list_memories(request: Request, user_id: CurrentUser) -> MemoryListRes
             user_id, settings.memory_recent_action_limit
         ),
     )
+
+
+@router.get("/actions", response_model=ActionListResponse)
+async def list_actions(
+    request: Request,
+    user_id: CurrentUser,
+    limit: Annotated[int, Query(ge=1, le=50)] = 10,
+) -> ActionListResponse:
+    """列出当前用户提交过的单据。
+
+    和 /memories 不同，这里不看 MEMORY_ENABLED：单据来自 workflow_actions，
+    是用户自己办过的事，不因为关掉长期记忆就该从界面上消失。
+
+    user_id 同样只取自访问令牌——单据按人隔离，让调用方指定身份等于开放跨用户读取。
+    """
+    repository = getattr(request.app.state, "memories", None)
+    if repository is None:
+        return ActionListResponse(actions=[])
+    return ActionListResponse(actions=await repository.recent_actions(user_id, limit))
 
 
 @router.delete("/memories/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)

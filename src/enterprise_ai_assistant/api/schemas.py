@@ -68,6 +68,17 @@ class MemoryListResponse(BaseModel):
     recent_actions: list[RecentAction]
 
 
+class ActionListResponse(BaseModel):
+    """当前用户提交过的单据清单。
+
+    数据来自 workflow_actions，与长期记忆开关无关：单据是业务事实，不是画像。
+    这张表只知道适配器被调用过，不知道外部系统的审批结果，所以这里没有状态字段——
+    界面上凭它显示"审批中"或"已通过"都是幻觉。
+    """
+
+    actions: list[RecentAction]
+
+
 class DemoAuthRequest(BaseModel):
     """演示登录只要一个名字；没有凭据，因此接口受环境开关保护。"""
 

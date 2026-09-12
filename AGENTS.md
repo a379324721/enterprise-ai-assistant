@@ -91,6 +91,8 @@ cd frontend && npm run build  # tsc -b && vite build
 - `profile` / `preference` 存 `user_memories` 表，`UNIQUE(user_id, kind, key)` 覆盖写。
 - 近期业务事实**不复制**，从 `workflow_actions` 派生。单号的真相只有那一处，复制一份在单据作废后无法失效。派生摘要走 `_ACTION_SUMMARY_FIELDS` 白名单，请假原因、票据号、备注正文不进模型上下文。
 
+界面右栏的"我的单据"（`GET /actions`）走的是同一个 `recent_actions`，因此**不受 `MEMORY_ENABLED` 门控**——单据是用户自己办过的事，不是画像。露出的单号只能取 `result` 里存下的短单号（`build_reference_id` 的产物）；`idempotency_key` 是 会话:请求:任务:工具 拼成的，退回它就等于把内部结构同时泄漏进模型上下文和界面。
+
 `recall` 在轮首、`remember` 在轮尾，所有终止分支都汇到 `remember`。记忆只作为字段的建议默认值，不构成用户已确认的事实——余额、额度、制度条款一律以实时查询工具为准。
 
 ### 演示登录与会话模型

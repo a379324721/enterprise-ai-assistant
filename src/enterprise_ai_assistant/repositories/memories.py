@@ -41,17 +41,27 @@ def _decode_json_object(value: Any) -> dict[str, Any]:
     return dict(decoded) if isinstance(decoded, Mapping) else {}
 
 
+def action_fields(action_type: str, payload: Mapping[str, Any]) -> dict[str, str]:
+    """按白名单取出允许对外露出的字段，保持声明顺序。
+
+    模型上下文要的是一行摘要，界面要的是可以自己排版的结构，两者同源于这份白名单，
+    免得将来加字段时只改了一处。
+    """
+    allowed = _ACTION_SUMMARY_FIELDS.get(action_type)
+    if not allowed:
+        return {}
+    return {
+        name: str(payload[name])
+        for name in allowed
+        if payload.get(name) not in (None, "", [])
+    }
+
+
 def summarize_action(action_type: str, payload: Mapping[str, Any]) -> str:
     """按白名单把写操作载荷压成一行摘要。"""
-    fields = _ACTION_SUMMARY_FIELDS.get(action_type)
-    if not fields:
-        return ""
-    parts = [
-        f"{name}={payload[name]}"
-        for name in fields
-        if payload.get(name) not in (None, "", [])
-    ]
-    return " ".join(parts)
+    return " ".join(
+        f"{name}={value}" for name, value in action_fields(action_type, payload).items()
+    )
 
 
 class MemoryRepository(Protocol):
@@ -99,7 +109,8 @@ class PostgresMemoryRepository:
         async with self._pool.acquire() as connection:
             rows = await connection.fetch(
                 """
-                SELECT idempotency_key, action_type, payload, created_at
+                SELECT COALESCE(result->>'reference_id', '') AS reference_id,
+                       action_type, payload, created_at
                 FROM workflow_actions
                 WHERE user_id = $1 AND action_type = ANY($2::text[])
                 ORDER BY created_at DESC
@@ -111,16 +122,19 @@ class PostgresMemoryRepository:
             )
         actions: list[RecentAction] = []
         for row in rows:
-            summary = summarize_action(
-                row["action_type"], _decode_json_object(row["payload"])
-            )
-            if not summary:
+            payload = _decode_json_object(row["payload"])
+            fields = action_fields(row["action_type"], payload)
+            if not fields:
                 continue
             actions.append(
                 RecentAction(
-                    reference_id=row["idempotency_key"],
+                    # 对外单号只能取 result 里存下来的那一个。幂等键是
+                    # 会话:请求:任务:工具 拼成的，退回它就等于把内部结构
+                    # 重新泄漏出去——既进模型上下文，也会进界面。
+                    reference_id=row["reference_id"],
+                    fields=fields,
                     action_type=row["action_type"],
-                    summary=summary,
+                    summary=summarize_action(row["action_type"], payload),
                     created_at=row["created_at"],
                 )
             )
