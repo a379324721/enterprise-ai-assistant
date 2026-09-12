@@ -21,6 +21,8 @@ CONVERSATION_ID = uuid4()
 
 
 def _settings(**overrides: Any) -> Settings:
+    # 显式写死每一项被断言的配置：Settings 未显式传参的字段会回落到 .env，
+    # 开发机上 DEV_LOGIN_ENABLED=true 会让"默认关闭"的断言在本地失败、CI 通过。
     defaults: dict[str, Any] = {
         "openai_api_key": "test-key",
         "openai_model": "test-model",
@@ -28,6 +30,7 @@ def _settings(**overrides: Any) -> Settings:
         "langsmith_tracing": False,
         "jwt_secret": "unit-test-secret-" + "x" * 32,
         "app_env": "development",
+        "dev_login_enabled": False,
     }
     return Settings(**{**defaults, **overrides})  # type: ignore[arg-type]
 
