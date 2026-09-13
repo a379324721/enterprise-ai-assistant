@@ -9,7 +9,12 @@ from enterprise_ai_assistant.tools import ToolContext
 from enterprise_ai_assistant.tools.registry import DomainToolRegistry, RegisteredTool
 
 _DOMAIN_INSTRUCTIONS = {
-    AgentName.TRAVEL: "负责差旅制度查询和差旅申请。自行识别并校验差旅字段。",
+    AgentName.TRAVEL: (
+        "负责差旅制度查询和差旅申请。自行识别并校验差旅字段。"
+        # 实测：用户答"单程"，模型认为返程日期仍然缺失，又问了一遍。
+        "用户说单程、不返程或返程另行申请时，trip_type 填 one_way，不再索要结束日期；"
+        "用户没有说明是单程时按往返处理，结束日期缺失就要问，不得自行改成单程。"
+    ),
     AgentName.EXPENSE: "负责报销制度和费用报销。普通费用不得强制关联差旅。",
     AgentName.HR: "负责人事制度、假期余额和请假申请。自行识别并校验请假字段。",
     AgentName.MEETING: (

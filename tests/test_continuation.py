@@ -97,7 +97,7 @@ class DraftAwareRuntime:
         if any(isinstance(message, ToolMessage) for message in messages):
             return AIMessage(content="")
         payload = json.loads(str(messages[0].content))
-        self._seen.append((task_id, payload.get("previous_draft")))
+        self._seen.append((task_id, payload))
         if self.name == AgentName.TRAVEL and "previous_draft" not in payload:
             call = {
                 "name": "request_information",
@@ -218,9 +218,15 @@ async def test_supplement_resumes_the_waiting_task_without_replanning() -> None:
         ("task-1", TaskStatus.COMPLETED),
         ("task-2", TaskStatus.COMPLETED),
     ]
-    assert second["user_goal"] == "去上海出差当天往返并查考勤制度"
+    # 界面上的目标仍是整件事的目标；本轮补充只交给领域 Agent。
+    assert second["user_goal"] == "去上海出差并查考勤制度"
     # 续跑时领域 Agent 拿回了上一轮的草稿，任务结束后草稿随之清除。
-    resumed = [draft for task_id, draft in runtimes.seen if task_id == "task-1"][-1]
+    request, resumed = [
+        (payload["standalone_request"], payload.get("previous_draft"))
+        for task_id, payload in runtimes.seen
+        if task_id == "task-1"
+    ][-1]
+    assert request == "去上海出差当天往返并查考勤制度"
     assert resumed["known_fields"][0]["value"] == "上海"
     assert second["drafts"] == {}
 
@@ -264,7 +270,8 @@ async def test_new_request_while_waiting_replaces_the_plan() -> None:
 
     assert planning.plan_calls == 2
     # Planner 惯用 task-1 这类短 id，新计划里的同名任务不能继承旧计划的草稿。
-    assert runtimes.seen[-1] == ("task-1", None)
+    assert runtimes.seen[-1][0] == "task-1"
+    assert "previous_draft" not in runtimes.seen[-1][1]
     assert _statuses(second)[0] == ("task-1", TaskStatus.WAITING_INPUT)
 
 

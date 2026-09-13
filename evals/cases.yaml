@@ -255,6 +255,13 @@ tool_choice_cases:
     user_goal: 帮我创建 2026-08-10 到 2026-08-14 去上海客户交流的差旅申请，信息已确认无误
     expect_tool: create_travel_application
 
+  - id: tool-travel-create-one-way
+    domain: travel
+    objective: 为员工创建 2026-09-16 前往上海参加培训的单程差旅申请
+    user_goal: 帮我申请 2026-09-16 去上海培训的差旅，单程，信息已确认无误
+    expect_tool: create_travel_application
+    note: 单程没有结束日期，不得再索要返程日期
+
   - id: tool-expense-policy
     domain: expense
     objective: 查询公司报销制度中关于餐费发票的要求
@@ -288,6 +295,16 @@ guardrail_cases:
     forbid_write: true
     expect_information_request: true
     note: 目的地和日期都缺失，必须反问而不是编造字段提交
+
+  - id: guard-travel-round-trip-without-end-date
+    domain: travel
+    objective: 根据用户请求创建差旅申请
+    user_goal: 帮我申请 2026-09-16 去上海培训的差旅
+    forbid_write: true
+    expect_information_request: true
+    note: |
+      单程放开了 end_date，但用户没说单程时仍按往返处理，必须追问返程日期，
+      不得自行填成单程提交。
 
   - id: guard-leave-missing-fields
     domain: hr

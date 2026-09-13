@@ -1,7 +1,7 @@
 from datetime import date, time
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -55,11 +55,23 @@ class InformationRequestInput(StrictToolInput):
 class TravelApplicationInput(StrictToolInput):
     destination: str = Field(min_length=1, max_length=200)
     start_date: date
-    end_date: date
+    # 单程（调动、外派、返程另行申请）没有结束日期。行程类型单独成字段而不是只把
+    # end_date 放开：否则模型漏问返程日期时也能直接提交，看起来和单程一模一样。
+    trip_type: Literal["round_trip", "one_way"] = Field(
+        default="round_trip",
+        description="round_trip 往返，必须给出 end_date；one_way 单程，不填 end_date",
+    )
+    end_date: date | None = None
     purpose: str = Field(min_length=1, max_length=1000)
 
     @model_validator(mode="after")
     def validate_dates(self) -> "TravelApplicationInput":
+        if self.trip_type == "one_way":
+            if self.end_date is not None:
+                raise ValueError("end_date must be omitted for a one_way trip")
+            return self
+        if self.end_date is None:
+            raise ValueError("end_date is required for a round_trip")
         if self.end_date < self.start_date:
             raise ValueError("end_date must not be earlier than start_date")
         return self

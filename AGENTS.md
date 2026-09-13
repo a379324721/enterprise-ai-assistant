@@ -70,7 +70,7 @@ cd frontend && npm run build  # tsc -b && vite build
 
 下一轮 `understand` 把待补充任务的摘要（`OpenTask`：标题和缺失字段**名**，没有字段值）交给 Context Supervisor，由它填 `ContextResolution.turn_relation`：
 
-- `continue`：跳过 Planner，待补充的任务放回 `PENDING` 续跑，草稿经 `DomainTaskRequest.draft` 交还领域 Agent。
+- `continue`：跳过 Planner，待补充的任务放回 `PENDING` 续跑，草稿经 `DomainTaskRequest.draft` 交还领域 Agent。`user_goal` 不变（界面展示的是整件事的目标），本轮的补充经 `standalone_request` 进 `DomainTaskRequest.user_goal`。
 - `new` 且需要规划：清空旧计划，照常规划。
 - `new` 且不需要规划（闲聊、道谢）：旧计划原样保留，用户回头还能补充。
 

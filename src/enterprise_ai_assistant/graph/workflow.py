@@ -206,9 +206,9 @@ class Workflow:
         if open_tasks and context.turn_relation == TurnRelation.CONTINUE:
             # 补充信息不重新规划：重新拆出来的任务 id、标题和粒度都可能变，前置任务的
             # 产物也会随 artifacts 一起被清掉。原计划保持不动，只把待补充的任务放回队列。
-            # 用户的补充在改写后的请求里，所以 user_goal 要换成这一轮的。
+            # user_goal 同样不动：它是整件事的目标，界面据此展示；本轮的补充经
+            # understanding 交给领域 Agent。
             waiting = {item.task_id for item in open_tasks}
-            update["user_goal"] = context.standalone_request
             update["tasks"] = [
                 task.model_copy(update={"status": TaskStatus.PENDING})
                 if task.id in waiting
@@ -279,6 +279,9 @@ class Workflow:
             item.model_copy(update={"status": TaskStatus.RUNNING}) if item.id == task.id else item
             for item in state["tasks"]
         ]
+        # 领域 Agent 要的是本轮改写后的请求，不是计划的总目标：续跑轮里用户的补充
+        # （"当天往返""选第一间"）只在本轮的 standalone_request 里。
+        context = ContextResolution.model_validate(state["understanding"])
         dependency_results = {
             dependency: state.get("artifacts", {}).get(dependency)
             for dependency in task.depends_on
@@ -293,7 +296,7 @@ class Workflow:
                 user_name=state.get("user_name", ""),
                 conversation_id=state["conversation_id"],
                 request_id=state["request_id"],
-                user_goal=state["user_goal"],
+                user_goal=context.standalone_request,
                 task=task,
                 dependency_results=dependency_results,
                 memories=self._relevant_memories(state),
