@@ -15,7 +15,7 @@ from enterprise_ai_assistant.api.routes import (
     _pending_confirmation,
     _subscribe_sse,
 )
-from enterprise_ai_assistant.core.models import PendingConfirmation
+from enterprise_ai_assistant.core.models import ConfirmationField, PendingConfirmation
 from enterprise_ai_assistant.core.runs import (
     END_SENTINEL,
     HEARTBEAT_SENTINEL,
@@ -53,7 +53,8 @@ def test_pending_confirmation_comes_from_interrupt_payload() -> None:
         task_id="task-1",
         action="submit_leave_request",
         tool_call_id="call-1",
-        summary="提交请假申请",
+        title="提交请假申请",
+        fields=[ConfirmationField(name="leave_type", label="假期类型", value="annual")],
         payload={"leave_type": "annual"},
     )
     snapshot = SimpleNamespace(

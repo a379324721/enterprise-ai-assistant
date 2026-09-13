@@ -102,16 +102,15 @@ class DomainAnswerCase(BaseModel):
 
 
 class SmallTalkCase(BaseModel):
-    """考察闲聊节点用档案个性化时，不把“已提交”说成“已通过”。
+    """考察 Supervisor 直接回复时不越出事实：不编审批状态、不许诺、不重复自己说过的话。
 
-    workflow_actions 只记录写操作被调用过，不含审批结果；单据清单进入闲聊上下文后，
-    最大的风险就是模型顺口编出一个状态。
+    workflow_actions 只记录写操作被调用过，不含审批结果；单据清单进入上下文后，
+    最大的风险就是模型顺口编出一个状态。回复要求本轮确实不执行任务。
     """
 
     id: str = Field(min_length=1)
-    standalone_request: str = Field(min_length=1)
-    intent_summary: str = Field(min_length=1)
-    memories: list[str] = Field(default_factory=list)
+    conversation: list[ConversationTurn] = Field(min_length=1)
+    user_name: str = ""
     recent_actions: list[str] = Field(default_factory=list)
     # 回答中一旦出现这些说法即判失败。
     forbid_phrases: list[str] = Field(default_factory=list)

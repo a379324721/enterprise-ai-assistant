@@ -9,7 +9,7 @@ on:
         description: 要运行的评测集
         type: choice
         default: all
-        options: [all, context, planning, tool_choice, guardrail, small_talk]
+        options: [all, context, planning, tool_choice, guardrail, small_talk, domain_answer]
       min_accuracy:
         description: 整体准确率门槛（低于则失败）
         type: string

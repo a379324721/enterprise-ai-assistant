@@ -68,7 +68,6 @@ router = APIRouter(prefix="/api/v1")
 _NODE_PROGRESS = {
     "recall": "正在读取你的历史偏好",
     "understand": "正在结合会话上下文理解你的请求",
-    "direct_respond": "正在生成回复",
     "plan": "正在拆解任务并分析依赖关系",
     "select_task": "Supervisor 正在选择合适的专业 Agent",
     "initialize": "正在初始化专业 Agent",
@@ -605,16 +604,12 @@ async def chat_stream(
 #: 确认决定在会话历史里的留痕。用 SystemMessage 而不是 HumanMessage：它不是用户
 #: 说的话，`_conversation()` 只挑 human/ai，因此这条记录进得了历史、进不了模型上下文。
 #: 决定本身对下一轮的指代消解并非必需——领域回答里已经写明操作是否执行。
-_DECISION_TEXTS = {True: "你确认执行了这个操作", False: "你取消了这个操作"}
+def _decision_message(approved: bool, title: str) -> SystemMessage:
+    content = f"你确认了：{title}" if approved else f"你取消了：{title}"
+    return SystemMessage(content=content, additional_kwargs={"kind": "decision"})
 
 
-def _decision_message(approved: bool) -> SystemMessage:
-    return SystemMessage(
-        content=_DECISION_TEXTS[approved], additional_kwargs={"kind": "decision"}
-    )
-
-
-def _resume_command(payload: ConfirmationRequest) -> Command[Any]:
+def _resume_command(payload: ConfirmationRequest, pending: PendingConfirmation) -> Command[Any]:
     # update 和 resume 一起发：卡片一关，对话里必须留下这个决定，否则回头看只剩
     # 一句没头没尾的回答。追加发生在子图恢复之前，所以它排在本轮回答的前面。
     return Command(
@@ -623,13 +618,13 @@ def _resume_command(payload: ConfirmationRequest) -> Command[Any]:
             "approved": payload.approved,
             "comment": payload.comment,
         },
-        update={"messages": [_decision_message(payload.approved)]},
+        update={"messages": [_decision_message(payload.approved, pending.title)]},
     )
 
 
 async def _validate_confirmation(
     app: Any, conversation_id: UUID, user_id: str, payload: ConfirmationRequest
-) -> None:
+) -> PendingConfirmation:
     snapshot = await app.state.graph.aget_state(_config(conversation_id, user_id))
     if not snapshot.values or snapshot.values.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="会话不存在")
@@ -638,6 +633,7 @@ async def _validate_confirmation(
         raise HTTPException(status_code=409, detail="当前会话没有待确认操作")
     if pending.confirmation_id != payload.confirmation_id:
         raise HTTPException(status_code=409, detail="确认请求已过期，请刷新后重试")
+    return pending
 
 
 @router.post("/conversations/{conversation_id}/confirm", response_model=AssistantResponse)
@@ -647,9 +643,9 @@ async def confirm(
     request: Request,
     user_id: CurrentUser,
 ) -> AssistantResponse:
-    await _validate_confirmation(request.app, conversation_id, user_id, payload)
+    pending = await _validate_confirmation(request.app, conversation_id, user_id, payload)
     run = await _start_run(
-        request.app, _resume_command(payload), conversation_id, user_id
+        request.app, _resume_command(payload, pending), conversation_id, user_id
     )
     if run.task is not None:
         await asyncio.wait([run.task])
@@ -665,10 +661,10 @@ async def confirm_stream(
 ) -> StreamingResponse:
     """恢复持久化的人工确认中断，并流式发送剩余任务。"""
     settings = get_settings()
-    await _validate_confirmation(request.app, conversation_id, user_id, payload)
+    pending = await _validate_confirmation(request.app, conversation_id, user_id, payload)
     run = await _start_run(
         request.app,
-        _resume_command(payload),
+        _resume_command(payload, pending),
         conversation_id,
         user_id,
         on_disconnect=_disconnect_mode(payload.on_disconnect, settings),

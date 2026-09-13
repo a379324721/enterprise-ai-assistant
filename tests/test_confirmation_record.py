@@ -23,6 +23,7 @@ from langgraph.types import Command, interrupt
 from enterprise_ai_assistant.api import routes
 from enterprise_ai_assistant.api.schemas import ConfirmationRequest
 from enterprise_ai_assistant.core.config import Settings
+from enterprise_ai_assistant.core.models import PendingConfirmation
 from enterprise_ai_assistant.core.security import create_access_token
 from enterprise_ai_assistant.main import create_app
 
@@ -69,18 +70,28 @@ def _auth(user_id: str = "owner-user") -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+_PENDING = PendingConfirmation(
+    task_id="task-1",
+    action="create_travel_application",
+    tool_call_id="call-1",
+    title="提交差旅申请",
+    payload={},
+)
+
+
 def test_resume_command_carries_the_decision(monkeypatch: pytest.MonkeyPatch) -> None:
     del monkeypatch
     approved = routes._resume_command(
-        ConfirmationRequest(confirmation_id=CONVERSATION_ID, approved=True)
+        ConfirmationRequest(confirmation_id=CONVERSATION_ID, approved=True), _PENDING
     )
     rejected = routes._resume_command(
-        ConfirmationRequest(confirmation_id=CONVERSATION_ID, approved=False)
+        ConfirmationRequest(confirmation_id=CONVERSATION_ID, approved=False), _PENDING
     )
 
     assert approved.resume["approved"] is True  # type: ignore[index]
-    assert approved.update["messages"][0].content == "你确认执行了这个操作"  # type: ignore[index]
-    assert rejected.update["messages"][0].content == "你取消了这个操作"  # type: ignore[index]
+    # 记录里写明是哪个操作：同一轮可能先后确认好几次，只写"确认了"回头看分不清。
+    assert approved.update["messages"][0].content == "你确认了：提交差旅申请"  # type: ignore[index]
+    assert rejected.update["messages"][0].content == "你取消了：提交差旅申请"  # type: ignore[index]
 
 
 def test_the_decision_is_not_a_user_turn() -> None:
@@ -88,7 +99,7 @@ def test_the_decision_is_not_a_user_turn() -> None:
 
     用 HumanMessage 记这条会让下一轮的 Context Supervisor 把它当成用户的新输入。
     """
-    message = routes._decision_message(True)
+    message = routes._decision_message(True, "提交差旅申请")
 
     assert message.type == "system"
     assert message.additional_kwargs == {"kind": "decision"}
@@ -102,7 +113,7 @@ async def test_history_exposes_the_decision_as_its_own_role(
         "user_id": "owner-user",
         "messages": [
             HumanMessage(content="帮我申请明天去上海出差"),
-            SystemMessage(content="你确认执行了这个操作", additional_kwargs={"kind": "decision"}),
+            SystemMessage(content="你确认了：提交差旅申请", additional_kwargs={"kind": "decision"}),
             AIMessage(content="差旅申请已提交"),
         ],
     }
@@ -114,7 +125,7 @@ async def test_history_exposes_the_decision_as_its_own_role(
 
     assert [(item["role"], item["text"]) for item in response.json()["messages"]] == [
         ("user", "帮我申请明天去上海出差"),
-        ("decision", "你确认执行了这个操作"),
+        ("decision", "你确认了：提交差旅申请"),
         ("assistant", "差旅申请已提交"),
     ]
 
@@ -164,7 +175,8 @@ async def test_resuming_with_an_update_still_resumes_the_interrupt() -> None:
     assert (await graph.aget_state(config)).next == ("run_child",)
 
     command: Command[Any] = Command(
-        resume={"approved": True}, update={"messages": [routes._decision_message(True)]}
+        resume={"approved": True},
+        update={"messages": [routes._decision_message(True, "提交差旅申请")]},
     )
     async for _ in graph.astream(command, config, subgraphs=True):
         pass
@@ -175,6 +187,6 @@ async def test_resuming_with_an_update_still_resumes_the_interrupt() -> None:
         (message.type, str(message.content)) for message in snapshot.values["messages"]
     ] == [
         ("human", "hi"),
-        ("system", "你确认执行了这个操作"),
+        ("system", "你确认了：提交差旅申请"),
         ("ai", "decided=True"),
     ]

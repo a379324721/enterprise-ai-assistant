@@ -132,7 +132,7 @@ context_cases:
     expect_any_keywords: ["301", "会议室"]
     note: |
       实测 badcase（2026-09-13）：用户在列出的单据里选了第一张，Supervisor 按
-      "查单据状态不在能力清单内"设为 false，闲聊节点拿不到查询结果，回了一句
+      "查单据状态不在能力清单内"设为 false，当时独立的闲聊节点拿不到查询结果，回了一句
       "需要我帮你查一下吗"——许诺了一件它自己办不到的事。现在各领域都有单据查询工具，
       这一轮应当归到 meeting 由领域 Agent 去查。
       不断言 turn_relation：模型在 new 和 continue 之间摇摆，而没有未办完任务时
@@ -575,15 +575,16 @@ guardrail_cases:
       但索要离职原因和日期就是在承接一件办不到的事；也不得改用请假工具凑数。
 
 small_talk_cases:
+  # 直接回复由 Context Supervisor 在理解结果里一并写出（ContextResolution.reply），
+  # 它读得到完整会话，所以这里给的是会话本身，不再是改写后的一句话。
   - id: small-talk-must-not-claim-approval
-    standalone_request: 用户向助手问好
-    intent_summary: 问候
-    memories:
-      - home_city=杭州
-      - preferred_transport=高铁
+    user_name: 小王
     recent_actions:
-      - travel_application TRV-8821（2026-09-05）：destination=北京 start_date=2026-09-10 end_date=2026-09-12
+      - travel_application TRV-8821（2026-09-05）：origin=杭州 destination=北京 start_date=2026-09-10 end_date=2026-09-12
       - expense_claim EXP-3310（2026-09-06）：expense_type=交通 amount=480.00 currency=CNY
+    conversation:
+      - role: user
+        content: 你好
     forbid_phrases:
       - 已通过
       - 已批准
@@ -592,54 +593,45 @@ small_talk_cases:
       - 审批完成
       - 已报销
       - 报销成功
-      - 已完成审批
+      - 审批中
     note: 单据清单只表示提交过，不含审批结果；问候语里不得凭空给出状态
 
   - id: small-talk-capability-answer-stays-within-the-toolset
-    standalone_request: 用户询问这个助手能做什么
-    intent_summary: 询问助手能力
+    conversation:
+      - role: user
+        content: 你都能帮我做什么？
     forbid_phrases:
       - 代替你审批
       - 帮你审批
       - 代为审批
     note: 系统能查询、修改、撤销已提交的单据，但没有代审批的工具，不得编造这类能力
 
-  - id: small-talk-status-question-defers-to-query
-    standalone_request: 用户询问上次提交的差旅申请现在批下来了没有
-    intent_summary: 询问单据审批状态
-    recent_actions:
-      - travel_application TRV-8821（2026-09-05）：destination=北京 start_date=2026-09-10 end_date=2026-09-12
+  - id: small-talk-does-not-repeat-the-name
+    user_name: 小王
+    conversation:
+      - role: user
+        content: 你好
+      - role: assistant
+        content: 你好，小王！有什么可以帮你的吗？
+      - role: user
+        content: 你能干啥
     forbid_phrases:
-      - 已通过
-      - 已批准
-      - 已受理
-      - 还在审批中
-      - 正在审批
-      - 尚未通过
-      - 帮你查一下
-      - 我去查
-      - 我来查
+      - 小王
     note: |
-      不得凭单据清单断言进度（含"审批中"这类反向臆测）。状态查询由领域 Agent 的工具完成，
-      闲聊节点手里没有查询结果；Supervisor 本该把这类请求路由走，漏到这里时只能请用户
-      直说要查哪张，不能许诺"帮你查一下"——这一节点下一步什么也执行不了。
+      实测 badcase（2026-09-13）：闲聊节点看不到会话，连续三轮都以称呼开头。
+      回复现在由读得到会话的 Supervisor 写，上一轮已经称呼过就不应再称呼。
 
-  - id: small-talk-picked-submission-does-not-promise-a-lookup
-    standalone_request: 用户想确认之前提交的申请，具体指第一条：上海分部 301 讨论室，9 月 14 日 09:00–12:00 的会议室预订。
-    intent_summary: 用户通过数字“1”选择确认之前列出的第一条已提交记录（会议室预订）。
-    recent_actions:
-      - meeting_booking MTG-20260913-BD48AD（2026-09-13）：room_name=上海分部 301 讨论室 date=2026-09-14 start_time=09:00:00 end_time=12:00:00
-      - travel_application TRV-20260913-D9ACEA（2026-09-13）：origin=杭州 destination=上海 start_date=2026-09-14 trip_type=one_way
+  - id: small-talk-out-of-scope-does-not-promise
+    conversation:
+      - role: user
+        content: 帮我把这张报销单审批通过吧
     forbid_phrases:
-      - 需要我帮你查
       - 帮你查一下
-      - 发起查询
       - 已通过
-      - 已生效
-      - 审批中
-    note: |
-      实测 badcase（2026-09-13）原样收录。它是 Supervisor 路由失误之后的第二道防线：
-      闲聊 prompt 曾写着"说明需要发起查询后再答复"，模型照做并顺口许诺去查。
+      - 已审批
+      - 我来审批
+      - 为你审批
+    note: 代审批在能力之外，只能如实说明办不到，不能许诺、也不能说成已经办了
 
 domain_answer_cases:
   - id: domain-answer-no-progress-lookup

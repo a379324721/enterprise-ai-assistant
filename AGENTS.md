@@ -35,6 +35,25 @@ uv run python -m evals.runner --json report.json --min-accuracy 0.85
 
 `guardrail` 和 `small_talk` 是硬指标：前者不通过意味着模型可能在信息不全或被诱导时执行企业写操作，后者不通过意味着模型会凭最近单据编造审批状态。新增评测用例写在 `evals/cases.yaml`，新增 suite 需要同步 `evals/dataset.py`、`evals/runner.py` 的 `SUITES` 和 `eval.yml` 的 choices。
 
+## 排查线上行为：LangSmith trace
+
+实测出现异常回答时，先看 trace 再下结论，不要凭回答文本猜是哪个节点出的错。trace 由运行中的服务上报到 `.env` 里的 `LANGSMITH_PROJECT`。
+
+**key 要从 `Settings` 取出来显式传给 `Client`。** 它只在项目 `.env` 里，shell 环境变量里没有，直接 `Client()` 会拿不到 key、返回 401。
+
+```python
+from langsmith import Client
+from enterprise_ai_assistant.core.config import get_settings
+
+s = get_settings()
+client = Client(api_key=s.langsmith_api_key.get_secret_value(), api_url=s.langsmith_endpoint)
+```
+
+- **找某一轮**：根 run 的 `extra.metadata` 带 `user_id` 和 `conversation_id`（`routes.py` 的 `_config` 写入）。用 `client.list_runs(project_name=s.langsmith_project, is_root=True, start_time=...)` 取回后按这两个字段过滤；根 run 的 `inputs.messages` 就是这一轮的用户输入，确认恢复的轮次没有 messages。
+- **看节点输入输出**：`client.list_runs(trace_id=<根 run id>)` 取整棵树，按 `dotted_order` 排序。`context-supervisor` 的 outputs 是 `ContextResolution`，`run_type == "llm"` 的子 run 的 inputs 是完整 prompt。
+- **本机网络**：shell 里有 SOCKS 代理变量，而 httpx 没装 socksio。访问 LangSmith 和模型服务的脚本要用 `env -u all_proxy -u ALL_PROXY` 启动。
+- **看不到 trace 时**：会话停在确认卡上，父图 checkpoint 里还留着本轮的 `understanding` 和 `domain_request`（其中有 `assistant_replies`），可以用 `AsyncPostgresSaver.aget_tuple({"configurable": {"thread_id": <conversation_id>, "checkpoint_ns": ""}})` 读出来。
+
 ## 前端
 
 ```bash
@@ -71,9 +90,9 @@ cd frontend && npm run build  # tsc -b && vite build
 每轮 `understand` 把当前计划和搁置计划里待补充任务的摘要（`OpenTask`：`plan_id`、标题、缺失字段**名**、是否搁置，没有字段值）交给 Context Supervisor，由它填 `turn_relation` 和 `target_plan_id`：
 
 - `continue`：跳过 Planner，待补充的任务放回 `PENDING` 续跑，草稿经 `DomainTaskRequest.draft` 交还领域 Agent。指向搁置计划时整体换回来，当前计划没办完就换下去搁置。`user_goal` 不变（界面展示的是整件事的目标），本轮的补充经 `standalone_request` 进 `DomainTaskRequest.user_goal`。
-- `cancel`：目标计划里 `WAITING_INPUT` / `PENDING` 的任务改为 `REJECTED`（搁置计划直接移除），经 `notices` 交给 `direct_respond` 如实告知。已提交的单据不在清单里，也不受影响——撤销已提交单据是 `new` 的业务请求，走领域的 `revoke_*` 工具。
+- `cancel`：目标计划里 `WAITING_INPUT` / `PENDING` 的任务改为 `REJECTED`（搁置计划直接移除），回复由运行时按实际放弃的事项用固定文案写出（`Workflow._cancelled_text`），指认不到事项时回 `NOTHING_TO_CANCEL_REPLY`——不用模型写的 `reply`，模型在同一次输出里无从知道运行时能不能指认到它。已提交的单据不在清单里，也不受影响——撤销已提交单据是 `new` 的业务请求，走领域的 `revoke_*` 工具。
 - `new` 且需要规划：当前计划没办完就搁置，然后照常规划。
-- `new` 且不需要规划（闲聊、道谢、清单外诉求）：什么都不动，用户回头还能补充。
+- `new` 且不需要规划（闲聊、道谢、清单外诉求）：什么都不动，直接发出 `ContextResolution.reply`，用户回头还能补充。
 
 指向规则（`Workflow._target`）：`target_plan_id` 命中搁置计划就用它；否则当前计划有待补充任务就是当前计划；否则搁置计划只有一件时就是它；都不满足则忽略 `continue` / `cancel`，按常规路径处理。多件搁置时不猜，宁可重新规划也不把补充信息塞给错的事项。
 
@@ -81,11 +100,18 @@ cd frontend && npm run build  # tsc -b && vite build
 
 不要改回"每轮清空再规划"：重新拆出来的任务 id、标题、粒度都可能变，前置任务的产物也跟着丢，实测会议室任务就是这样在差旅追问之后消失的。也不要给 `OpenTask` 加字段值——Supervisor 拿到值就有了补写领域字段的材料。
 
-### 谁能读原始 messages
+### 谁对用户说话、各自读得到什么
 
-只有从对话中提取信息的两个节点：`understand`（提意图）和 `remember`（提记忆）。执行链路上的 `plan`、`select_task`、领域子图、`direct_respond` 一律只消费 `ContextResolution` 等结构化输出。
+对用户输出文字的模型只有两类，而且都必须知道助手之前说过什么，否则会重复称呼、重复追问、同一条消息里互相否定：
 
-因此闲聊节点看不到用户原话，回复语言只能靠 `ContextResolution.user_language` 传下去。
+- **Context Supervisor**（`understand`）：读完整会话窗口（含全部助手回复），本轮不执行任务时在同一次结构化输出里写 `ContextResolution.reply`。没有单独的闲聊节点——拆出去的节点看不到会话，重复称呼、许诺办不到的事都出在这里。`reply` 由校验器强制：不执行任务、也不是取消的轮次缺 `reply` 就算输出无效，交给结构化输出的重试。代价是这类回复一次性给出，不逐字流出（结构化输出必须关流式）。
+- **领域 Agent**（`decide` / `respond`）：不读会话，但经 `DomainTaskRequest.assistant_replies` 拿到同一窗口里助手说过的所有话，包括本轮排在前面的任务刚写进 `messages` 的回答。
+
+用户原话只有 `understand` 和 `remember` 读。领域 Agent 拿到的用户意图只经 Supervisor 改写后的 `standalone_request`，这是领域字段来源可控的前提；`assistant_replies` 只用于保持口径，prompt 禁止从中取值直接调写工具。
+
+其余用户可见文字都是模板，不经模型：确认卡片（`PendingConfirmation.title` 取 `TOOL_LABELS`，`fields` 的中文名取工具入参契约里的 `Field(title=...)`，取值标签取 `json_schema_extra["value_labels"]`，有测试检查每个写工具字段都声明了 title）、执行步骤、取消事项的回复、错误提示。写工具的参数在 `decide` 阶段就按契约校验（`RegisteredTool.argument_error`），非法参数交还模型更正，不会先弹出确认卡。
+
+Supervisor 只拿记忆的 key（理由见"长期记忆"），所以直接回复不做基于档案的个性化；它拿单据清单（`RecentAction.render()`）和称呼，用于指认"第一条"是哪张单、称呼用户。
 
 人工确认的决定会随恢复命令追加进 `messages`（`_decision_message`），刻意用 `SystemMessage`：
 `_conversation()` 只挑 human/ai，于是这条记录进得了会话历史和界面（`ConversationMessage.role`
@@ -104,7 +130,7 @@ Supervisor 把它当成用户的新输入。
 
 查询工具返回单据的**全部**字段，不走 `_ACTION_SUMMARY_FIELDS` 白名单：白名单防的是每轮被动注入（用户没问，请假原因也跟着档案进上下文），查询是本人对自己单据的主动请求，修改前也必须拿到原值。修改工具（`update_*`）是 WRITE，照常逐个确认；它只传要改的字段，合并后按新建时的同一份契约重新校验，原单据行原地更新，另记一行 `<action_type>_update` 做幂等和审计。撤销工具（`revoke_*`，WRITE）只给原单据打 `revoked_at` 标记不删行，另记 `<action_type>_revoke`；撤销是终态，撤销后不能再修改，"我的单据"标为已撤销，会议室撤销后时段让出。系统没有代审批的工具。
 
-查状态的请求由 Context Supervisor 归入单据所属领域（规则在 `_DOMAIN_ROUTING`）。闲聊节点手里没有查询结果，不得断言状态，也不得许诺"帮你查一下"——它下一步什么也执行不了。
+查询、修改、撤销单据的请求由 Context Supervisor 归入单据所属领域（规则在 `_DOMAIN_ROUTING`）。Supervisor 直接回复时手里没有查询结果，不得断言状态，也不得许诺"帮你查一下"——不执行任务的轮次下一步什么也不会发生。
 
 ### 执行与 SSE 连接解耦
 

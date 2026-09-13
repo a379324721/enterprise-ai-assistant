@@ -48,8 +48,6 @@ class AssistantState(TypedDict):
     plan_id: NotRequired[str]
     # 换话题时被搁置的未办完计划，跨轮保留，不自动过期。
     shelved_plans: NotRequired[list[ShelvedPlan]]
-    # 运行时对本轮做出的、需要如实告诉用户的处理（如放弃了哪件事），交给闲聊节点转述。
-    notices: NotRequired[list[str]]
 
 
 class DomainTaskState(TypedDict):

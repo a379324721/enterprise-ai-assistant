@@ -52,7 +52,7 @@ class MemoryPlanningService:
         self.extraction = extraction or MemoryExtraction()
         self.seen: list[tuple[list[dict[str, str]], list[str]]] = []
         self.seen_keys: list[list[str]] = []
-        self.seen_direct: list[tuple[list[str], list[str]]] = []
+        self.seen_actions: list[list[str]] = []
         self.seen_names: list[str] = []
         self._relevant = list(relevant_keys)
 
@@ -61,9 +61,13 @@ class MemoryPlanningService:
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
         open_tasks: Sequence[OpenTask] = (),
+        recent_actions: Sequence[str] = (),
+        user_name: str = "",
     ) -> ContextResolution:
         del conversation
         self.seen_keys.append(list(memory_keys))
+        self.seen_actions.append(list(recent_actions))
+        self.seen_names.append(user_name)
         return ContextResolution(
             standalone_request="创建差旅申请",
             intent_summary="差旅",
@@ -84,18 +88,6 @@ class MemoryPlanningService:
             ],
         )
 
-    async def respond_direct(
-        self,
-        context: ContextResolution,
-        memories: Sequence[str] = (),
-        recent_actions: Sequence[str] = (),
-        user_name: str = "",
-        notices: Sequence[str] = (),
-    ) -> AIMessage:
-        del context
-        self.seen_direct.append((list(memories), list(recent_actions)))
-        self.seen_names.append(user_name)
-        return AIMessage(content="好的")
 
     async def extract_memories(
         self, conversation: list[dict[str, str]], known: list[str]
@@ -275,8 +267,8 @@ async def test_understand_sends_keys_without_values() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unselected_memories_are_hidden_from_small_talk() -> None:
-    """闲聊节点同样只拿筛选后的档案，不接触全量记忆。"""
+async def test_unselected_memories_are_hidden_from_domain_agents() -> None:
+    """领域 Agent 只拿筛选后的档案，不接触全量记忆。"""
     repository = InMemoryMemoryRepository()
     await repository.upsert(
         "u-1",
@@ -470,15 +462,11 @@ async def test_a_user_cannot_delete_another_users_memory(
 
 
 @pytest.mark.asyncio
-async def test_small_talk_receives_filtered_profile_and_recent_actions() -> None:
-    """闲聊节点带上档案和单据，用于称呼贴合与待办提示。"""
+async def test_supervisor_receives_recent_actions_but_only_memory_keys() -> None:
+    """单据清单用来指认"第一条"是哪张；档案只给 key，值留给领域 Agent 当建议默认值。"""
     repository = InMemoryMemoryRepository()
     await repository.upsert(
-        "u-1",
-        [
-            MemoryCandidate(kind=MemoryKind.PROFILE, key="home_city", value="杭州"),
-            MemoryCandidate(kind=MemoryKind.PROFILE, key="job_level", value="P6"),
-        ],
+        "u-1", [MemoryCandidate(kind=MemoryKind.PROFILE, key="home_city", value="杭州")]
     )
     repository.actions["u-1"] = [
         RecentAction(
@@ -492,42 +480,21 @@ async def test_small_talk_receives_filtered_profile_and_recent_actions() -> None
     workflow = Workflow(SupervisorAgent(planning), memories=repository)
     recalled = await workflow.recall(_state())
 
-    await workflow.direct_respond(
-        _state(understanding=_understanding(["home_city"]), **recalled)
-    )
+    await workflow.understand(_state(**recalled))  # type: ignore[arg-type]
 
-    memories, actions = planning.seen_direct[0]
-    # 闲聊拿到的同样是筛选后的档案，job_level 不在其中。
-    assert memories == ["home_city=杭州"]
     today = datetime.now(UTC).date().isoformat()
-    assert actions == [f"travel_application TRV-8821（{today}）：destination=北京"]
+    assert planning.seen_actions == [[f"travel_application TRV-8821（{today}）：destination=北京"]]
+    assert planning.seen_keys == [["home_city"]]
 
 
 @pytest.mark.asyncio
-async def test_small_talk_never_reads_raw_messages() -> None:
-    """执行链路上的节点只吃理解阶段的输出；闲聊节点也不例外。"""
-    planning = MemoryPlanningService()
-    workflow = Workflow(SupervisorAgent(planning), memories=InMemoryMemoryRepository())
-    state = _state(understanding=_understanding([]))
-    state["messages"] = [HumanMessage(content="这句原话不该被闲聊节点看到")]
-
-    await workflow.direct_respond(state)
-
-    # respond_direct 的入参里没有会话，stub 只收到 context 与档案。
-    assert planning.seen == []
-    assert planning.seen_direct == [([], [])]
-
-
-@pytest.mark.asyncio
-async def test_display_name_reaches_small_talk_without_going_through_memory() -> None:
+async def test_display_name_reaches_the_supervisor_without_going_through_memory() -> None:
     """称呼来自令牌而不是画像：它永远相关，交给相关性筛选会在问候上被丢掉。"""
     repository = InMemoryMemoryRepository()
     planning = MemoryPlanningService()
     workflow = Workflow(SupervisorAgent(planning), memories=repository)
 
-    await workflow.direct_respond(
-        _state(understanding=_understanding([]), user_name="王宁")
-    )
+    await workflow.understand(_state(user_name="王宁"))  # type: ignore[arg-type]
 
     assert planning.seen_names == ["王宁"]
     # 画像里没有任何一条姓名记录，记忆表的职责没有被扩大。
@@ -557,7 +524,7 @@ async def test_a_turn_without_a_name_still_works() -> None:
     planning = MemoryPlanningService()
     workflow = Workflow(SupervisorAgent(planning))
 
-    await workflow.direct_respond(_state(understanding=_understanding([])))
+    await workflow.understand(_state())  # type: ignore[arg-type]
 
     assert planning.seen_names == [""]
 
@@ -609,3 +576,29 @@ async def test_remember_does_not_wait_for_the_extraction() -> None:
     await workflow.drain_background()
 
     assert [item.key for item in await repository.list_memories("u-1", 10)] == ["home_city"]
+
+
+@pytest.mark.asyncio
+async def test_domain_agents_see_what_the_assistant_said_but_not_the_user() -> None:
+    """领域 Agent 要知道自己方说过什么才不会重复追问、互相打架；用户原话仍只经改写进入。"""
+    workflow = Workflow(SupervisorAgent(MemoryPlanningService()))
+    state = _state(
+        understanding=_understanding([]),
+        messages=[
+            HumanMessage(content="下周去上海出差，顺便订个会议室"),
+            AIMessage(content="请问返程日期是哪天？"),
+            HumanMessage(content="当天往返"),
+            # 本轮排在前面的差旅任务刚写进 messages 的回答。
+            AIMessage(content="差旅申请已提交，单号 TRV-1。"),
+        ],
+        tasks=[
+            PlannedTask(id="task-2", title="会议室", domain=AgentName.MEETING, objective="预订")
+        ],
+    )
+
+    update = await workflow.select_task(state)  # type: ignore[arg-type]
+
+    assert update["domain_request"].assistant_replies == [
+        "请问返程日期是哪天？",
+        "差旅申请已提交，单号 TRV-1。",
+    ]

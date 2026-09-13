@@ -37,6 +37,8 @@ class StubPlanning:
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
         open_tasks: Sequence[OpenTask] = (),
+        recent_actions: Sequence[str] = (),
+        user_name: str = "",
     ) -> ContextResolution:
         del conversation
         return self._resolution
@@ -45,16 +47,6 @@ class StubPlanning:
         del context
         assert self._plan is not None
         return self._plan
-
-    async def respond_direct(
-        self,
-        context: ContextResolution,
-        memories: Sequence[str] = (),
-        recent_actions: Sequence[str] = (),
-        user_name: str = "",
-        notices: Sequence[str] = (),
-    ) -> AIMessage:
-        raise AssertionError(f"not used: {context}")
 
 
 class StubRuntime:

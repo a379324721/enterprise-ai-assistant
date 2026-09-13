@@ -6,7 +6,7 @@ from enterprise_ai_assistant.core.models import AgentName
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
 from enterprise_ai_assistant.tools import LocalEnterpriseToolProvider, ToolContext, ToolRisk
-from enterprise_ai_assistant.tools.registry import DomainToolRegistry
+from enterprise_ai_assistant.tools.registry import DomainToolRegistry, RegisteredTool
 
 
 def registry() -> DomainToolRegistry:
@@ -56,3 +56,67 @@ async def test_request_information_is_a_terminal_control_tool() -> None:
 
     assert information.terminal is True
     assert result["status"] == "needs_user_input"
+
+
+def _write_tools() -> list[RegisteredTool]:
+    return [
+        item
+        for agent in AgentName
+        if agent is not AgentName.SUPERVISOR
+        for item in registry().for_agent(agent, context())
+        if item.risk == ToolRisk.WRITE
+    ]
+
+
+def test_every_write_argument_has_a_label_for_the_confirmation_card() -> None:
+    """卡片上的字段名只从入参契约读。漏写 title 时卡片会露出英文字段名。"""
+    for item in _write_tools():
+        for name, info in item.schema.model_fields.items():
+            assert info.title, f"{item.tool.name}.{name} 缺少 title"
+
+
+def test_confirmation_fields_use_contract_labels_and_value_labels() -> None:
+    travel = next(item for item in _write_tools() if item.tool.name == "create_travel_application")
+
+    fields = travel.confirmation_fields(
+        {
+            "origin": "杭州",
+            "destination": "上海",
+            "start_date": "2026-09-16",
+            "trip_type": "one_way",
+            "purpose": "培训",
+        }
+    )
+
+    assert travel.label == "提交差旅申请"
+    assert [(field.label, field.value) for field in fields] == [
+        ("出发地", "杭州"),
+        ("目的地", "上海"),
+        ("开始日期", "2026-09-16"),
+        ("行程类型", "单程"),
+        ("出差事由", "培训"),
+    ]
+
+
+def test_update_card_lists_only_the_fields_being_changed() -> None:
+    update = next(item for item in _write_tools() if item.tool.name == "update_leave_request")
+
+    fields = update.confirmation_fields({"reference_id": "LVE-1", "end_date": "2026-09-23"})
+
+    assert [(field.label, field.value) for field in fields] == [
+        ("单号", "LVE-1"),
+        ("结束日期", "2026-09-23"),
+    ]
+
+
+def test_invalid_arguments_are_reported_before_confirmation() -> None:
+    """非法参数要在弹确认卡之前交还模型更正，而不是等用户点了确认才失败。"""
+    travel = next(item for item in _write_tools() if item.tool.name == "create_travel_application")
+
+    error = travel.argument_error({"destination": "上海", "start_date": "2026-09-16"})
+
+    assert error is not None and "origin" in error and "purpose" in error
+    assert travel.argument_error(
+        {"origin": "杭州", "destination": "上海", "start_date": "2026-09-16",
+         "trip_type": "one_way", "purpose": "培训"}
+    ) is None

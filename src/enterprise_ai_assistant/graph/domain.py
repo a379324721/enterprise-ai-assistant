@@ -94,6 +94,8 @@ class DomainTaskWorkflow:
         # 在 standalone_request 里，两者冲突时以本轮为准。
         if request.draft is not None:
             domain_input["previous_draft"] = request.draft.model_dump(mode="json")
+        if request.assistant_replies:
+            domain_input["assistant_replies"] = list(request.assistant_replies)
         return {
             "domain_result": None,
             "domain_messages": [
@@ -154,6 +156,10 @@ class DomainTaskWorkflow:
                     registered = self._runtime(state).tool(name)
                 except (KeyError, ValueError):
                     error = f"工具 {name} 不在当前领域白名单中"
+                else:
+                    # 参数在决策阶段就按契约校验。放到执行时才校验的话，写操作会带着
+                    # 非法参数先弹确认卡，用户点了确认才失败；这里失败则交给模型自行更正。
+                    error = registered.argument_error(raw_arguments)
             if error:
                 validation_messages.append(
                     ToolMessage(
@@ -203,10 +209,8 @@ class DomainTaskWorkflow:
                     task_id=request.task.id,
                     action=str(pending["name"]),
                     tool_call_id=str(pending["id"]),
-                    summary=(
-                        f"允许 {request.task.domain.value} 执行 {pending['name']}："
-                        f"{json.dumps(pending['args'], ensure_ascii=False)}"
-                    ),
+                    title=registered.label,
+                    fields=registered.confirmation_fields(pending["args"]),
                     payload=dict(pending["args"]),
                 )
         return {

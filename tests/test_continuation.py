@@ -20,7 +20,7 @@ from enterprise_ai_assistant.core.models import (
     TurnRelation,
 )
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow
-from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
+from enterprise_ai_assistant.graph.workflow import NOTHING_TO_CANCEL_REPLY, Workflow, build_graph
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
 from enterprise_ai_assistant.tools import LocalEnterpriseToolProvider, ToolContext
@@ -35,7 +35,6 @@ class ScriptedPlanning:
     def __init__(self, resolutions: list[ContextResolution]) -> None:
         self._resolutions = list(resolutions)
         self.seen_open_tasks: list[list[OpenTask]] = []
-        self.seen_notices: list[list[str]] = []
         self.plan_calls = 0
 
     async def resolve_context(
@@ -43,8 +42,10 @@ class ScriptedPlanning:
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
         open_tasks: Sequence[OpenTask] = (),
+        recent_actions: Sequence[str] = (),
+        user_name: str = "",
     ) -> ContextResolution:
-        del conversation, memory_keys
+        del conversation, memory_keys, recent_actions, user_name
         self.seen_open_tasks.append(list(open_tasks))
         return self._resolutions.pop(0)
 
@@ -68,18 +69,6 @@ class ScriptedPlanning:
                 ),
             ],
         )
-
-    async def respond_direct(
-        self,
-        context: ContextResolution,
-        memories: Sequence[str] = (),
-        recent_actions: Sequence[str] = (),
-        user_name: str = "",
-        notices: Sequence[str] = (),
-    ) -> AIMessage:
-        del context, memories, recent_actions, user_name
-        self.seen_notices.append(list(notices))
-        return AIMessage(content="不客气")
 
 
 class DraftAwareRuntime:
@@ -158,6 +147,7 @@ def _resolution(
         turn_relation=relation,
         target_plan_id=target,
         domains=list(domains),
+        reply="" if planning or relation == TurnRelation.CANCEL else "不客气",
     )
 
 
@@ -356,8 +346,8 @@ async def test_cancelling_the_current_plan_rejects_unfinished_tasks() -> None:
         ("task-2", TaskStatus.REJECTED),
     ]
     assert cancelled["drafts"] == {}
-    assert planning.seen_notices == [["已放弃尚未提交的事项：查询差旅制度、查询通用制度"]]
-    assert cancelled["last_answer"] == "不客气"
+    # 回复由运行时按实际放弃的事项写出，不用模型的话。
+    assert cancelled["last_answer"] == "好的，这件事不办了，已放弃：查询差旅制度、查询通用制度。"
 
 
 @pytest.mark.asyncio
@@ -383,7 +373,7 @@ async def test_cancelling_a_shelved_plan_drops_it() -> None:
     # 当前计划是已经办完的考勤查询，不受影响。
     assert cancelled["plan_id"] == policy["plan_id"]
     assert _statuses(cancelled) == [("task-1", TaskStatus.COMPLETED)]
-    assert len(planning.seen_notices[-1]) == 1
+    assert cancelled["last_answer"].startswith("好的，这件事不办了")
 
 
 @pytest.mark.asyncio
@@ -395,8 +385,9 @@ async def test_cancel_with_nothing_unfinished_is_ignored() -> None:
 
     state = await _turn(graph, "把刚才的差旅申请撤了")
 
-    assert planning.seen_notices == [[]]
-    assert state["last_answer"] == "不客气"
+    # 指认不到任何未办完的事项：如实说没有可放弃的，不能让用户以为撤掉了。
+    assert state["last_answer"] == NOTHING_TO_CANCEL_REPLY
+    assert state["messages"][-1].content == NOTHING_TO_CANCEL_REPLY
 
 
 @pytest.mark.asyncio

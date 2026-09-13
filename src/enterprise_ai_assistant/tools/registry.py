@@ -1,10 +1,11 @@
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
+from pydantic import BaseModel, ValidationError
 
-from enterprise_ai_assistant.core.models import AgentName
+from enterprise_ai_assistant.core.models import AgentName, ConfirmationField
 from enterprise_ai_assistant.tools.contracts import (
     BusinessToolOutcome,
     EnterpriseToolProvider,
@@ -27,7 +28,7 @@ from enterprise_ai_assistant.tools.contracts import (
     TravelApplicationUpdateInput,
 )
 
-#: 面向用户的能力自述，供闲聊节点回答"你能干什么"。
+#: 面向用户的能力自述，Supervisor 直接回答"你能干什么"和 Planner 判断能力边界时共用。
 #:
 #: 工具的 description 是写给模型看的调用条件，不适合直接念给用户，所以这里单独维护
 #: 一份用户视角的说明。它必须只描述下面 for_agent 真的装配了工具的能力——模型没有
@@ -75,6 +76,54 @@ class RegisteredTool:
     tool: BaseTool
     risk: ToolRisk
     terminal: bool = False
+
+    @property
+    def label(self) -> str:
+        return TOOL_LABELS[self.tool.name]
+
+    @property
+    def schema(self) -> type[BaseModel]:
+        schema = self.tool.args_schema
+        if not (isinstance(schema, type) and issubclass(schema, BaseModel)):
+            raise TypeError(f"tool {self.tool.name!r} must declare a pydantic args_schema")
+        return schema
+
+    def argument_error(self, arguments: Mapping[str, Any]) -> str | None:
+        """按入参契约校验模型给出的参数；合法时返回 None，否则返回交给模型更正的说明。"""
+        try:
+            self.schema.model_validate(dict(arguments))
+        except ValidationError as exc:
+            problems = "；".join(
+                f"{'.'.join(str(part) for part in item['loc']) or '参数'}：{item['msg']}"
+                for item in exc.errors()
+            )
+            return f"工具 {self.tool.name} 的参数不合法：{problems}"
+        return None
+
+    def confirmation_fields(self, arguments: Mapping[str, Any]) -> list[ConfirmationField]:
+        """把已通过校验的参数渲染成确认卡片的逐项字段。
+
+        标签和取值标签都读入参契约里的声明（Field 的 title 与 json_schema_extra），
+        界面和后端不各自维护一份字段中文名。只列出模型实际给出的字段：修改类工具
+        只传要改的字段，卡片上就只该出现这几项。
+        """
+        schema = self.schema
+        values = schema.model_validate(dict(arguments)).model_dump(mode="json")
+        fields: list[ConfirmationField] = []
+        for name, info in schema.model_fields.items():
+            if name not in arguments or values[name] is None:
+                continue
+            extra = info.json_schema_extra if isinstance(info.json_schema_extra, dict) else {}
+            value_labels = extra.get("value_labels", {})
+            value = values[name]
+            if isinstance(value, list):
+                shown = "、".join(str(item) for item in value)
+            elif isinstance(value_labels, dict):
+                shown = str(value_labels.get(value, value))
+            else:
+                shown = str(value)
+            fields.append(ConfirmationField(name=name, label=info.title or name, value=shown))
+        return fields
 
 
 class DomainToolRegistry:

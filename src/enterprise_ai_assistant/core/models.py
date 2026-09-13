@@ -134,7 +134,9 @@ class ShelvedPlan(BaseModel):
 class ContextResolution(BaseModel):
     """Supervisor 对完整会话的解析结果，不包含任何领域业务字段。
 
-    这是理解阶段的唯一出口：执行链路上的节点都只读这里，不再回头看 messages。
+    这是理解阶段的唯一出口：执行链路上的节点都只读这里，不再回头看用户原话。
+    不需要执行任何任务的轮次，对用户的回复也在这里一并写出——Supervisor 是唯一
+    读完整会话的节点，由它说话才知道自己之前说过什么。
     """
 
     standalone_request: str = Field(min_length=1, max_length=8000)
@@ -156,6 +158,21 @@ class ContextResolution(BaseModel):
     # 需要规划时本次请求涉及的业务领域。只有一个领域时跳过 Planner：单领域请求只会
     # 被拆成一个任务，那次模型调用的产出事先就知道。这是意图分类，不是字段抽取。
     domains: list[AgentName] = Field(default_factory=list, max_length=5)
+    # 直接对用户的回复。只在本轮不执行任务、也不是取消事项时使用；其余情况运行时忽略它：
+    # 执行任务时由领域 Agent 说话，取消事项时运行时按真实处理结果说话。
+    reply: str = Field(default="", max_length=4000)
+
+    @model_validator(mode="after")
+    def validate_reply(self) -> "ContextResolution":
+        # 这种轮次没有任何别的节点会开口，漏写回复用户就只能收到一个空气泡。
+        # 抛错交给结构化输出的重试，而不是在运行时拿兜底文案糊过去。
+        if (
+            not self.requires_task_planning
+            and self.turn_relation != TurnRelation.CANCEL
+            and not self.reply.strip()
+        ):
+            raise ValueError("reply is required when no task runs and nothing is cancelled")
+        return self
 
 
 class MemoryKind(StrEnum):
@@ -213,12 +230,23 @@ class RecentAction(BaseModel):
         return f"{label}（{day}）{revoked}：{self.summary}"
 
 
+class ConfirmationField(BaseModel):
+    """确认卡片上的一行。标签取自工具入参契约，值已按契约里的取值标签翻译。"""
+
+    name: str
+    label: str
+    value: str
+
+
 class PendingConfirmation(BaseModel):
     confirmation_id: UUID = Field(default_factory=uuid4)
     task_id: str
     action: str
     tool_call_id: str
-    summary: str
+    # 操作的中文名（TOOL_LABELS）和逐项字段。用户要确认的是"做什么、用什么值"，
+    # 工具名和原始 JSON 对用户没有意义。
+    title: str
+    fields: list[ConfirmationField] = Field(default_factory=list)
     payload: dict[str, Any]
     requested_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -249,6 +277,10 @@ class DomainTaskRequest(BaseModel):
     recent_actions: list[RecentAction] = Field(default_factory=list)
     # 任务上一轮停在待补充时留下的字段状态；首次执行为 None。
     draft: TaskDraft | None = None
+    # 助手此前对用户说过的话，按时间顺序，含本轮排在前面的任务的回答。领域 Agent 据此
+    # 保持口径一致：不重复已经问过的问题、不否定别的任务刚说过的话、不重复称呼。
+    # 这里只有助手的话。用户原话仍然只经 Supervisor 改写后以 user_goal 进入。
+    assistant_replies: list[str] = Field(default_factory=list)
 
 
 class DomainTaskResult(BaseModel):

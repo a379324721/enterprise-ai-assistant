@@ -6,7 +6,7 @@ import "./styles.css";
 import "./streaming.css";
 
 type Task = {id: string; title: string; domain: string; objective: string; status: string};
-type Confirmation = {confirmation_id: string; summary: string; action: string; payload: Record<string, unknown>};
+type Confirmation = {confirmation_id: string; title: string; action: string; fields: {name: string; label: string; value: string}[]; payload: Record<string, unknown>};
 type DraftField = {name: string; label: string; value: string; source: "user" | "memory" | "dependency"};
 //: 一件还没办完的事。只有卡在待补充、待确认上的计划才会成为事项，由后端投影。
 type Matter = {
@@ -491,11 +491,11 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
     const pending = result?.pending_confirmation;
     if (!pending || busy) return;
     setBusy(true); setProgress(approved ? "正在确认并恢复任务" : "正在取消操作");
-    // 先本地插一条，不等后端往返。文案与 routes.py 的 _DECISION_TEXTS 一致，
+    // 先本地插一条，不等后端往返。文案与 routes.py 的 _decision_message 一致，
     // 刷新后从历史里取回的是同一句，看不出差别。
     setMessages((old) => [
       ...old,
-      {role: "decision", text: approved ? "你确认执行了这个操作" : "你取消了这个操作"},
+      {role: "decision", text: `${approved ? "你确认了" : "你取消了"}：${pending.title}`},
     ]);
     // 决定已经做出，卡片不必再挂着等图跑完。等 done 事件才收的话，取消之后那几秒
     // 里卡片还在原地，看着像根本没点上。权威状态随后由 done 事件覆盖。
@@ -555,7 +555,10 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
           </div>)}
           {busy && !streamingAnswer && <div className="thinking"><span className="spinner"/>{progress || "正在处理…"}</div>}
         </div>
-        {result?.pending_confirmation && <div className="confirmCard"><div className="risk">需要你的确认</div><strong>{result.pending_confirmation.summary}</strong><p>系统只会在你确认后执行该操作。</p><div><button className="cancel" disabled={busy} onClick={() => void confirm(false)}>取消</button><button className="approve" disabled={busy} onClick={() => void confirm(true)}>确认执行</button></div></div>}
+        {result?.pending_confirmation && <div className="confirmCard"><div className="risk">需要你的确认</div><strong>{result.pending_confirmation.title}</strong>
+          {/* 字段名和取值标签由后端按工具入参契约给出，这里只负责排版。 */}
+          <dl className="confirmFields">{result.pending_confirmation.fields.map((field) => <div key={field.name}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
+          <p>系统只会在你确认后执行该操作。</p><div><button className="cancel" disabled={busy} onClick={() => void confirm(false)}>取消</button><button className="approve" disabled={busy} onClick={() => void confirm(true)}>确认执行</button></div></div>}
         <form onSubmit={(event) => { event.preventDefault(); void send(); }}>
           <textarea
             ref={inputRef}

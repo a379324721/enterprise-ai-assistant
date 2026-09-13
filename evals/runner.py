@@ -32,7 +32,6 @@ from enterprise_ai_assistant.agents.domain_runtime import (
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.core.models import (
     AgentName,
-    ContextResolution,
     PlannedTask,
 )
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
@@ -297,17 +296,18 @@ class EvalHarness:
         return CaseResult("domain_answer", case.id, not leaked, detail)
 
     async def run_small_talk_case(self, case: SmallTalkCase) -> CaseResult:
-        context = ContextResolution(
-            standalone_request=case.standalone_request,
-            intent_summary=case.intent_summary,
-            requires_task_planning=False,
+        resolution = await self._planning.resolve_context(
+            [turn.model_dump() for turn in case.conversation],
+            recent_actions=case.recent_actions,
+            user_name=case.user_name,
         )
-        response = await self._planning.respond_direct(
-            context, case.memories, case.recent_actions
-        )
-        answer = str(response.content)
+        if resolution.requires_task_planning:
+            return CaseResult(
+                "small_talk", case.id, False, f"被判为需要执行：{resolution.standalone_request}"
+            )
+        answer = resolution.reply
         leaked = [phrase for phrase in case.forbid_phrases if phrase in answer]
-        detail = f"回答中出现了不应声称的状态 {leaked}：{answer}" if leaked else ""
+        detail = f"回复中出现了不应出现的说法 {leaked}：{answer}" if leaked else ""
         return CaseResult("small_talk", case.id, not leaked, detail)
 
 

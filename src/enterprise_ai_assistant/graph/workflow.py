@@ -26,6 +26,8 @@ from enterprise_ai_assistant.repositories.memories import MemoryRepository
 DIGEST_HEADER = "【早先会话摘要，仅供指代消解参考，不是用户当前发言】"
 #: 单条摘要的裁剪长度；standalone_request 上限 8000 字符，原样堆叠会让摘要本身变成新的成本源。
 DIGEST_ITEM_MAX_CHARS = 240
+#: 用户要取消事项、运行时却指认不到任何未办完的事项时的回复。
+NOTHING_TO_CANCEL_REPLY = "现在没有尚未办完的事项可以放弃。已经提交的单据如果需要撤销，告诉我是哪一张。"
 
 logger = structlog.get_logger()
 
@@ -74,7 +76,7 @@ class Workflow:
 
         window = turns[-self._history_window :]
         # digest 按轮次从旧到新排列，被窗口挤出去的就是最老的 dropped 轮。用消息数
-        # 而不是 digest 长度定位，understand（当轮摘要尚未写入）和 direct_respond
+        # 而不是 digest 长度定位，understand（当轮摘要尚未写入）和 select_task
         # （已写入）两种时序下都不会错位。
         dropped = sum(1 for turn in turns if turn["role"] == "user") - sum(
             1 for turn in window if turn["role"] == "user"
@@ -307,11 +309,13 @@ class Workflow:
             ),
         ]
         # 只给 key 不给 value：Supervisor 做的是相关性筛选，不读取记忆内容，
-        # 也就无从用它补写领域字段。
+        # 也就无从用它补写领域字段。代价是直接回复不做基于档案的个性化。
         context = await self.supervisor.resolve_context(
             self._conversation(state),
             [record.key for record in state.get("memories", [])],
             open_tasks,
+            [action.render() for action in state.get("recent_actions", [])],
+            state.get("user_name", ""),
         )
         update: dict[str, Any] = {
             "understanding": context.model_dump(mode="json"),
@@ -319,7 +323,6 @@ class Workflow:
             "plan_id": plan_id,
             # 恢复后的任务状态要写回检查点，否则闲聊轮之后它还停在 RUNNING。
             "tasks": recovered,
-            "notices": [],
             "tool_results": [],
             "active_task_id": None,
             "current_agent": None,
@@ -359,12 +362,17 @@ class Workflow:
             )
             return update
 
-        if relation == TurnRelation.CANCEL and target is not None:
+        if relation == TurnRelation.CANCEL:
+            # 取消的回复由运行时按实际处理结果写，不用模型写的：模型在同一次输出里判断
+            # 要取消哪件事，却无从知道运行时能不能指认到它，照它的话说就可能"取消了"
+            # 一件其实还在的事。
+            if target is None:
+                return self._reply(update, NOTHING_TO_CANCEL_REPLY)
             # 只放弃还没提交的部分。已经提交的单据是业务事实，撤销要走领域的撤销工具
             # 和人工确认，这里不替用户处理它们。
             unfinished = {TaskStatus.WAITING_INPUT, TaskStatus.PENDING}
+            plan_tasks = state["tasks"] if target == "current" else target.tasks
             if target == "current":
-                dropped = [task.title for task in state["tasks"] if task.status in unfinished]
                 update["tasks"] = [
                     task.model_copy(update={"status": TaskStatus.REJECTED})
                     if task.status in unfinished
@@ -373,17 +381,15 @@ class Workflow:
                 ]
                 update["drafts"] = {}
             else:
-                dropped = [task.title for task in target.tasks if task.status in unfinished]
                 update["shelved_plans"] = [
                     plan for plan in shelved if plan.plan_id != target.plan_id
                 ]
-            update["notices"] = [f"已放弃尚未提交的事项：{'、'.join(dropped)}"]
-            return update
+            return self._reply(update, self._cancelled_text(plan_tasks, unfinished))
 
         if not context.requires_task_planning:
             # 闲聊、道谢、清单外的诉求都不动计划：待补充期间插一句"好的稍等"，
             # 用户回过头补充时任务还在。
-            return update
+            return self._reply(update, context.reply)
 
         # 新的业务请求。当前计划没办完就静默搁置，用户说"继续刚才那个"时还能换回来。
         if current_open:
@@ -400,38 +406,36 @@ class Workflow:
         )
         return update
 
-    def after_understand(
-        self, state: AssistantState
-    ) -> Literal["plan", "select_task", "direct_respond"]:
+    @staticmethod
+    def _reply(update: dict[str, Any], text: str) -> dict[str, Any]:
+        answer = text.strip()
+        return {
+            **update,
+            "last_answer": answer,
+            "turn_answers": [answer],
+            "messages": [AIMessage(content=answer)],
+        }
+
+    @staticmethod
+    def _cancelled_text(tasks: list[PlannedTask], unfinished: set[TaskStatus]) -> str:
+        dropped = "、".join(task.title for task in tasks if task.status in unfinished)
+        text = f"好的，这件事不办了，已放弃：{dropped}。"
+        if any(task.status == TaskStatus.COMPLETED for task in tasks):
+            text += "其中已经办完的部分不受影响，需要撤销的话告诉我是哪一张单据。"
+        return text
+
+    def after_understand(self, state: AssistantState) -> Literal["plan", "select_task", "done"]:
+        # understand 已经回复了用户（直接回复或取消），本轮不再执行任何任务。
+        if state.get("turn_answers"):
+            return "done"
         context = ContextResolution.model_validate(state["understanding"])
-        if state.get("notices"):
-            return "direct_respond"
         # understand 只在认定为续跑时才会把任务放回 PENDING；Supervisor 误报 continue
         # 却指不到任何未办完的事项时，这里自然落回常规路径。
         if context.turn_relation == TurnRelation.CONTINUE and any(
             task.status == TaskStatus.PENDING for task in state["tasks"]
         ):
             return "select_task"
-        return "plan" if context.requires_task_planning else "direct_respond"
-
-    async def direct_respond(self, state: AssistantState) -> dict[str, Any]:
-        # 闲聊节点同样只吃理解阶段的输出，不回头读原始会话。
-        # 带上档案让回答贴合这位用户，单据清单不含审批结果，prompt 禁止推断状态。
-        response = await self.supervisor.respond_direct(
-            ContextResolution.model_validate(state["understanding"]),
-            self._relevant_memories(state),
-            [action.render() for action in state.get("recent_actions", [])],
-            state.get("user_name", ""),
-            state.get("notices", []),
-        )
-        answer = self._answer_text(response)
-        if not answer:
-            raise RuntimeError("direct responder returned no user-visible text")
-        return {
-            "last_answer": answer,
-            "turn_answers": [answer],
-            "messages": [AIMessage(content=answer)],
-        }
+        return "plan"
 
     async def plan(self, state: AssistantState) -> dict[str, Any]:
         context = ContextResolution.model_validate(state["understanding"])
@@ -475,6 +479,11 @@ class Workflow:
                 memories=self._relevant_memories(state),
                 recent_actions=list(state.get("recent_actions", [])),
                 draft=state.get("drafts", {}).get(task.id),
+                assistant_replies=[
+                    turn["content"]
+                    for turn in self._conversation(state)
+                    if turn["role"] == "assistant"
+                ],
             ),
             "domain_result": None,
         }
@@ -550,7 +559,6 @@ def build_graph(
     graph.add_node("recall", workflow.recall)
     graph.add_node("remember", workflow.remember)
     graph.add_node("understand", workflow.understand)
-    graph.add_node("direct_respond", workflow.direct_respond)
     graph.add_node("plan", workflow.plan)
     graph.add_node("select_task", workflow.select_task)
     graph.add_node("domain_task", build_domain_graph(domain_workflow))
@@ -563,9 +571,8 @@ def build_graph(
     graph.add_conditional_edges(
         "understand",
         workflow.after_understand,
-        {"plan": "plan", "select_task": "select_task", "direct_respond": "direct_respond"},
+        {"plan": "plan", "select_task": "select_task", "done": "remember"},
     )
-    graph.add_edge("direct_respond", "remember")
     graph.add_edge("plan", "select_task")
     graph.add_conditional_edges(
         "select_task",

@@ -11,7 +11,7 @@
 | `planning` | `LLMPlanningService.plan` | 领域路由准确率、拆分粒度、依赖识别 |
 | `tool_choice` | `DomainAgentRuntime.decide` | 信息充分时的工具选择准确率 |
 | `guardrail` | `DomainAgentRuntime.decide` | 越权写入拦截率、字段缺失时的反问率 |
-| `small_talk` | `LLMPlanningService.respond_direct` | 闲聊带档案时不把"已提交"说成"已通过" |
+| `small_talk` | `LLMPlanningService.resolve_context` 的 `reply` | 直接回复不编审批状态、不许诺办不到的事、不重复自己说过的话 |
 | `domain_answer` | `DomainAgentRuntime.respond` | 领域回答不编造审批状态，不承诺代审批等系统没有的能力 |
 
 `guardrail` 和 `small_talk` 的通过率是硬指标，任何一条不通过都应优先修复：
@@ -19,7 +19,7 @@
 - `guardrail` 不通过意味着模型可能在信息不全或被诱导的情况下执行企业写操作。
 - `small_talk` 不通过意味着模型会凭最近单据编造审批状态。`workflow_actions`
   只记录写操作被调用过，不含任何审批结果；状态只能来自领域 Agent 的单据查询工具，
-  闲聊节点把"已提交"说成"已通过"、或许诺"帮你查一下"都是越界。
+  直接回复把"已提交"说成"已通过"、或许诺"帮你查一下"都是越界。
 - `domain_answer` 用短语黑名单抽查领域回答。它挡得住明显的退化，但**不能证明**
   幻觉已根除：越界措辞往往在更长的真实上下文里才出现，构造的单工具场景复现不了。
 

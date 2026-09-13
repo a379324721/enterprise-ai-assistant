@@ -1,6 +1,5 @@
 from collections.abc import Sequence
 
-from langchain_core.messages import AIMessage
 from langsmith import traceable
 
 from enterprise_ai_assistant.core.models import (
@@ -27,25 +26,16 @@ class SupervisorAgent:
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
         open_tasks: Sequence[OpenTask] = (),
+        recent_actions: Sequence[str] = (),
+        user_name: str = "",
     ) -> ContextResolution:
-        return await self._planning.resolve_context(conversation, memory_keys, open_tasks)
+        return await self._planning.resolve_context(
+            conversation, memory_keys, open_tasks, recent_actions, user_name
+        )
 
     @traceable(name="supervisor-plan", run_type="chain")
     async def plan(self, context: ContextResolution) -> TaskPlan:
         return await self._planning.plan(context)
-
-    @traceable(name="supervisor-direct-response", run_type="chain")
-    async def respond_direct(
-        self,
-        context: ContextResolution,
-        memories: Sequence[str] = (),
-        recent_actions: Sequence[str] = (),
-        user_name: str = "",
-        notices: Sequence[str] = (),
-    ) -> AIMessage:
-        return await self._planning.respond_direct(
-            context, memories, recent_actions, user_name, notices
-        )
 
     @traceable(name="supervisor-extract-memories", run_type="chain")
     async def extract_memories(

@@ -27,9 +27,10 @@ flowchart TB
     G --> D
 ```
 
-- Context Supervisor 阅读完整对话，只负责消解指代、分析整体意图并生成独立请求；不抽取领域字段。
-- 读原始 `messages` 的只有从对话中提取信息的节点：`understand`（提意图）和 `remember`（提记忆）。
-  执行链路上的 `plan`、`select_task`、领域子图和闲聊节点一律只消费 `ContextResolution`。
+- Context Supervisor 阅读完整对话，消解指代、分析整体意图并生成独立请求；不抽取领域字段。
+  本轮不需要执行任务时，由它在同一次输出里直接回复用户（`ContextResolution.reply`）。
+- 读用户原话的只有 `understand`（提意图）和 `remember`（提记忆）。领域 Agent 只消费改写后的
+  请求，另外拿到助手此前说过的话（`assistant_replies`），用来保持口径、不重复追问。
 - Planner 只生成任务领域、目标、成功标准和依赖；不选择工具、不生成参数、不判断风险。
 - Travel、Expense、HR、Policy Agent 分别拥有独立 Prompt 和最小工具白名单。
 - 每项计划任务调用一次通用领域子图；子图根据任务领域装配 Prompt 和最小工具集。
@@ -82,7 +83,7 @@ interrupt payload 暴露，API 不依赖子图内部节点名。
 
 记忆经理解阶段筛选后才下发。`recall` 把**全部记忆的 key 清单**（只有 key、没有值）交给
 Context Supervisor，后者在改写请求的同时把相关的 key 写进 `ContextResolution.relevant_memory_keys`，
-`select_task` 和闲聊节点按这个列表过滤后才使用。这样做有两个原因：全量下发的成本是
+`select_task` 按这个列表过滤后才交给领域 Agent。这样做有两个原因：全量下发的成本是
 `记忆条数 × 任务数`，且无关档案会成为领域模型的噪音。Supervisor 只看 key 不看 value，
 做的是相关性筛选而非字段判断，`不得抽取或补写领域字段` 的边界仍然成立。
 
@@ -90,12 +91,11 @@ Context Supervisor，后者在改写请求的同时把相关的 key 写进 `Cont
 写出建议值及其来源交用户确认，不得仅凭档案补全字段后直接调用写工具；余额、额度和
 制度条款一律以实时查询工具的结果为准。所有写工具照旧逐个走人工确认。
 
-闲聊节点（`direct_respond`）也会收到筛选后的档案和最近提交过的单据，用于让回答贴合
-这位用户、提示待办。但 `workflow_actions` 只记录写操作被调用过，**不含审批结果**，
-所以 prompt 明确禁止声称任何单据已受理、已通过或进行到哪个环节。单据状态由各领域的
-单据查询工具（`query_travel_applications` 等）给出：Context Supervisor 把问状态的请求
-归入单据所属领域，闲聊节点手里没有查询结果，漏到这里时只能请用户说明查哪张，不能
-许诺"帮你查一下"。评测集的 `small_talk` 套件用短语黑名单守这条线。
+Context Supervisor 会收到最近提交过的单据，用于指认用户说的"第一条"是哪张。但
+`workflow_actions` 只记录写操作被调用过，**不含审批结果**，所以 prompt 明确禁止在直接回复里
+声称任何单据已受理、已通过或进行到哪个环节。单据状态由各领域的单据查询工具
+（`query_travel_applications` 等）给出，问状态的请求要归入单据所属领域执行。
+评测集的 `small_talk` 套件用短语黑名单守这条线。
 
 本地适配器的审批状态是替身（`mock_submission_status`，按单号哈希取值，同一张单据
 每次查到的都一样，改过的单据回到审批中），真实部署由远端适配器回查 OA / HR 系统。

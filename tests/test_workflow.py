@@ -33,6 +33,8 @@ class StubPlanningService:
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
         open_tasks: Sequence[OpenTask] = (),
+        recent_actions: Sequence[str] = (),
+        user_name: str = "",
     ) -> ContextResolution:
         assert "上海" in conversation[-1]["content"]
         return ContextResolution(
@@ -63,16 +65,6 @@ class StubPlanningService:
             ],
         )
 
-    async def respond_direct(
-        self,
-        context: ContextResolution,
-        memories: Sequence[str] = (),
-        recent_actions: Sequence[str] = (),
-        user_name: str = "",
-        notices: Sequence[str] = (),
-    ) -> AIMessage:
-        raise AssertionError(f"not used: {context}")
-
 
 class DirectPlanningService:
     async def resolve_context(
@@ -80,28 +72,19 @@ class DirectPlanningService:
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
         open_tasks: Sequence[OpenTask] = (),
+        recent_actions: Sequence[str] = (),
+        user_name: str = "",
     ) -> ContextResolution:
         assert conversation[-1]["content"] == "你好"
         return ContextResolution(
             standalone_request="你好",
             intent_summary="用户向助手打招呼",
             requires_task_planning=False,
+            reply="你好！有什么企业事务需要我协助？",
         )
 
     async def plan(self, context: ContextResolution) -> TaskPlan:
         raise AssertionError(f"direct conversation must not be planned: {context}")
-
-    async def respond_direct(
-        self,
-        context: ContextResolution,
-        memories: Sequence[str] = (),
-        recent_actions: Sequence[str] = (),
-        user_name: str = "",
-        notices: Sequence[str] = (),
-    ) -> AIMessage:
-        # 闲聊节点只吃理解阶段的输出，拿不到也不该拿原始会话。
-        assert context.standalone_request == "你好"
-        return AIMessage(content="你好！有什么企业事务需要我协助？")
 
 
 class ScriptedRuntime:
@@ -297,7 +280,9 @@ async def test_direct_conversation_skips_planning_and_tools() -> None:
 
     final = await graph.ainvoke(state, {"configurable": {"thread_id": "direct-thread"}})
 
+    # 回复就是 Supervisor 写在理解结果里的那句，本轮不再调用任何别的模型。
     assert final["last_answer"] == "你好！有什么企业事务需要我协助？"
+    assert final["messages"][-1].content == "你好！有什么企业事务需要我协助？"
     assert final["tasks"] == []
     assert actions.records == {}
 
@@ -599,27 +584,19 @@ class RecordingPlanningService:
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
         open_tasks: Sequence[OpenTask] = (),
+        recent_actions: Sequence[str] = (),
+        user_name: str = "",
     ) -> ContextResolution:
         self.seen.append(conversation)
         return ContextResolution(
             standalone_request=f"第{len(self.seen)}轮独立请求",
             intent_summary="记录会话输入",
             requires_task_planning=False,
+            reply="好的",
         )
 
     async def plan(self, context: ContextResolution) -> TaskPlan:
         raise AssertionError(f"not used: {context}")
-
-    async def respond_direct(
-        self,
-        context: ContextResolution,
-        memories: Sequence[str] = (),
-        recent_actions: Sequence[str] = (),
-        user_name: str = "",
-        notices: Sequence[str] = (),
-    ) -> AIMessage:
-        del context
-        return AIMessage(content="好的")
 
 
 def _history(turns: int) -> list[BaseMessage]:
@@ -670,7 +647,7 @@ def test_long_history_is_windowed_with_digest_of_dropped_turns() -> None:
 
 
 def test_digest_alignment_is_stable_across_understand_and_respond() -> None:
-    """understand 时当轮摘要尚未入 digest，direct_respond 时已入，两者不能错位。"""
+    """understand 时当轮摘要尚未入 digest，select_task 时已入，两者不能错位。"""
     workflow = Workflow(
         SupervisorAgent(RecordingPlanningService()), history_window=4, digest_turns=20
     )
@@ -705,12 +682,15 @@ async def test_digest_entry_is_truncated() -> None:
             conversation: list[dict[str, str]],
             memory_keys: Sequence[str] = (),
             open_tasks: Sequence[OpenTask] = (),
+            recent_actions: Sequence[str] = (),
+            user_name: str = "",
         ) -> ContextResolution:
             self.seen.append(conversation)
             return ContextResolution(
                 standalone_request="长" * 2000,
                 intent_summary="超长请求",
                 requires_task_planning=False,
+                reply="好的",
             )
 
     workflow = Workflow(SupervisorAgent(LongRequestService()))
