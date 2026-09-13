@@ -33,6 +33,8 @@ uv run python -m evals.runner --json report.json --min-accuracy 0.85
 
 **评测会真实调用模型服务，产生费用**，所以不在 CI 每次推送时跑（`eval.yml` 是手动触发 + 每周定时）。改动 prompt 后应当手动跑一次。
 
+改动思考开关或 `DOMAIN_THINKING_BUDGET` 后同样要跑，至少跑 `guardrail`：领域 Agent 关掉思考会在缺字段时直接调写工具（说明见 `core/config.py`）。
+
 `guardrail` 和 `small_talk` 是硬指标：前者不通过意味着模型可能在信息不全或被诱导时执行企业写操作，后者不通过意味着模型会凭最近单据编造审批状态。新增评测用例写在 `evals/cases.yaml`，新增 suite 需要同步 `evals/dataset.py`、`evals/runner.py` 的 `SUITES` 和 `eval.yml` 的 choices。
 
 ## 排查线上行为：LangSmith trace
@@ -105,7 +107,7 @@ cd frontend && npm run build  # tsc -b && vite build
 对用户输出文字的模型只有两类，而且都必须知道助手之前说过什么，否则会重复称呼、重复追问、同一条消息里互相否定：
 
 - **Context Supervisor**（`understand`）：读完整会话窗口（含全部助手回复），本轮不执行任务时在同一次结构化输出里写 `ContextResolution.reply`。没有单独的闲聊节点——拆出去的节点看不到会话，重复称呼、许诺办不到的事都出在这里。`reply` 由校验器强制：不执行任务、也不是取消的轮次缺 `reply` 就算输出无效，交给结构化输出的重试。代价是这类回复一次性给出，不逐字流出（结构化输出必须关流式）。
-- **领域 Agent**（`decide` / `respond`）：不读会话，但经 `DomainTaskRequest.assistant_replies` 拿到同一窗口里助手说过的所有话，包括本轮排在前面的任务刚写进 `messages` 的回答。
+- **领域 Agent**（`decide`）：不读会话，但经 `DomainTaskRequest.assistant_replies` 拿到同一窗口里助手说过的所有话，包括本轮排在前面的任务刚写进 `messages` 的回答。回答不另起一次调用：执行过工具之后的 `decide` 不再调工具时，它的文字就是回答（`answering=True`，打 `user-visible` 标签流出）；`request_information` 的 `question` 原样发出，不经模型，经 LangGraph custom 流推给 SSE。SSE 侧的 `_AnswerRelay` 先压住回答开头，见到工具调用增量就整条丢弃——前端不会用 `done` 覆盖已经画出去的文字。不带工具的 `respond` 只兜底用户拒绝确认、工具失败和 `decide` 给不出文字这几种情况。
 
 用户原话只有 `understand` 和 `remember` 读。领域 Agent 拿到的用户意图只经 Supervisor 改写后的 `standalone_request`，这是领域字段来源可控的前提；`assistant_replies` 只用于保持口径，prompt 禁止从中取值直接调写工具。
 

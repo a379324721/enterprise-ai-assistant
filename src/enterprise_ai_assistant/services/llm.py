@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
@@ -9,8 +9,18 @@ T = TypeVar("T")
 
 
 @lru_cache
-def build_chat_model() -> ChatOpenAI:
+def build_chat_model(role: Literal["supervisor", "domain"] = "domain") -> ChatOpenAI:
+    """按调用方构造模型客户端；两类调用对推理的需要不同，见 Settings 里思考开关的说明。"""
     settings = get_settings()
+    if role == "supervisor":
+        thinking, budget = settings.supervisor_enable_thinking, 0
+    else:
+        thinking, budget = settings.domain_enable_thinking, settings.domain_thinking_budget
+    extra_body: dict[str, object] | None = None
+    if thinking is not None:
+        extra_body = {"enable_thinking": thinking}
+        if thinking and budget:
+            extra_body["thinking_budget"] = budget
     # ChatOpenAI 可通过 base_url 连接兼容 OpenAI 的 /chat/completions 接口。
     return ChatOpenAI(
         api_key=settings.openai_api_key,
@@ -19,6 +29,7 @@ def build_chat_model() -> ChatOpenAI:
         temperature=0,
         max_retries=3,
         timeout=60,
+        extra_body=extra_body,
     )
 
 

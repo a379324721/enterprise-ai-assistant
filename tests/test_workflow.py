@@ -103,8 +103,9 @@ class ScriptedRuntime:
         messages: list[BaseMessage],
         *,
         task_id: str,
+        answering: bool = False,
     ) -> AIMessage:
-        del task_objective
+        del task_objective, answering
         if any(isinstance(message, ToolMessage) for message in messages):
             return AIMessage(content="")
         if self.name == AgentName.TRAVEL:
@@ -200,8 +201,9 @@ class InvalidToolRuntime(ScriptedRuntime):
         messages: list[BaseMessage],
         *,
         task_id: str,
+        answering: bool = False,
     ) -> AIMessage:
-        del task_objective
+        del task_objective, answering
         if any(
             isinstance(message, ToolMessage) and message.name == "search_general_policy"
             for message in messages
@@ -354,6 +356,99 @@ async def test_domain_subgraph_recovers_from_tool_outside_allowlist() -> None:
     assert final["domain_result"].status.value == "completed"
     assert final["domain_iterations"] == 3
     assert final["domain_tool_results"][0].tool == "search_general_policy"
+
+
+class AnsweringRuntime(ScriptedRuntime):
+    """先调一次工具，看到结果后在同一个决策调用里直接作答；兜底回答调用不该被用到。"""
+
+    first_call: dict[str, Any] = {}
+    answering_flags: list[bool] = []
+
+    async def decide(
+        self,
+        task_objective: str,
+        messages: list[BaseMessage],
+        *,
+        task_id: str,
+        answering: bool = False,
+    ) -> AIMessage:
+        del task_objective
+        type(self).answering_flags.append(answering)
+        if any(isinstance(message, ToolMessage) for message in messages):
+            return AIMessage(content="差旅制度里没有查到相关条款，建议咨询行政部。")
+        return AIMessage(
+            content="",
+            tool_calls=[{**type(self).first_call, "id": f"{task_id}-call", "type": "tool_call"}],
+        )
+
+    async def respond(
+        self, task_objective: str, messages: list[BaseMessage], *, task_id: str
+    ) -> AIMessage:
+        raise AssertionError("回答应当由决策调用直接给出")
+
+
+class AnsweringRuntimeFactory(ScriptedRuntimeFactory):
+    def create(self, agent: AgentName, context: ToolContext) -> AnsweringRuntime:
+        return AnsweringRuntime(agent, self.registry.for_agent(agent, context))
+
+
+def _policy_request() -> dict[str, Any]:
+    return {
+        "domain_request": DomainTaskRequest(
+            user_id="u-1",
+            conversation_id=UUID("00000000-0000-0000-0000-000000000001"),
+            request_id=UUID("00000000-0000-0000-0000-000000000002"),
+            user_goal="查询差旅制度",
+            task=PlannedTask(
+                id="task-1", title="查询制度", domain=AgentName.POLICY, objective="查询差旅制度"
+            ),
+        ),
+        "domain_result": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_decision_that_reads_tool_results_answers_without_another_model_call() -> None:
+    provider = LocalEnterpriseToolProvider(InMemoryActionRepository(), InMemoryPolicyRepository())
+    AnsweringRuntime.first_call = {"name": "search_general_policy", "args": {"query": "差旅"}}
+    AnsweringRuntime.answering_flags = []
+    workflow = DomainTaskWorkflow(AnsweringRuntimeFactory(DomainToolRegistry(provider)))
+
+    final = await build_domain_graph(workflow).ainvoke(_policy_request())
+
+    result = final["domain_result"]
+    assert result.status.value == "completed"
+    assert result.answer == "差旅制度里没有查到相关条款，建议咨询行政部。"
+    # 只有看过工具结果的那次调用标为对用户可见，第一次决策的输出不会被流出去。
+    assert AnsweringRuntime.answering_flags == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_information_request_sends_its_question_without_a_model_call() -> None:
+    provider = LocalEnterpriseToolProvider(InMemoryActionRepository(), InMemoryPolicyRepository())
+    AnsweringRuntime.first_call = {
+        "name": "request_information",
+        "args": {"missing_fields": ["结束日期"], "question": "预计哪天返回？"},
+    }
+    AnsweringRuntime.answering_flags = []
+    workflow = DomainTaskWorkflow(AnsweringRuntimeFactory(DomainToolRegistry(provider)))
+
+    custom: list[Any] = []
+    final: dict[str, Any] = {}
+    async for mode, data in build_domain_graph(workflow).astream(
+        _policy_request(), stream_mode=["custom", "values"]
+    ):
+        if mode == "custom":
+            custom.append(data)
+        else:
+            final = data
+
+    result = final["domain_result"]
+    assert result.status.value == "waiting_input"
+    assert result.answer == "预计哪天返回？"
+    assert AnsweringRuntime.answering_flags == [False]
+    # 问题没经过模型，SSE 的 messages 流里没有它，得靠 custom 事件送到前端。
+    assert custom == [{"answer": "预计哪天返回？", "agent": "policy", "task_id": "task-1"}]
 
 
 @pytest.mark.asyncio

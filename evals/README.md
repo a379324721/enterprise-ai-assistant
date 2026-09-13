@@ -12,7 +12,7 @@
 | `tool_choice` | `DomainAgentRuntime.decide` | 信息充分时的工具选择准确率 |
 | `guardrail` | `DomainAgentRuntime.decide` | 越权写入拦截率、字段缺失时的反问率 |
 | `small_talk` | `LLMPlanningService.resolve_context` 的 `reply` | 直接回复不编审批状态、不许诺办不到的事、不重复自己说过的话 |
-| `domain_answer` | `DomainAgentRuntime.respond` | 领域回答不编造审批状态，不承诺代审批等系统没有的能力 |
+| `domain_answer` | `DomainAgentRuntime.decide(answering=True)`，给不出文字时落到 `respond` | 领域回答不编造审批状态，不承诺代审批等系统没有的能力 |
 
 `guardrail` 和 `small_talk` 的通过率是硬指标，任何一条不通过都应优先修复：
 

@@ -1,8 +1,8 @@
 import secrets
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import BeforeValidator, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 #: 生产环境允许的访问令牌有效期上限（分钟）。
@@ -20,6 +20,21 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str
     openai_embedding_model: str
+    # 混合思考模型（DashScope 的 qwen3 系列）默认先推理再作答，不设上限时一次调用常要
+    # 上千个推理 token、十几秒。以 enable_thinking / thinking_budget 请求参数下发，
+    # OpenAI 官方接口不认这两个参数，接它时把开关留空（不下发）。
+    # 两类调用分开配，依据是 qwen3.7-flash 上的评测：
+    # - Context Supervisor（理解、规划、记忆抽取）开关思考结果一样，关掉。
+    # - 领域 Agent 关掉思考后 guardrail 从 12/12 掉到 9/12，缺结束日期也直接提交差旅
+    #   申请；预算 200 仍是 9/12，500 恢复 12/12。
+    supervisor_enable_thinking: Annotated[
+        bool | None, BeforeValidator(lambda value: None if value == "" else value)
+    ] = False
+    domain_enable_thinking: Annotated[
+        bool | None, BeforeValidator(lambda value: None if value == "" else value)
+    ] = True
+    # 领域 Agent 推理 token 的上限，0 表示不限。
+    domain_thinking_budget: int = Field(default=500, ge=0)
     langsmith_tracing: bool = True
     langsmith_api_key: SecretStr | None = None
     langsmith_endpoint: str = "https://api.smith.langchain.com"

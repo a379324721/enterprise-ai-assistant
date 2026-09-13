@@ -74,6 +74,7 @@ _NODE_PROGRESS = {
     "decide": "专业 Agent 正在分析字段并选择工具",
     "confirm_tool": "工具调用需要人工确认",
     "execute_tool": "正在调用企业工具",
+    # 只有拒绝确认、工具失败等兜底路径才会进这个节点；常规回答在 decide 里直接写出。
     "respond": "专业 Agent 正在生成回答",
     "apply_domain_result": "正在归并专业 Agent 的处理结果",
     "remember": "正在整理本轮值得记住的信息",
@@ -359,6 +360,76 @@ def _failure_message(error: BaseException) -> str:
     return _RUN_FAILED_MESSAGE
 
 
+class _AnswerRelay:
+    """把领域 Agent 的回答转成 answer_start / token 事件。
+
+    回答来自决策调用：模型开口前不知道它这次是调工具还是作答，前一种的输出绝不能流给
+    用户。工具调用的增量一出现就把整条消息压掉；文字开头先攒着，攒够
+    `HOLD_CHARS` 或模型调用结束才放行——前端不会用 done 覆盖已经画出去的文字，
+    先流出去再发现是工具调用就收不回来了。
+    """
+
+    HOLD_CHARS = 20
+
+    def __init__(self, publish: Publisher) -> None:
+        self._publish = publish
+        self._started: set[str] = set()
+        self._suppressed: set[str] = set()
+        self._held: dict[str, tuple[dict[str, Any], str]] = {}
+
+    async def chunk(self, chunk: Any, metadata: dict[str, Any]) -> None:
+        message_id = str(chunk.id or metadata.get("task_id") or "answer")
+        if message_id in self._suppressed:
+            return
+        if getattr(chunk, "tool_call_chunks", None):
+            self._suppressed.add(message_id)
+            self._held.pop(message_id, None)
+            return
+        content = _message_text_delta(chunk.content)
+        if not content:
+            return
+        if message_id in self._started:
+            await self._token(message_id, metadata, content)
+            return
+        held = self._held[message_id][1] + content if message_id in self._held else content
+        self._held[message_id] = (metadata, held)
+        if len(held) >= self.HOLD_CHARS:
+            await self._release(message_id)
+
+    async def whole(self, text: str, metadata: dict[str, Any]) -> None:
+        message_id = f"answer:{metadata.get('task_id') or 'task'}"
+        self._held[message_id] = (metadata, text)
+        await self._release(message_id)
+
+    async def flush(self) -> None:
+        for message_id in list(self._held):
+            await self._release(message_id)
+
+    async def _release(self, message_id: str) -> None:
+        metadata, text = self._held.pop(message_id)
+        self._started.add(message_id)
+        await self._publish(
+            "answer_start",
+            {
+                "message_id": message_id,
+                "agent": metadata.get("agent"),
+                "task_id": metadata.get("task_id"),
+            },
+        )
+        await self._token(message_id, metadata, text)
+
+    async def _token(self, message_id: str, metadata: dict[str, Any], content: str) -> None:
+        await self._publish(
+            "token",
+            {
+                "message_id": message_id,
+                "agent": metadata.get("agent"),
+                "task_id": metadata.get("task_id"),
+                "content": content,
+            },
+        )
+
+
 async def _execute_run(
     app: Any,
     run: Run,
@@ -381,45 +452,29 @@ async def _execute_run(
         "metadata", {"conversation_id": str(conversation_id), "run_id": run.run_id}
     )
     try:
-        active_message_ids: set[str] = set()
+        relay = _AnswerRelay(publish)
         async for part in app.state.graph.astream(
             graph_input,
             _config(conversation_id, user_id, tracker),
             # tasks 而不是 updates：updates 在节点**跑完**之后才 emit，用它发
             # "正在生成回复"就意味着回答早已流完才显示这句话。tasks 会在任务开始
             # 时先发一次，进度文案才对得上正在发生的事。
-            stream_mode=["messages", "tasks"],
+            # custom 承载不经模型的回答（领域 Agent 的追问），messages 流里没有它们。
+            stream_mode=["messages", "tasks", "custom"],
             subgraphs=True,
             version="v2",
         ):
             if part["type"] == "messages":
                 chunk, metadata = part["data"]
-                if "user-visible" not in metadata.get("tags", []):
-                    continue
-                content = _message_text_delta(chunk.content)
-                if not content:
-                    continue
-                message_id = str(chunk.id or metadata.get("task_id") or "answer")
-                if message_id not in active_message_ids:
-                    active_message_ids.add(message_id)
-                    await publish(
-                        "answer_start",
-                        {
-                            "message_id": message_id,
-                            "agent": metadata.get("agent"),
-                            "task_id": metadata.get("task_id"),
-                        },
-                    )
-                await publish(
-                    "token",
-                    {
-                        "message_id": message_id,
-                        "agent": metadata.get("agent"),
-                        "task_id": metadata.get("task_id"),
-                        "content": content,
-                    },
-                )
+                if "user-visible" in metadata.get("tags", []):
+                    await relay.chunk(chunk, metadata)
+            elif part["type"] == "custom":
+                data = part["data"]
+                if isinstance(data, dict) and isinstance(data.get("answer"), str):
+                    await relay.whole(data["answer"], data)
             elif part["type"] == "tasks":
+                # 节点边界意味着上一次模型调用已经结束，还压着的短回答可以放行了。
+                await relay.flush()
                 task = part["data"]
                 # 同一个任务开始和结束各发一次，结束那次带 result/error。只认开始。
                 if "result" in task or "error" in task:
@@ -429,6 +484,7 @@ async def _execute_run(
                 if message:
                     await publish("progress", {"node": node_name, "message": message})
 
+        await relay.flush()
         response = await _response(app, conversation_id, user_id)
         await publish("done", response.model_dump(mode="json"))
         return _run_status(response)

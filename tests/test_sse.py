@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessageChunk
 
 from enterprise_ai_assistant.api.routes import (
     QUOTA_EXHAUSTED_MESSAGE,
+    _AnswerRelay,
     _encode_sse,
     _execute_run,
     _failure_message,
@@ -336,7 +337,8 @@ async def test_graph_stream_forwards_only_native_user_visible_chunks() -> None:
         async for frame in _subscribe_sse(request, run, apply_on_disconnect=False)  # type: ignore[arg-type]
     ]
 
-    assert [data["content"] for event, data in events if event == "token"] == ["真", "流式"]
+    # 回答太短，攒不够放行字数，在模型调用结束（下一个任务事件）时整段放行。
+    assert [data["content"] for event, data in events if event == "token"] == ["真流式"]
     # 进度只在任务开始时发一次，且排在回答增量之前——反过来就意味着回答已经流完
     # 才显示"正在生成回答"。
     names = [event for event, _ in events]
@@ -349,6 +351,64 @@ async def test_graph_stream_forwards_only_native_user_visible_chunks() -> None:
     assert events[-1][0] == "done"
     assert graph.stream_kwargs["subgraphs"] is True
     assert run.status is RunStatus.completed
+
+
+def _recording_relay() -> tuple[_AnswerRelay, list[tuple[str, dict[str, Any]]]]:
+    published: list[tuple[str, dict[str, Any]]] = []
+
+    async def publish(event: str, data: dict[str, Any]) -> None:
+        published.append((event, data))
+
+    return _AnswerRelay(publish), published  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_relay_never_leaks_text_from_a_tool_calling_decision() -> None:
+    relay, published = _recording_relay()
+    metadata = {"tags": ["user-visible"], "agent": "travel", "task_id": "task-1"}
+
+    # 决策调用先吐了几个字，随后才出现工具调用：这几个字不是回答。
+    await relay.chunk(AIMessageChunk(content="我先查一下", id="m-1"), metadata)
+    await relay.chunk(
+        AIMessageChunk(
+            content="",
+            id="m-1",
+            tool_call_chunks=[{"name": "search_travel_policy", "args": "{}", "id": "c-1", "index": 0}],
+        ),
+        metadata,
+    )
+    await relay.chunk(AIMessageChunk(content="还有", id="m-1"), metadata)
+    await relay.flush()
+
+    assert published == []
+
+
+@pytest.mark.asyncio
+async def test_relay_streams_a_long_answer_once_the_hold_is_exceeded() -> None:
+    relay, published = _recording_relay()
+    metadata = {"tags": ["user-visible"], "agent": "hr", "task_id": "task-1"}
+    head = "已为你提交请假申请，单号 LV-1234，"
+
+    await relay.chunk(AIMessageChunk(content=head, id="m-1"), metadata)
+    await relay.chunk(AIMessageChunk(content="审批结果以查询为准。", id="m-1"), metadata)
+
+    assert [event for event, _ in published] == ["answer_start", "token", "token"]
+    assert "".join(data["content"] for event, data in published if event == "token") == (
+        head + "审批结果以查询为准。"
+    )
+
+
+@pytest.mark.asyncio
+async def test_relay_publishes_answers_that_bypassed_the_model() -> None:
+    relay, published = _recording_relay()
+
+    await relay.whole("预计哪天返回？", {"answer": "预计哪天返回？", "agent": "travel", "task_id": "task-2"})
+
+    assert published[0] == (
+        "answer_start",
+        {"message_id": "answer:task-2", "agent": "travel", "task_id": "task-2"},
+    )
+    assert published[1][1]["content"] == "预计哪天返回？"
 
 
 @pytest.mark.asyncio

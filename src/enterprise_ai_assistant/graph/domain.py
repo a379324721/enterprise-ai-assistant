@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 import structlog
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from langsmith import traceable
@@ -107,6 +108,7 @@ class DomainTaskWorkflow:
             "domain_failed": False,
             "domain_retry_required": False,
             "domain_tool_executed": False,
+            "domain_answer": "",
             "pending_confirmation": None,
             "pending_tool_call": None,
             "confirmation_approved": False,
@@ -120,10 +122,12 @@ class DomainTaskWorkflow:
         if iterations > self.MAX_ITERATIONS:
             raise RuntimeError("domain agent exceeded its model-call limit")
         request = self._request(state)
+        executed = state.get("domain_tool_executed", False)
         response = await self._runtime(state).decide(
             request.task.objective,
             list(state.get("domain_messages", [])),
             task_id=request.task.id,
+            answering=executed,
         )
         pending: dict[str, Any] | None = None
         registered = None
@@ -182,9 +186,7 @@ class DomainTaskWorkflow:
                     "id": str(raw_call["id"]),
                 }
 
-        retry_required = bool(validation_messages) or (
-            pending is None and not state.get("domain_tool_executed", False)
-        )
+        retry_required = bool(validation_messages) or (pending is None and not executed)
         domain_messages = [
             *state.get("domain_messages", []),
             response,
@@ -219,16 +221,19 @@ class DomainTaskWorkflow:
             "pending_tool_call": pending,
             "pending_confirmation": confirmation,
             "domain_retry_required": retry_required,
+            "domain_answer": (
+                "" if retry_required or pending else self._answer_text(response)
+            ),
         }
 
     def after_decide(
         self, state: DomainTaskState
-    ) -> Literal["confirm_tool", "execute_tool", "respond", "decide"]:
+    ) -> Literal["confirm_tool", "execute_tool", "finish", "respond", "decide"]:
         if state.get("domain_retry_required"):
             return "decide"
         call = state.get("pending_tool_call")
         if not call:
-            return "respond"
+            return "finish" if state.get("domain_answer") else "respond"
         registered = self._runtime(state).tool(str(call["name"]))
         return "confirm_tool" if registered.risk == ToolRisk.WRITE else "execute_tool"
 
@@ -321,8 +326,11 @@ class DomainTaskWorkflow:
             artifact[name] = outcome.model_dump(mode="json")
         terminal = registered.terminal and outcome.success
         draft = state.get("domain_draft")
+        answer = ""
         if terminal:
             draft = TaskDraft.model_validate(outcome.data)
+            # 问题本来就是写给用户的，原样发出。再调一次模型只是把它转述一遍。
+            answer = str((outcome.data or {}).get("question", "")).strip()
         return {
             "domain_messages": [*state.get("domain_messages", []), message],
             "domain_tool_results": [*state.get("domain_tool_results", []), audit],
@@ -335,14 +343,34 @@ class DomainTaskWorkflow:
             "domain_failed": not outcome.success,
             "domain_retry_required": False,
             "domain_tool_executed": True,
+            "domain_answer": answer,
         }
 
-    def after_execute(self, state: DomainTaskState) -> Literal["decide", "respond"]:
-        return (
-            "respond"
-            if state.get("domain_waiting_input") or state.get("domain_failed")
-            else "decide"
-        )
+    def after_execute(self, state: DomainTaskState) -> Literal["decide", "finish", "respond"]:
+        if state.get("domain_failed"):
+            return "respond"
+        if state.get("domain_waiting_input"):
+            return "finish" if state.get("domain_answer") else "respond"
+        return "decide"
+
+    async def finish(self, state: DomainTaskState) -> dict[str, Any]:
+        """收口已经确定的回答，不调模型。"""
+        answer = str(state.get("domain_answer", ""))
+        if not answer:
+            raise RuntimeError("domain task finished without an answer")
+        if state.get("domain_waiting_input"):
+            # 决策调用写出的回答已经逐字流出去了；追问的问题没经过模型，
+            # SSE 从 messages 流里拿不到它，要单独推一次，否则前端在多任务的
+            # 轮次里会漏掉这一段。
+            request = self._request(state)
+            get_stream_writer()(
+                {
+                    "answer": answer,
+                    "agent": request.task.domain.value,
+                    "task_id": request.task.id,
+                }
+            )
+        return {"domain_result": self._result(state, answer)}
 
     async def respond(self, state: DomainTaskState) -> dict[str, Any]:
         request = self._request(state)
@@ -354,6 +382,13 @@ class DomainTaskWorkflow:
         answer = self._answer_text(response)
         if not answer:
             raise RuntimeError("domain responder returned no user-visible text")
+        return {
+            "domain_messages": [*state.get("domain_messages", []), response],
+            "domain_result": self._result(state, answer),
+        }
+
+    def _result(self, state: DomainTaskState, answer: str) -> DomainTaskResult:
+        request = self._request(state)
         if state.get("domain_waiting_input"):
             status = TaskStatus.WAITING_INPUT
         elif state.get("domain_rejected"):
@@ -362,17 +397,14 @@ class DomainTaskWorkflow:
             status = TaskStatus.FAILED
         else:
             status = TaskStatus.COMPLETED
-        return {
-            "domain_messages": [*state.get("domain_messages", []), response],
-            "domain_result": DomainTaskResult(
-                task_id=request.task.id,
-                status=status,
-                answer=answer,
-                artifact=state.get("artifact"),
-                tool_results=list(state.get("domain_tool_results", [])),
-                draft=state.get("domain_draft") if status == TaskStatus.WAITING_INPUT else None,
-            ),
-        }
+        return DomainTaskResult(
+            task_id=request.task.id,
+            status=status,
+            answer=answer,
+            artifact=state.get("artifact"),
+            tool_results=list(state.get("domain_tool_results", [])),
+            draft=state.get("domain_draft") if status == TaskStatus.WAITING_INPUT else None,
+        )
 
 
 def build_domain_graph(workflow: DomainTaskWorkflow) -> Any:
@@ -381,6 +413,7 @@ def build_domain_graph(workflow: DomainTaskWorkflow) -> Any:
     graph.add_node("decide", workflow.decide)
     graph.add_node("confirm_tool", workflow.confirm_tool)
     graph.add_node("execute_tool", workflow.execute_tool)
+    graph.add_node("finish", workflow.finish)
     graph.add_node("respond", workflow.respond)
 
     graph.add_edge(START, "initialize")
@@ -388,5 +421,6 @@ def build_domain_graph(workflow: DomainTaskWorkflow) -> Any:
     graph.add_conditional_edges("decide", workflow.after_decide)
     graph.add_conditional_edges("confirm_tool", workflow.after_confirm)
     graph.add_conditional_edges("execute_tool", workflow.after_execute)
+    graph.add_edge("finish", END)
     graph.add_edge("respond", END)
     return graph.compile()

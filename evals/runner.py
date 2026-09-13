@@ -111,12 +111,13 @@ class EvalHarness:
         domains: DomainRuntimeProvider | None = None,
     ) -> None:
         if planning is None or domains is None:
-            model = build_chat_model()
             provider = LocalEnterpriseToolProvider(
                 InMemoryActionRepository(), InMemoryPolicyRepository()
             )
-            planning = planning or LLMPlanningService(model)
-            domains = domains or DomainRuntimeFactory(model, DomainToolRegistry(provider))
+            planning = planning or LLMPlanningService(build_chat_model("supervisor"))
+            domains = domains or DomainRuntimeFactory(
+                build_chat_model("domain"), DomainToolRegistry(provider)
+            )
         self._planning = planning
         self._domains = domains
         self._conversation_id = uuid4()
@@ -289,7 +290,13 @@ class EvalHarness:
                 )
             )
             messages.append(ToolMessage(content=result, tool_call_id=call_id))
-        response = await runtime.respond(case.objective, messages, task_id=case.id)
+        # 和 DomainTaskWorkflow 走同一条路：看完工具结果的决策调用直接作答，
+        # 它给不出文字时才落到兜底回答调用。只测兜底调用会漏掉线上真正在说话的那一次。
+        response = await runtime.decide(
+            case.objective, messages, task_id=case.id, answering=True
+        )
+        if response.tool_calls or not str(response.content).strip():
+            response = await runtime.respond(case.objective, messages, task_id=case.id)
         answer = str(response.content)
         leaked = [phrase for phrase in case.forbid_phrases if phrase in answer]
         detail = f"回答越出真实能力 {leaked}：{answer}" if leaked else ""

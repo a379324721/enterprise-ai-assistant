@@ -62,9 +62,14 @@ class StubRuntime:
             raise ValueError(f"Tool {name!r} is not allowed") from exc
 
     async def decide(
-        self, task_objective: str, messages: list[BaseMessage], *, task_id: str
+        self,
+        task_objective: str,
+        messages: list[BaseMessage],
+        *,
+        task_id: str,
+        answering: bool = False,
     ) -> AIMessage:
-        del task_objective, messages, task_id
+        del task_objective, messages, task_id, answering
         return self._response
 
     async def respond(

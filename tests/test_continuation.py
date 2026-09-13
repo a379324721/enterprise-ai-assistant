@@ -83,9 +83,14 @@ class DraftAwareRuntime:
         return self.tools[name]
 
     async def decide(
-        self, task_objective: str, messages: list[BaseMessage], *, task_id: str
+        self,
+        task_objective: str,
+        messages: list[BaseMessage],
+        *,
+        task_id: str,
+        answering: bool = False,
     ) -> AIMessage:
-        del task_objective
+        del task_objective, answering
         if any(isinstance(message, ToolMessage) for message in messages):
             return AIMessage(content="")
         payload = json.loads(str(messages[0].content))
@@ -442,13 +447,19 @@ class FailOnceRuntimeFactory(DraftAwareRuntimeFactory):
         original = runtime.decide
 
         async def decide(
-            task_objective: str, messages: list[BaseMessage], *, task_id: str
+            task_objective: str,
+            messages: list[BaseMessage],
+            *,
+            task_id: str,
+            answering: bool = False,
         ) -> AIMessage:
             payload = json.loads(str(messages[0].content))
             if "previous_draft" in payload and factory.fail_next_resume:
                 factory.fail_next_resume = False
                 raise RuntimeError("Error code: 403 - Free quota exhausted")
-            return await original(task_objective, messages, task_id=task_id)
+            return await original(
+                task_objective, messages, task_id=task_id, answering=answering
+            )
 
         runtime.decide = decide  # type: ignore[method-assign]
         return runtime

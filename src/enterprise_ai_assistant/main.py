@@ -60,8 +60,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.exception("policy_bootstrap_failed", milvus_uri=settings.milvus_uri)
         policies = CachedMilvusPolicyRepository(milvus, redis, embeddings)
         actions = PostgresActionRepository(db_pool)
-        model = build_chat_model()
-        supervisor = SupervisorAgent(LLMPlanningService(model))
+        supervisor = SupervisorAgent(LLMPlanningService(build_chat_model("supervisor")))
         provider = LocalEnterpriseToolProvider(actions, policies)
         memories = PostgresMemoryRepository(db_pool)
         workflow = Workflow(
@@ -77,7 +76,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # 登记在数据库连接池之后，释放时先于连接池执行：后台记忆抽取写完再关连接。
         stack.push_async_callback(workflow.drain_background)
         domain_workflow = DomainTaskWorkflow(
-            DomainRuntimeFactory(model, DomainToolRegistry(provider))
+            DomainRuntimeFactory(build_chat_model("domain"), DomainToolRegistry(provider))
         )
         # from_conn_string 只建立单条连接，检查点写入会被 saver 内部的锁串行化。
         # 这里显式使用连接池，让并发会话的状态读写可以并行。
