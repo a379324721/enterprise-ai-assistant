@@ -21,12 +21,22 @@ from enterprise_ai_assistant.api.schemas import (
     DemoAuthResponse,
     DevTokenRequest,
     HealthResponse,
+    Matter,
+    MatterTask,
     MemoryListResponse,
     TokenResponse,
+    TurnStep,
 )
 from enterprise_ai_assistant.core.config import Settings, get_settings
 from enterprise_ai_assistant.core.metrics import BUDGET_REJECTIONS, REGISTRY
-from enterprise_ai_assistant.core.models import PendingConfirmation, TaskStatus
+from enterprise_ai_assistant.core.models import (
+    PendingConfirmation,
+    PlannedTask,
+    ShelvedPlan,
+    TaskDraft,
+    TaskStatus,
+    ToolResult,
+)
 from enterprise_ai_assistant.core.observability import LLMUsageTracker
 from enterprise_ai_assistant.core.runs import (
     END_SENTINEL,
@@ -51,6 +61,7 @@ from enterprise_ai_assistant.repositories.users import (
     conversation_id_for,
     normalize_name,
 )
+from enterprise_ai_assistant.tools.registry import TOOL_LABELS
 
 router = APIRouter(prefix="/api/v1")
 
@@ -206,6 +217,72 @@ def _message_text_delta(content: Any) -> str:
     return "".join(parts)
 
 
+def _matter(
+    plan_id: str,
+    tasks: list[PlannedTask],
+    drafts: dict[str, TaskDraft],
+    *,
+    shelved: bool,
+) -> Matter | None:
+    """把一个计划投影成事项卡；没有卡在待补充或待确认上的计划不是事项。"""
+    focus = next(
+        (
+            task
+            for task in tasks
+            if task.status in {TaskStatus.WAITING_INPUT, TaskStatus.WAITING_CONFIRMATION}
+        ),
+        None,
+    )
+    if focus is None:
+        return None
+    draft = TaskDraft.model_validate(drafts[focus.id]) if focus.id in drafts else TaskDraft()
+    status: Literal["waiting_input", "waiting_confirmation", "shelved"] = (
+        "shelved"
+        if shelved
+        else "waiting_confirmation"
+        if focus.status == TaskStatus.WAITING_CONFIRMATION
+        else "waiting_input"
+    )
+    return Matter(
+        plan_id=plan_id,
+        status=status,
+        task_id=focus.id,
+        title=focus.title,
+        known_fields=draft.known_fields,
+        missing_fields=draft.missing_fields,
+        tasks=[
+            MatterTask(id=task.id, title=task.title, domain=task.domain, status=task.status)
+            for task in tasks
+        ],
+    )
+
+
+def _matters(values: dict[str, Any], tasks: list[PlannedTask]) -> list[Matter]:
+    current = _matter(
+        str(values.get("plan_id", "")), tasks, values.get("drafts", {}), shelved=False
+    )
+    shelved: list[ShelvedPlan] = values.get("shelved_plans", [])
+    # 最近搁置的排在前面：用户最可能想接着办的是刚放下的那件。
+    parked = [
+        _matter(plan.plan_id, plan.tasks, plan.drafts, shelved=True)
+        for plan in reversed(shelved)
+    ]
+    return [item for item in (current, *parked) if item is not None]
+
+
+def _steps(tool_results: list[ToolResult], tasks: list[PlannedTask]) -> list[TurnStep]:
+    titles = {task.id: task.title for task in tasks}
+    return [
+        TurnStep(
+            id=f"{item.task_id}:{item.tool}:{item.created_at.isoformat()}",
+            task_id=item.task_id,
+            label=TOOL_LABELS.get(item.tool, titles.get(item.task_id, item.tool)),
+            success=item.success,
+        )
+        for item in tool_results
+    ]
+
+
 async def _response(app: Any, conversation_id: UUID, user_id: str) -> AssistantResponse:
     snapshot = await app.state.graph.aget_state(_config(conversation_id, user_id))
     values = snapshot.values
@@ -240,6 +317,8 @@ async def _response(app: Any, conversation_id: UUID, user_id: str) -> AssistantR
         artifacts=values.get("artifacts", {}),
         tool_results=values.get("tool_results", []),
         pending_confirmation=pending,
+        matters=_matters(values, tasks),
+        steps=_steps(values.get("tool_results", []), tasks),
     )
 
 

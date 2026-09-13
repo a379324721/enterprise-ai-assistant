@@ -74,6 +74,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             recall_limit=settings.memory_recall_limit,
             recent_action_limit=settings.memory_recent_action_limit,
         )
+        # 登记在数据库连接池之后，释放时先于连接池执行：后台记忆抽取写完再关连接。
+        stack.push_async_callback(workflow.drain_background)
         domain_workflow = DomainTaskWorkflow(
             DomainRuntimeFactory(model, DomainToolRegistry(provider))
         )

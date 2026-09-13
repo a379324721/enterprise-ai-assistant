@@ -4,10 +4,13 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
 from enterprise_ai_assistant.core.models import (
+    AgentName,
+    DraftField,
     MemoryRecord,
     PendingConfirmation,
     PlannedTask,
     RecentAction,
+    TaskStatus,
     ToolResult,
 )
 
@@ -27,6 +30,40 @@ class ConfirmationRequest(BaseModel):
     on_disconnect: Literal["cancel", "continue"] | None = None
 
 
+class MatterTask(BaseModel):
+    id: str
+    title: str
+    domain: AgentName
+    status: TaskStatus
+
+
+class Matter(BaseModel):
+    """右栏的一张事项卡：一件还没办完的事。
+
+    只有卡在待补充、待确认上的计划才会成为事项。办完的计划不出现在这里——提交过的
+    单据已经在"我的单据"里，纯查询也没有需要跟进的状态。
+    """
+
+    plan_id: str
+    status: Literal["waiting_input", "waiting_confirmation", "shelved"]
+    # 卡住的那个任务；卡片标题和字段都来自它，同一计划里的其他任务作为子项列出。
+    task_id: str
+    title: str
+    known_fields: list[DraftField] = Field(default_factory=list)
+    missing_fields: list[str] = Field(default_factory=list)
+    tasks: list[MatterTask] = Field(default_factory=list)
+
+
+class TurnStep(BaseModel):
+    """本轮执行过的一次工具调用，显示在对话流里。"""
+
+    # 前端用它去重：确认前后的两次 done 都会带上同一轮更早的步骤。
+    id: str
+    task_id: str
+    label: str
+    success: bool
+
+
 class AssistantResponse(BaseModel):
     conversation_id: UUID
     status: str
@@ -36,6 +73,8 @@ class AssistantResponse(BaseModel):
     artifacts: dict[str, Any]
     tool_results: list[ToolResult]
     pending_confirmation: PendingConfirmation | None = None
+    matters: list[Matter] = Field(default_factory=list)
+    steps: list[TurnStep] = Field(default_factory=list)
     # 仍在执行时给出当前运行标识，客户端据此重新订阅事件流。
     run_id: str | None = None
 

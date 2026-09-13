@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -50,6 +51,8 @@ class Workflow:
         self._memories = memories
         self._recall_limit = recall_limit
         self._recent_action_limit = recent_action_limit
+        # 事件循环只持有任务的弱引用，不留强引用的话后台抽取可能跑到一半被回收。
+        self._background: set[asyncio.Task[None]] = set()
 
     def _conversation(self, state: AssistantState) -> list[dict[str, str]]:
         """把会话裁剪成有上界的 prompt 输入。
@@ -127,7 +130,12 @@ class Workflow:
         return {"memories": memories, "recent_actions": recent_actions}
 
     async def remember(self, state: AssistantState) -> dict[str, Any]:
-        """轮次结束后抽取值得长期保留的信息。
+        """轮次结束后抽取值得长期保留的信息，抽取本身放到后台跑。
+
+        抽取是一次完整的模型调用，而 remember 是每轮的最后一个节点：同步等它，
+        回答早已流完，任务面板和单据却要再晚几秒才到，这段时间里会话还占着执行锁，
+        用户发下一句会被 409 挡回。记忆只影响以后的轮次，不值得让这一轮等。
+        代价是抽取的 token 不再计入本轮的用量统计。
 
         等待用户补充输入的轮次不抽取：此时字段还没谈定，把半成品写进画像会让
         下一轮拿着错误的默认值去预填。写入失败同样只记日志，不影响已完成的回答。
@@ -136,22 +144,41 @@ class Workflow:
             return {}
         if any(task.status == TaskStatus.WAITING_INPUT for task in state.get("tasks", [])):
             return {}
+        known = [record.render() for record in state.get("memories", [])]
+        # 只把用户说过的话交给抽取器。助手的回答里会出现会议室名、目的地、
+        # 称呼这些内容，模型很容易把它们当成用户的稳定属性写进画像——
+        # 实测就出现过把出差地"上海分部"记成常驻办公地。prompt 里的
+        # "不得推断"挡不住，这里从输入上断掉。
+        spoken = [turn for turn in self._conversation(state) if turn["role"] == "user"]
+        task = asyncio.create_task(
+            self._extract_memories(
+                state["user_id"], state["conversation_id"], spoken, known, self._memories
+            )
+        )
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+        return {}
+
+    async def _extract_memories(
+        self,
+        user_id: str,
+        conversation_id: Any,
+        spoken: list[dict[str, str]],
+        known: list[str],
+        repository: MemoryRepository,
+    ) -> None:
         try:
-            known = [record.render() for record in state.get("memories", [])]
-            # 只把用户说过的话交给抽取器。助手的回答里会出现会议室名、目的地、
-            # 称呼这些内容，模型很容易把它们当成用户的稳定属性写进画像——
-            # 实测就出现过把出差地"上海分部"记成常驻办公地。prompt 里的
-            # "不得推断"挡不住，这里从输入上断掉。
-            spoken = [turn for turn in self._conversation(state) if turn["role"] == "user"]
             extraction = await self.supervisor.extract_memories(spoken, known)
-            await self._memories.upsert(
-                state["user_id"],
-                extraction.memories,
-                source_conversation_id=state["conversation_id"],
+            await repository.upsert(
+                user_id, extraction.memories, source_conversation_id=conversation_id
             )
         except Exception:
-            logger.warning("memory_write_failed", user_id=state["user_id"])
-        return {}
+            logger.warning("memory_write_failed", user_id=user_id)
+
+    async def drain_background(self) -> None:
+        """等后台记忆抽取全部结束。进程关停前调用，否则正在写的记忆会丢。"""
+        if self._background:
+            await asyncio.gather(*self._background, return_exceptions=True)
 
     def _relevant_memories(self, state: AssistantState) -> list[str]:
         """按 understand 选出的 key 过滤记忆。

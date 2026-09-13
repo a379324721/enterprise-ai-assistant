@@ -1,5 +1,7 @@
+
 """跨会话长期记忆的召回、写入、隔离与降级行为。"""
 
+import asyncio
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -319,6 +321,7 @@ async def test_remember_writes_extracted_memories_with_known_ones_passed_in() ->
     workflow = Workflow(SupervisorAgent(planning), memories=repository)
 
     await workflow.remember(_state(memories=[_record("cost_center", "RD-02")]))
+    await workflow.drain_background()
 
     stored = await repository.list_memories("u-1", 10)
     assert [(item.key, item.value) for item in stored] == [("home_city", "杭州")]
@@ -377,6 +380,7 @@ async def test_remember_survives_a_write_failure() -> None:
     )
 
     assert await workflow.remember(_state()) == {}
+    await workflow.drain_background()
 
 
 @pytest.mark.asyncio
@@ -574,7 +578,34 @@ async def test_extraction_only_sees_what_the_user_said() -> None:
     ]
 
     await workflow.remember(state)
+    await workflow.drain_background()
 
     conversation, _ = planning.seen[0]
     assert [turn["content"] for turn in conversation] == ["记一下，我常驻杭州"]
     assert all("上海分部" not in turn["content"] for turn in conversation)
+
+
+@pytest.mark.asyncio
+async def test_remember_does_not_wait_for_the_extraction() -> None:
+    """抽取是一次完整的模型调用；同步等它，这一轮的 done 事件和执行锁都要跟着拖。"""
+    release = asyncio.Event()
+
+    class SlowPlanningService(MemoryPlanningService):
+        async def extract_memories(
+            self, conversation: list[dict[str, str]], known: list[str]
+        ) -> MemoryExtraction:
+            await release.wait()
+            return MemoryExtraction(
+                memories=[MemoryCandidate(kind=MemoryKind.PROFILE, key="home_city", value="杭州")]
+            )
+
+    repository = InMemoryMemoryRepository()
+    workflow = Workflow(SupervisorAgent(SlowPlanningService()), memories=repository)
+
+    assert await asyncio.wait_for(workflow.remember(_state()), timeout=1) == {}
+    assert await repository.list_memories("u-1", 10) == []
+
+    release.set()
+    await workflow.drain_background()
+
+    assert [item.key for item in await repository.list_memories("u-1", 10)] == ["home_city"]

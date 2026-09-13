@@ -35,6 +35,22 @@ CAPABILITY_SUMMARY: dict[AgentName, str] = {
     AgentName.POLICY: "查询其他企业通用制度",
 }
 
+#: 工具在界面执行步骤里的中文名。和风险等级一样由服务端声明，前端不维护工具名映射。
+TOOL_LABELS: dict[str, str] = {
+    "request_information": "向你确认缺失信息",
+    "search_travel_policy": "检索差旅制度",
+    "search_expense_policy": "检索报销制度",
+    "search_hr_policy": "检索人事制度",
+    "search_meeting_policy": "检索会议室制度",
+    "search_general_policy": "检索通用制度",
+    "create_travel_application": "提交差旅申请",
+    "create_expense_claim": "提交费用报销",
+    "find_available_rooms": "查询空闲会议室",
+    "book_meeting_room": "预订会议室",
+    "get_leave_balance": "查询假期余额",
+    "submit_leave_request": "提交请假申请",
+}
+
 
 @dataclass(frozen=True)
 class RegisteredTool:

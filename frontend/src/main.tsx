@@ -7,15 +7,26 @@ import "./streaming.css";
 
 type Task = {id: string; title: string; domain: string; objective: string; status: string};
 type Confirmation = {confirmation_id: string; summary: string; action: string; payload: Record<string, unknown>};
+type DraftField = {name: string; label: string; value: string; source: "user" | "memory" | "dependency"};
+//: 一件还没办完的事。只有卡在待补充、待确认上的计划才会成为事项，由后端投影。
+type Matter = {
+  plan_id: string; status: "waiting_input" | "waiting_confirmation" | "shelved";
+  task_id: string; title: string; known_fields: DraftField[]; missing_fields: string[];
+  tasks: {id: string; title: string; domain: string; status: string}[];
+};
+type TurnStep = {id: string; task_id: string; label: string; success: boolean};
 type Result = {
   conversation_id: string; status: string; answer: string; user_goal: string;
   tasks: Task[]; artifacts: Record<string, unknown>; pending_confirmation?: Confirmation | null;
+  matters: Matter[]; steps: TurnStep[];
 };
 type ActionItem = {reference_id: string; action_type: string; summary: string; created_at: string; fields: Record<string, string>};
 //: decision 不是对话双方说的话，而是用户在确认卡片上做的选择。后端把它作为一条
 //: SystemMessage 追加到会话历史，所以刷新后仍在；本地这条只是为了立刻有反馈。
+//: steps 是这一轮执行过的工具调用，只在本地插入，不进会话历史——刷新后不再显示。
 type Message = {
-  role: "user" | "assistant" | "decision"; text: string; index?: number;
+  role: "user" | "assistant" | "decision" | "steps"; text: string; index?: number;
+  steps?: TurnStep[];
   // 这段回答属于哪个任务。流式期间只有 answer_start 带来的领域名可用，done 之后
   // 能在 result.tasks 里换到真正的任务标题。历史消息没有这两个字段。
   taskId?: string; agent?: string;
@@ -42,6 +53,23 @@ const ACTION_LABELS: Record<string, string> = {
   expense_claim: "费用报销",
   leave_request: "请假申请",
   meeting_booking: "会议室",
+};
+
+//: 单据字段里的枚举值。字段名和顺序仍由后端白名单决定，这里只翻译取值。
+const VALUE_LABELS: Record<string, string> = {
+  one_way: "单程",
+  round_trip: "往返",
+};
+
+const TASK_STATUS_LABELS: Record<string, string> = {
+  completed: "已完成", running: "执行中", waiting_confirmation: "待确认",
+  waiting_input: "待补充", pending: "等待中", rejected: "已取消", failed: "失败",
+};
+
+const MATTER_STATUS_LABELS: Record<Matter["status"], string> = {
+  waiting_input: "待补充",
+  waiting_confirmation: "待确认",
+  shelved: "已搁置",
 };
 
 const SESSION_KEY = "eaa.session";
@@ -197,6 +225,9 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
   const deferStream = useRef(false);
   const deferredResult = useRef<Result | null>(null);
   const deferredSegments = useRef<AnswerSegment[]>([]);
+  // 已经画进对话流的步骤。确认前后的两次 done 都带着同一轮更早的步骤，不去重会画两遍。
+  const shownSteps = useRef<Set<string>>(new Set());
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   // 向上翻页会把更早的消息插到当前内容上方，浏览器只保留 scrollTop 的数值，于是
   // 视口相对内容整体上移——用户刚才在看的那条被推到屏幕外，看着就像"跳到最上面"。
@@ -276,7 +307,12 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
           `/api/v1/conversations/${session.conversationId}`,
           {headers: authHeaders, signal},
         );
-        if (snapshot.ok) setResult(await snapshot.json() as Result);
+        if (snapshot.ok) {
+          const restored = await snapshot.json() as Result;
+          // 快照里的步骤属于上一轮，而那一轮的消息来自历史，没有位置可以插回去。
+          restored.steps.forEach((step) => shownSteps.current.add(step.id));
+          setResult(restored);
+        }
       }
     } catch (issue) {
       // 中止来自 effect 清理，不是故障；其余情况必须说出来，否则后端没起时
@@ -305,6 +341,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
       }));
       if (!response.ok) throw new Error(await readError(response, "清空失败"));
       setMessages([]); setResult(null); setHasMore(false); setLoadError("");
+      shownSteps.current.clear();
     } catch (issue) {
       setLoadError(describeFailure(issue, "清空失败"));
     } finally { setBusy(false); }
@@ -338,7 +375,16 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
   function applyCompletion(
     completed: Result, actionList: ActionItem[] | null, segments?: AnswerSegment[],
   ) {
-    setMessages((old) => {
+    const fresh = completed.steps.filter((step) => !shownSteps.current.has(step.id));
+    fresh.forEach((step) => shownSteps.current.add(step.id));
+    setMessages((current) => {
+      // 步骤插在本轮用户那句话（或确认决定）之后、回答之前：先做了什么，再说结果。
+      let old = current;
+      if (fresh.length > 0) {
+        let at = current.length - 1;
+        while (at >= 0 && current[at].role !== "user" && current[at].role !== "decision") at -= 1;
+        old = [...current.slice(0, at + 1), {role: "steps", text: "", steps: fresh}, ...current.slice(at + 1)];
+      }
       if (segments) {
         // 延迟渲染的那一轮没有占位气泡（不然会是个挂着光标的空泡），攒下的段落
         // 直接追加，每段仍然带着自己的任务。
@@ -363,13 +409,11 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
       if (completed.status === "waiting_confirmation") return old.slice(0, -1);
       return old.map((message, index) => index === old.length - 1 ? {...message, text: "未生成有效回复，请重试。"} : message);
     });
-    // 闲聊轮不产生任务，但后端照样回一个带 user_goal 的空结果。拿它覆盖面板会把
-    // 上一轮真实的任务执行情况清成一句"理解到的目标：用户在打招呼"，所以原样留住。
-    if (completed.tasks.length === 0 && !completed.pending_confirmation) return;
+    // 事项由后端从检查点投影，每一轮都是权威的全量，闲聊轮也照样覆盖。
     setResult(completed);
-    // 写操作只可能发生在有任务的轮次，闲聊轮没必要再拉一次单据。
+    // 没有调用过工具的轮次不可能新增单据，不必再拉一次。
     if (actionList) setActions(actionList);
-    else void fetchActions().then((list) => list && setActions(list));
+    else if (completed.steps.length > 0) void fetchActions().then((list) => list && setActions(list));
   }
 
   function handleStreamEvent({event, data}: SseMessage) {
@@ -480,6 +524,8 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
     }
   }
 
+  const matters = result?.matters ?? [];
+
   return <main>
     <header><div className="brandMark">E</div><div><h1>Enterprise AI Assistant</h1><p>企业事务，一个对话完成</p></div>
       <span className="online">● {session.displayName}</span>
@@ -502,8 +548,9 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
         >
           {hasMore && <button className="loadEarlier" disabled={loadingHistory} onClick={() => void loadEarlier()}>{loadingHistory ? "加载中…" : "加载更早的消息"}</button>}
           {messages.map((message, index) => <div key={message.index ?? `live-${index}`} className={`message ${message.role}`}>
+            {message.role === "steps" && message.steps?.map((step) => <span key={step.id} className={step.success ? "step ok" : "step fail"}>{step.success ? "✓" : "✕"} {step.label}</span>)}
             {sectionLabel(message) && <span className="section">{sectionLabel(message)}</span>}
-            {message.role === "assistant" ? <MarkdownMessage text={message.text}/> : message.text}
+            {message.role === "assistant" ? <MarkdownMessage text={message.text}/> : message.role === "steps" ? null : message.text}
             {busy && index === messages.length - 1 && message.role === "assistant" && <span className="cursor"/>}
           </div>)}
           {busy && !streamingAnswer && <div className="thinking"><span className="spinner"/>{progress || "正在处理…"}</div>}
@@ -511,6 +558,9 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
         {result?.pending_confirmation && <div className="confirmCard"><div className="risk">需要你的确认</div><strong>{result.pending_confirmation.summary}</strong><p>系统只会在你确认后执行该操作。</p><div><button className="cancel" disabled={busy} onClick={() => void confirm(false)}>取消</button><button className="approve" disabled={busy} onClick={() => void confirm(true)}>确认执行</button></div></div>}
         <form onSubmit={(event) => { event.preventDefault(); void send(); }}>
           <textarea
+            ref={inputRef}
+            // 待确认期间服务端会以 409 拒绝新消息，与其让用户打完字再报错，不如直接说明。
+            disabled={Boolean(result?.pending_confirmation)}
             value={input}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
@@ -520,25 +570,41 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
               event.preventDefault();
               void send();
             }}
-            placeholder="描述你想办理的事情…（回车发送，Shift + 回车换行）"
+            placeholder={result?.pending_confirmation ? "请先确认或取消上面的操作" : "描述你想办理的事情…（回车发送，Shift + 回车换行）"}
             rows={2}
           />
-          <button disabled={busy}>发送</button>
+          <button disabled={busy || Boolean(result?.pending_confirmation)}>发送</button>
         </form>
       </div>
-      <aside><div className="asideHead"><span>任务执行</span><small>{result ? `${result.tasks.filter(t => t.status === "completed").length}/${result.tasks.length}` : "0/0"}</small></div>
-        {/* 任务段只在有任务时展开。原来的大块空状态占满了整栏，而闲聊轮又必然为空，
-            于是最常见的画面就是一栏空白；现在收成一行，位置留给下面常驻的单据。 */}
-        {!result && <p className="asideIdle">当前没有进行中的任务</p>}
-        {result && <><div className="goal"><small>理解到的目标</small><p>{result.user_goal}</p></div><div className="taskList">{result.tasks.map((task, index) => <div className="task" key={task.id}><span className={task.status}>{task.status === "completed" ? "✓" : index + 1}</span><div><strong>{task.title}</strong><small>{task.domain}</small></div><em>{({completed:"已完成",running:"执行中",waiting_confirmation:"待确认",waiting_input:"待补充",pending:"等待中",rejected:"已取消",failed:"失败"} as Record<string,string>)[task.status] || task.status}</em></div>)}</div></>}
+      <aside><div className="asideHead"><span>进行中</span>{matters.length > 0 && <small>{matters.length}</small>}</div>
+        {/* 右栏只放有生命周期的事：还没办完的在这里，提交过的在下面的单据里。查询和
+            闲聊办完就结束了，不占位置；执行过程在对话流里以步骤的形式出现。 */}
+        {matters.length === 0 && <p className="asideIdle">当前没有进行中的事项</p>}
+        <div className="matterList">{matters.map((matter) => <div className={`matter ${matter.status}`} key={matter.plan_id}>
+          <div className="matterHead"><strong>{matter.title}</strong><em>{MATTER_STATUS_LABELS[matter.status]}</em></div>
+          {(matter.known_fields.length > 0 || matter.missing_fields.length > 0) && <ul className="fields">
+            {matter.known_fields.map((field) => <li key={field.name}><span>{field.label}</span><b>{field.value}</b>
+              {/* 档案给的只是建议值，用户还没确认过，得和用户亲口说的区分开。 */}
+              {field.source === "memory" && <i>建议</i>}</li>)}
+            {matter.missing_fields.map((name) => <li key={name} className="missing"><span>{name}</span><b>待补充</b></li>)}
+          </ul>}
+          {matter.tasks.length > 1 && <div className="subtasks">{matter.tasks.filter((task) => task.id !== matter.task_id).map((task) =>
+            <div key={task.id} className={task.status}><span>{task.status === "completed" ? "✓" : "○"}</span>{task.title}<em>{TASK_STATUS_LABELS[task.status] || task.status}</em></div>)}
+          </div>}
+          {/* 只往输入框里填一句话：字段仍由对话补充、由领域 Agent 解析，不开第二条提交路径。 */}
+          {matter.status === "shelved" && <button className="resume" disabled={busy} onClick={() => {
+            setInput(`继续办理「${matter.title}」`);
+            inputRef.current?.focus();
+          }}>继续</button>}
+        </div>)}</div>
         <div className="asideHead actionsHead"><span>我的单据</span>{actions.length > 0 && <small>{actions.length}</small>}</div>
         {actions.length === 0 && <p className="asideIdle">这里会列出你提交过的单据</p>}
         <div className="actionList">{actions.map((item, index) => <div className="action" key={item.reference_id || `action-${index}`}>
           {/* 每条都标"已提交"。workflow_actions 只知道适配器被调用过，不知道外部
               系统的审批结果；不写状态，这份列表就会被整体读成"这些都批了"。 */}
           <div><strong>{ACTION_LABELS[item.action_type] || item.action_type}</strong><em>已提交</em><small>{item.created_at.slice(5, 10)}</small></div>
-          {/* 字段名不翻译也不重排，顺序由后端白名单决定，前端只负责拼。 */}
-          <p>{Object.values(item.fields).join(" · ")}</p>
+          {/* 字段名不翻译也不重排，顺序由后端白名单决定，前端只负责拼；枚举取值才翻译。 */}
+          <p>{Object.values(item.fields).map((value) => VALUE_LABELS[value] ?? value).join(" · ")}</p>
           <code>{item.reference_id}</code>
         </div>)}</div>
       </aside>

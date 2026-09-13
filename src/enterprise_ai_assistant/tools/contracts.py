@@ -46,7 +46,10 @@ class PolicyQueryInput(StrictToolInput):
 
 
 class InformationRequestInput(StrictToolInput):
-    missing_fields: list[str] = Field(min_length=1)
+    # 会原样显示在界面的事项卡上，所以要求面向用户的中文字段名。
+    missing_fields: list[str] = Field(
+        min_length=1, description="缺失字段的中文名称，例如“结束日期”“出差事由”"
+    )
     question: str = Field(min_length=1, max_length=1000)
     # 已经谈定或有建议值的字段。任务停在待补充时存为草稿，下一轮续跑时交还给领域 Agent。
     known_fields: list[DraftField] = Field(default_factory=list, max_length=20)

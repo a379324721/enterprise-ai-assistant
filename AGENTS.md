@@ -77,6 +77,8 @@ cd frontend && npm run build  # tsc -b && vite build
 
 指向规则（`Workflow._target`）：`target_plan_id` 命中搁置计划就用它；否则当前计划有待补充任务就是当前计划；否则搁置计划只有一件时就是它；都不满足则忽略 `continue` / `cancel`，按常规路径处理。多件搁置时不猜，宁可重新规划也不把补充信息塞给错的事项。
 
+界面右栏的"进行中"就是这些计划的投影：`routes.py` 的 `_matters` 把卡在待补充 / 待确认上的当前计划和全部搁置计划转成 `AssistantResponse.matters`，字段来自 `drafts`，所以 `request_information` 的 `missing_fields` 要求中文字段名。办完的计划不成为事项。对话流里的执行步骤是 `AssistantResponse.steps`，由本轮 `tool_results` 加 `tools/registry.py` 的 `TOOL_LABELS` 生成；新增工具要同步起中文名，有测试检查。
+
 不要改回"每轮清空再规划"：重新拆出来的任务 id、标题、粒度都可能变，前置任务的产物也跟着丢，实测会议室任务就是这样在差旅追问之后消失的。也不要给 `OpenTask` 加字段值——Supervisor 拿到值就有了补写领域字段的材料。
 
 ### 谁能读原始 messages
@@ -113,7 +115,7 @@ Supervisor 把它当成用户的新输入。
 
 界面右栏的"我的单据"（`GET /actions`）走的是同一个 `recent_actions`，因此**不受 `MEMORY_ENABLED` 门控**——单据是用户自己办过的事，不是画像。露出的单号只能取 `result` 里存下的短单号（`build_reference_id` 的产物）；`idempotency_key` 是 会话:请求:任务:工具 拼成的，退回它就等于把内部结构同时泄漏进模型上下文和界面。
 
-`recall` 在轮首、`remember` 在轮尾，所有终止分支都汇到 `remember`。记忆只作为字段的建议默认值，不构成用户已确认的事实——余额、额度、制度条款一律以实时查询工具为准。
+`recall` 在轮首、`remember` 在轮尾，所有终止分支都汇到 `remember`。抽取在 `remember` 里用后台任务跑，不阻塞本轮的 `done` 和执行锁；进程关停时 `Workflow.drain_background` 等它写完再关连接池，测试里要显式调用它才能断言写入结果。记忆只作为字段的建议默认值，不构成用户已确认的事实——余额、额度、制度条款一律以实时查询工具为准。
 
 ### 演示登录与会话模型
 

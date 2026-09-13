@@ -29,7 +29,7 @@ from enterprise_ai_assistant.core.models import (
 
 #: 每类写操作允许进入摘要的字段。未列出的字段一律丢弃。
 _ACTION_SUMMARY_FIELDS: dict[str, tuple[str, ...]] = {
-    "travel_application": ("destination", "start_date", "end_date"),
+    "travel_application": ("destination", "start_date", "end_date", "trip_type"),
     "expense_claim": ("expense_type", "amount", "currency"),
     "leave_request": ("leave_type", "start_date", "end_date"),
     "meeting_booking": ("room_name", "date", "start_time", "end_time"),
