@@ -147,6 +147,7 @@ Supervisor 把它当成用户的新输入。
 - 领域子图包在 `run_domain_task` 函数里调用，不直接挂成节点：并行分支会同时写父图的 `domain_result`，改写进带归并规则的 `domain_results`（写 `None` 清空）。子图的检查点和 interrupt 照常继承。
 - 两个分支可能同时停在确认卡上。恢复必须按中断 id 指明（`_resume_command`），给单个值 LangGraph 直接报错；只恢复一个时另一个分支不会重跑它前面的决策（`tests/test_parallel.py` 断言了调用次数）。已恢复跑完的分支在本批结束前仍挂着原中断记录，`_pending_interrupt` 按 `snapshot.tasks` 过滤掉有结果的，界面一次出一张卡。本批里先确认的任务，回答要等整批结束才归并进会话。
 - 执行并行、展示串行：`_AnswerRelay` 同一时刻只转发一段回答，先开口的先流，其余攒着依次放出——前端把增量追加到最后一个气泡，交错转发会把两段话搅在一起。回答按节点执行的 `langgraph_checkpoint_ns` 区分，靠 `chunk_position="last"` 判断一次调用结束；不要改回按节点事件放行，并行时别的分支的节点事件会把另一个分支的工具调用前缀提前放出去。
+- 每归并一个任务，`apply_domain_result` 经 custom 流推一条 `task_done`（带该任务的工具结果，routes 转成带中文名的执行步骤）。前端据此把步骤插到该任务回答之前；确认那一轮前端整轮延迟渲染，收到 `task_done` 就把该任务的步骤和回答一起提交，不等依赖它的后续任务。转交出去的任务不推。
 - 同一批并行的任务彼此看不到对方的回答（`recent_messages` 在派发时就定了），更容易出现"另一件事不归我管"这类越界说法，见 `docs/known-issues.md`。
 
 ### 长期记忆

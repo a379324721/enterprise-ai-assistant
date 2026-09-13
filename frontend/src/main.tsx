@@ -225,6 +225,9 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
   const deferStream = useRef(false);
   const deferredResult = useRef<Result | null>(null);
   const deferredSegments = useRef<AnswerSegment[]>([]);
+  // 确认那一轮里已经随 task_done 提前画出来的任务数。done 时没有剩下的段落，不代表
+  // 回答没来过，不能再把 completed.answer 整段补一遍。
+  const deferredCommitted = useRef(0);
   // 已经画进对话流的步骤。确认前后的两次 done 都带着同一轮更早的步骤，不去重会画两遍。
   const shownSteps = useRef<Set<string>>(new Set());
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -367,6 +370,23 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
     return task?.title || DOMAIN_LABELS[message.agent ?? ""] || "";
   }
 
+  /** 把一个任务的执行步骤插到它的回答前面：先做了什么，再说结果。
+   *
+   *  找不到这个任务的回答时（比如回答还没画出来），放在本轮已有内容的末尾、
+   *  send() 预插的空占位之前，不能插到本轮开头去——那会排到前面任务的回答之前。
+   */
+  function insertSteps(current: Message[], steps: TurnStep[], taskId: string): Message[] {
+    if (steps.length === 0) return current;
+    let boundary = current.length - 1;
+    while (boundary >= 0 && current[boundary].role !== "user" && current[boundary].role !== "decision") boundary -= 1;
+    let at = current.findIndex((message, index) => index > boundary && message.role === "assistant" && message.taskId === taskId);
+    if (at < 0) {
+      const last = current.at(-1);
+      at = last && last.role === "assistant" && !last.text ? current.length - 1 : current.length;
+    }
+    return [...current.slice(0, at), {role: "steps", text: "", steps}, ...current.slice(at)];
+  }
+
   /** 把一轮的最终结果落到界面上。
    *
    *  actionList 传入时，回答、任务面板、单据在同一次渲染里出现；传 null 表示
@@ -395,6 +415,8 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
             taskId: segment.taskId, agent: segment.agent,
           }))];
         }
+        // 回答都已经随各自的 task_done 画出来了。
+        if (deferredCommitted.current > 0) return old;
         // 一个 token 都没来过：可能是回答走了非流式路径，也可能又冒出一个待确认
         // （那时没有回答，卡片自己会出来）。
         if (completed.answer) return [...old, {role: "assistant", text: completed.answer}];
@@ -452,6 +474,26 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
       // 放在延迟分支之后：确认那一轮屏幕上没有逐字出现的回答，转圈得一直转着。
       setStreamingAnswer(true);
       setMessages((old) => old.map((message, index) => index === old.length - 1 ? {...message, text: message.text + chunk} : message));
+    } else if (event === "task_done") {
+      // 一个任务办完了。确认之后常常还有依赖它的任务要跑十几秒，不能让这个任务的步骤和
+      // 回答陪着等到整轮结束：步骤连同回答按任务依次呈现。
+      const finished = data as {task_id: string; steps: TurnStep[]};
+      const fresh = finished.steps.filter((step) => !shownSteps.current.has(step.id));
+      fresh.forEach((step) => shownSteps.current.add(step.id));
+      if (deferStream.current) {
+        const own = deferredSegments.current.filter((segment) => segment.taskId === finished.task_id && segment.text.trim());
+        deferredSegments.current = deferredSegments.current.filter((segment) => segment.taskId !== finished.task_id);
+        deferredCommitted.current += 1;
+        setMessages((old) => [
+          ...old,
+          ...(fresh.length > 0 ? [{role: "steps" as const, text: "", steps: fresh}] : []),
+          ...own.map((segment) => ({role: "assistant" as const, text: segment.text, taskId: segment.taskId, agent: segment.agent})),
+        ]);
+        // 单据和回答一起刷新，保留延迟渲染要的"三者同时出现"，只是粒度从整轮变成任务。
+        if (fresh.length > 0) void fetchActions().then((list) => list && setActions(list));
+        return;
+      }
+      if (fresh.length > 0) setMessages((old) => insertSteps(old, fresh, finished.task_id));
     } else if (event === "done") {
       const completed = data as Result;
       // 延迟模式下这一轮什么都还没画出来，交给 confirm 连同单据一次性提交。
@@ -503,6 +545,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
     // 这一轮不逐字渲染：确认之后真正要看的是任务状态和单据，回答只有一两句。
     // 逐字出字会让三者错开好几秒——回答先到，任务面板后到，单据再后到。
     deferStream.current = true; deferredResult.current = null; deferredSegments.current = [];
+    deferredCommitted.current = 0;
     try {
       const response = guard(await fetch(`/api/v1/conversations/${session.conversationId}/confirm/stream`, {
         method: "POST", headers: authHeaders,

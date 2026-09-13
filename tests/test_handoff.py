@@ -227,3 +227,46 @@ def test_handoff_tool_lists_only_the_other_domains() -> None:
 
     assert "- expense：" in handoff.tool.description
     assert "- travel：" not in handoff.tool.description
+
+
+@pytest.mark.asyncio
+async def test_each_merged_task_announces_its_steps_but_a_handed_off_one_does_not() -> None:
+    graph = build_graph(
+        Workflow(
+            SupervisorAgent(
+                OnePlan(
+                    [
+                        TaskOutline(title="报销打车费", domain=AgentName.TRAVEL, objective="报销"),
+                        TaskOutline(
+                            title="查会议室制度",
+                            domain=AgentName.MEETING,
+                            objective="查制度",
+                            depends_on=[AgentName.TRAVEL],
+                        ),
+                    ]
+                )
+            )
+        ),
+        DomainTaskWorkflow(HandoffRuntimeFactory({AgentName.TRAVEL: "expense"})),
+        InMemorySaver(),
+    )
+
+    announced: list[tuple[str, list[str]]] = []
+    async for chunk in graph.astream(
+        {
+            "messages": [HumanMessage(content="报销打车费，再查下会议室制度")],
+            "user_id": "u-1",
+            "conversation_id": CONVERSATION_ID,
+            "request_id": uuid4(),
+        },
+        {"configurable": {"thread_id": "announce"}},
+        stream_mode="custom",
+    ):
+        if "task_done" in chunk:
+            announced.append((chunk["task_done"], [item["tool"] for item in chunk["tool_results"]]))
+
+    # 转交那一次没有回答，不单独宣布；改派后在报销领域办完才宣布，随后才是依赖它的会议室任务。
+    assert announced == [
+        ("task-1", ["search_expense_policy"]),
+        ("task-2", ["search_meeting_policy"]),
+    ]

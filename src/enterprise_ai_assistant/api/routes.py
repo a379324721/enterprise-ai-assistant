@@ -525,6 +525,24 @@ class _AnswerRelay:
         await self._publish(event, data)
 
 
+async def _publish_task_done(
+    publish: Publisher, relay: "_AnswerRelay", data: dict[str, Any]
+) -> None:
+    """一个任务归并完成：推送它的执行步骤，前端据此把步骤和这个任务的回答一起呈现。
+
+    先放出还攒着的回答：任务都归并了，它的回答一定已经写完，步骤不能跑到回答前面去。
+    """
+    await relay.flush()
+    tool_results = [ToolResult.model_validate(item) for item in data.get("tool_results") or []]
+    await publish(
+        "task_done",
+        {
+            "task_id": data["task_done"],
+            "steps": [step.model_dump(mode="json") for step in _steps(tool_results, [])],
+        },
+    )
+
+
 async def _execute_run(
     app: Any,
     run: Run,
@@ -567,6 +585,8 @@ async def _execute_run(
                 data = part["data"]
                 if isinstance(data, dict) and isinstance(data.get("answer"), str):
                     await relay.whole(data["answer"], data)
+                elif isinstance(data, dict) and isinstance(data.get("task_done"), str):
+                    await _publish_task_done(publish, relay, data)
             elif part["type"] == "tasks":
                 task = part["data"]
                 # 同一个任务开始和结束各发一次，结束那次带 result/error。只认开始。

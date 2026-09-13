@@ -487,6 +487,53 @@ async def test_a_queued_branch_that_turns_into_a_tool_call_does_not_block_the_ne
     ]
 
 
+class TaskDoneGraph(FakeGraph):
+    async def astream(self, *args: Any, **kwargs: Any) -> Any:
+        del args
+        self.stream_kwargs = kwargs
+        # 回答还压在开头缓冲里（不足放行字数）时任务就归并完了。
+        yield {
+            "type": "messages",
+            "data": (
+                AIMessageChunk(content="已提交。", id="a"),
+                {"tags": ["user-visible"], "agent": "travel", "task_id": "task-1"},
+            ),
+        }
+        yield {
+            "type": "custom",
+            "data": {
+                "task_done": "task-1",
+                "tool_results": [
+                    {
+                        "task_id": "task-1",
+                        "tool": "create_travel_application",
+                        "success": True,
+                        "created_at": "2026-09-13T10:00:00+00:00",
+                    }
+                ],
+            },
+        }
+
+
+@pytest.mark.asyncio
+async def test_task_done_carries_labelled_steps_after_the_tasks_answer() -> None:
+    manager = _manager()
+    app = _app(manager, TaskDoneGraph())
+
+    run = await _run_to_completion(manager, app)
+    events = [
+        decode_event(frame)
+        async for frame in _subscribe_sse(FakeRequest(app), run, apply_on_disconnect=False)  # type: ignore[arg-type]
+    ]
+    names = [event for event, _ in events]
+
+    # 步骤不能跑到回答前面：推 task_done 之前先放出这个任务攒着的回答。
+    assert names.index("token") < names.index("task_done")
+    done = next(data for event, data in events if event == "task_done")
+    assert done["task_id"] == "task-1"
+    assert [step["label"] for step in done["steps"]] == ["提交差旅申请"]
+
+
 @pytest.mark.asyncio
 async def test_reconnect_replays_only_the_missing_events() -> None:
     manager = _manager()
