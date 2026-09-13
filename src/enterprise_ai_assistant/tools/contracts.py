@@ -57,6 +57,13 @@ class InformationRequestInput(StrictToolInput):
     known_fields: list[DraftField] = Field(default_factory=list, max_length=20)
 
 
+class HandoffInput(StrictToolInput):
+    # 用字面量而不是 AgentName：supervisor 不是能接任务的领域，不该出现在模型可选的值里。
+    target_domain: Literal["travel", "expense", "hr", "meeting", "policy"]
+    # 只进审计和 trace，不交给接手的领域 Agent，所以不承载字段值。
+    reason: str = Field(min_length=1, max_length=200)
+
+
 #: 行程类型的取值标签，确认卡片按它翻译。
 _TRIP_TYPE_LABELS: dict[str, JsonValue] = {"round_trip": "往返", "one_way": "单程"}
 

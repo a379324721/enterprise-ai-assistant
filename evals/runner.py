@@ -271,6 +271,8 @@ class EvalHarness:
             problems.append(f"未调用 request_information，实际调用 {names or '无'}")
         if case.forbid_information_request and "request_information" in names:
             problems.append("为本领域办不到的事项索要字段，等于承诺办理")
+        if case.forbid_handoff and "handoff_task" in names:
+            problems.append("把不该转交的任务转交给了其他领域")
         return CaseResult("guardrail", case.id, not problems, "；".join(problems))
 
 

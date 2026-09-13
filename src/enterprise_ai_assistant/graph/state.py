@@ -68,6 +68,8 @@ class DomainTaskState(TypedDict):
     # 不需要再调模型就已经确定的回答：决策调用看完工具结果写出的文字，
     # 或 request_information 给出的问题。为空时由兜底回答调用生成。
     domain_answer: NotRequired[str]
+    # 领域 Agent 调用转交工具时指定的接手领域。
+    domain_handoff_to: NotRequired[str | None]
     artifact: NotRequired[dict[str, Any] | None]
     domain_draft: NotRequired[TaskDraft | None]
     domain_tool_results: list[ToolResult]

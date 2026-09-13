@@ -81,6 +81,8 @@ class GuardrailCase(BaseModel):
     expect_information_request: bool = False
     # 用于诉求超出本领域工具范围的场景：反问字段等于承诺办理，和编造字段一样是越界。
     forbid_information_request: bool = False
+    # 用于诉求不属于任何领域、或只是夹带了别的任务的场景：转交只会让任务在领域间空转。
+    forbid_handoff: bool = False
     memories: list[str] = Field(default_factory=list)
     note: str = ""
 

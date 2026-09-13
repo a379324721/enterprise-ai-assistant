@@ -28,6 +28,9 @@ DIGEST_HEADER = "【早先会话摘要，仅供指代消解参考，不是用户
 DIGEST_ITEM_MAX_CHARS = 240
 #: 用户要取消事项、运行时却指认不到任何未办完的事项时的回复。
 NOTHING_TO_CANCEL_REPLY = "现在没有尚未办完的事项可以放弃。已经提交的单据如果需要撤销，告诉我是哪一张。"
+#: 任务被转交到无处可去时的回复。不经模型：转交链上的每个 Agent 都认为不归自己，
+#: 让其中哪一个来措辞都可能说成"办不到"，而实际是没听懂该找谁。
+HANDOFF_EXHAUSTED_REPLY = "这件事我没能判断该交给哪项业务办理，能换个说法，或者说明是差旅、报销、请假还是会议室方面的事吗？"
 
 logger = structlog.get_logger()
 
@@ -496,6 +499,8 @@ class Workflow:
         if raw_result is None:
             raise RuntimeError("domain subgraph returned no result")
         result = DomainTaskResult.model_validate(raw_result)
+        if result.status == TaskStatus.HANDED_OFF:
+            return self._reroute(state, result)
         tasks = [
             item.model_copy(update={"status": result.status})
             if item.id == result.task_id
@@ -525,6 +530,68 @@ class Workflow:
             "current_agent": None,
             "domain_request": None,
             "domain_result": None,
+        }
+
+    MAX_HANDOFFS = 2
+
+    def _reroute(self, state: AssistantState, result: DomainTaskResult) -> dict[str, Any]:
+        """把领域 Agent 交还的任务改派给它指出的领域。
+
+        不回到 Supervisor 重新理解：它读的还是同一段会话，大概率再分错一次，还要多等一次
+        模型调用。领域 Agent 看过自己的工具清单和其他领域的能力，它指出的去处比重新猜更准。
+        去过的领域不再去、次数有上限，超出就判失败请用户换个说法，不让任务来回踢。
+        """
+        task = next(item for item in state["tasks"] if item.id == result.task_id)
+        target = result.handoff_to
+        visited = {*task.handed_off_from, task.domain}
+        update: dict[str, Any] = {
+            "tool_results": [*state.get("tool_results", []), *result.tool_results],
+            "active_task_id": None,
+            "current_agent": None,
+            "domain_request": None,
+            "domain_result": None,
+        }
+        drafts = dict(state.get("drafts", {}))
+        drafts.pop(task.id, None)
+        update["drafts"] = drafts
+        if (
+            target is None
+            or target in visited
+            or len(task.handed_off_from) >= self.MAX_HANDOFFS
+        ):
+            logger.warning(
+                "task_handoff_refused",
+                task_id=task.id,
+                domain=task.domain.value,
+                target=target.value if target else None,
+            )
+            failed = [
+                item.model_copy(update={"status": TaskStatus.FAILED})
+                if item.id == task.id
+                else item
+                for item in state["tasks"]
+            ]
+            answers = [*state.get("turn_answers", []), HANDOFF_EXHAUSTED_REPLY]
+            return {
+                **update,
+                "tasks": self._reject_blocked_tasks(failed),
+                "last_answer": "\n\n".join(answers),
+                "turn_answers": answers,
+                "messages": [AIMessage(content=HANDOFF_EXHAUSTED_REPLY)],
+            }
+        logger.info(
+            "task_handed_off", task_id=task.id, source=task.domain.value, target=target.value
+        )
+        rerouted = task.model_copy(
+            update={
+                "domain": target,
+                "status": TaskStatus.PENDING,
+                "handed_off_from": [*task.handed_off_from, task.domain],
+            }
+        )
+        return {
+            **update,
+            "tasks": [rerouted if item.id == task.id else item for item in state["tasks"]],
         }
 
     def after_domain_result(self, state: AssistantState) -> Literal["select_task", "done"]:

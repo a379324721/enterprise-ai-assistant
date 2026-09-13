@@ -85,6 +85,8 @@ cd frontend && npm run build  # tsc -b && vite build
 
 `domain_messages`、工具决策、确认状态都是子图私有状态，不进 `AssistantState`。后续任务只能通过 `artifacts[task_id]` 拿到前置任务的结构化产物，拿不到它的对话过程。人工确认通过 LangGraph interrupt payload（`PendingConfirmation`）暴露，API 层不依赖子图内部节点名。
 
+任务派错领域时，领域 Agent 调 `handoff_task`（每个领域都有，描述里列出其他领域的能力）交还，子图返回 `status=HANDED_OFF` 且不带回答。父图的 `Workflow._reroute` 用代码把任务改派给 `handoff_to`，任务 id 不变、回到 `PENDING`，下游依赖照常；**不回到 Supervisor 重新理解**——它读的是同一段会话，大概率再分错一次，还多一次模型调用。防空转的规则：去过的领域（`PlannedTask.handed_off_from`）不再去、最多转交 `MAX_HANDOFFS` 次，超出就判 `FAILED` 并回固定文案 `HANDOFF_EXHAUSTED_REPLY`；执行过写操作的任务不能转交（`DomainTaskWorkflow._handoff_error`），转交给本领域也会被打回给模型。`HANDED_OFF` 只出现在子图结果上，不会存进计划。
+
 ### 未办完的事项：续跑、搁置、取消
 
 领域 Agent 缺字段时调用 `request_information`，任务停在 `WAITING_INPUT`，这一轮结束。当前计划（`plan_id`、`user_goal`、`tasks`、`artifacts`，以及追问时报告的 `drafts`）跨轮保留；用户换话题时，没办完的计划整体移进 `shelved_plans`，不自动过期。

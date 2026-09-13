@@ -17,6 +17,7 @@ from enterprise_ai_assistant.core.metrics import (
     TOOL_INVOCATIONS,
 )
 from enterprise_ai_assistant.core.models import (
+    AgentName,
     DomainTaskRequest,
     DomainTaskResult,
     PendingConfirmation,
@@ -26,6 +27,7 @@ from enterprise_ai_assistant.core.models import (
 )
 from enterprise_ai_assistant.graph.state import DomainTaskState
 from enterprise_ai_assistant.tools import BusinessToolOutcome, ToolContext, ToolRisk
+from enterprise_ai_assistant.tools.registry import HANDOFF_TOOL
 
 logger = structlog.get_logger()
 
@@ -109,6 +111,7 @@ class DomainTaskWorkflow:
             "domain_retry_required": False,
             "domain_tool_executed": False,
             "domain_answer": "",
+            "domain_handoff_to": None,
             "pending_confirmation": None,
             "pending_tool_call": None,
             "confirmation_approved": False,
@@ -163,7 +166,11 @@ class DomainTaskWorkflow:
                 else:
                     # 参数在决策阶段就按契约校验。放到执行时才校验的话，写操作会带着
                     # 非法参数先弹确认卡，用户点了确认才失败；这里失败则交给模型自行更正。
-                    error = registered.argument_error(raw_arguments)
+                    error = registered.argument_error(raw_arguments) or (
+                        self._handoff_error(state, raw_arguments)
+                        if name == HANDOFF_TOOL
+                        else None
+                    )
             if error:
                 validation_messages.append(
                     ToolMessage(
@@ -225,6 +232,20 @@ class DomainTaskWorkflow:
                 "" if retry_required or pending else self._answer_text(response)
             ),
         }
+
+    def _handoff_error(self, state: DomainTaskState, arguments: Mapping[str, Any]) -> str | None:
+        request = self._request(state)
+        if arguments.get("target_domain") == request.task.domain.value:
+            return "不能转交给当前领域；任务属于本领域就用本领域的工具办理"
+        runtime = self._runtime(state)
+        # 已经提交、修改或撤销过单据的任务再转交，接手方不知道这些已经发生，
+        # 用户看到的也会是一件办了一半又换人的事。
+        if any(
+            result.success and runtime.tool(result.tool).risk == ToolRisk.WRITE
+            for result in state.get("domain_tool_results", [])
+        ):
+            return "本任务已经执行过写操作，不能再转交，请直接回答用户"
+        return None
 
     def after_decide(
         self, state: DomainTaskState
@@ -325,6 +346,11 @@ class DomainTaskWorkflow:
         if outcome.success:
             artifact[name] = outcome.model_dump(mode="json")
         terminal = registered.terminal and outcome.success
+        handoff_to = (
+            str(outcome.data.get("target_domain"))
+            if name == HANDOFF_TOOL and outcome.success
+            else None
+        )
         draft = state.get("domain_draft")
         answer = ""
         if terminal:
@@ -344,17 +370,32 @@ class DomainTaskWorkflow:
             "domain_retry_required": False,
             "domain_tool_executed": True,
             "domain_answer": answer,
+            "domain_handoff_to": handoff_to,
         }
 
     def after_execute(self, state: DomainTaskState) -> Literal["decide", "finish", "respond"]:
         if state.get("domain_failed"):
             return "respond"
+        if state.get("domain_handoff_to"):
+            return "finish"
         if state.get("domain_waiting_input"):
             return "finish" if state.get("domain_answer") else "respond"
         return "decide"
 
     async def finish(self, state: DomainTaskState) -> dict[str, Any]:
         """收口已经确定的回答，不调模型。"""
+        handoff_to = state.get("domain_handoff_to")
+        if handoff_to:
+            # 分错的任务不对用户说话，由父图改派后接手的领域 Agent 回答。
+            request = self._request(state)
+            return {
+                "domain_result": DomainTaskResult(
+                    task_id=request.task.id,
+                    status=TaskStatus.HANDED_OFF,
+                    tool_results=list(state.get("domain_tool_results", [])),
+                    handoff_to=AgentName(handoff_to),
+                )
+            }
         answer = str(state.get("domain_answer", ""))
         if not answer:
             raise RuntimeError("domain task finished without an answer")

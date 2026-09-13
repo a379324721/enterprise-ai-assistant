@@ -11,6 +11,7 @@ from enterprise_ai_assistant.tools.contracts import (
     EnterpriseToolProvider,
     ExpenseClaimInput,
     ExpenseClaimUpdateInput,
+    HandoffInput,
     InformationRequestInput,
     LeaveBalanceInput,
     LeaveRequestInput,
@@ -42,9 +43,13 @@ CAPABILITY_SUMMARY: dict[AgentName, str] = {
     AgentName.POLICY: "查询其他企业通用制度",
 }
 
+#: 领域 Agent 把分错的任务交还调度层时调用的工具。父图和领域子图都按这个名字识别它。
+HANDOFF_TOOL = "handoff_task"
+
 #: 工具在界面执行步骤里的中文名。和风险等级一样由服务端声明，前端不维护工具名映射。
 TOOL_LABELS: dict[str, str] = {
     "request_information": "向你确认缺失信息",
+    "handoff_task": "转交给对应业务处理",
     "search_travel_policy": "检索差旅制度",
     "search_expense_policy": "检索报销制度",
     "search_hr_policy": "检索人事制度",
@@ -175,6 +180,32 @@ class DomainToolRegistry:
             terminal=True,
         )
 
+        async def handoff(**kwargs: Any) -> dict[str, Any]:
+            payload = HandoffInput.model_validate(kwargs)
+            return BusinessToolOutcome(
+                tool=HANDOFF_TOOL,
+                success=True,
+                status="handed_off",
+                data=payload.model_dump(mode="json"),
+            ).model_dump(mode="json")
+
+        others = "\n".join(
+            f"- {domain.value}：{summary}"
+            for domain, summary in CAPABILITY_SUMMARY.items()
+            if domain != agent
+        )
+        handoff_tool = self._tool(
+            name=HANDOFF_TOOL,
+            description=(
+                "当前任务整体属于其他领域时调用，由系统改派给 target_domain。"
+                "只是请求里夹带了其他任务的诉求时不要调用；任何领域都办不到的事也不要调用。"
+                f"其他领域的能力：\n{others}"
+            ),
+            args_schema=HandoffInput,
+            coroutine=handoff,
+            risk=ToolRisk.READ,
+        )
+
         async def policy_search(domain: str, **kwargs: Any) -> dict[str, Any]:
             query = PolicyQueryInput.model_validate(kwargs)
             outcome = await self._provider.search_policy(
@@ -286,6 +317,7 @@ class DomainToolRegistry:
                 ),
                 revoke_tool("revoke_travel_application", "travel_application", "差旅申请"),
                 information_tool,
+                handoff_tool,
             ]
 
         if agent == AgentName.EXPENSE:
@@ -314,6 +346,7 @@ class DomainToolRegistry:
                 ),
                 revoke_tool("revoke_expense_claim", "expense_claim", "报销单"),
                 information_tool,
+                handoff_tool,
             ]
 
         if agent == AgentName.MEETING:
@@ -360,6 +393,7 @@ class DomainToolRegistry:
                 ),
                 revoke_tool("revoke_meeting_booking", "meeting_booking", "会议室预订"),
                 information_tool,
+                handoff_tool,
             ]
 
         if agent == AgentName.HR:
@@ -402,9 +436,10 @@ class DomainToolRegistry:
                 ),
                 revoke_tool("revoke_leave_request", "leave_request", "请假申请"),
                 information_tool,
+                handoff_tool,
             ]
 
         if agent == AgentName.POLICY:
-            return [policy_tool("general"), information_tool]
+            return [policy_tool("general"), information_tool, handoff_tool]
 
         raise ValueError(f"Unsupported domain agent: {agent}")

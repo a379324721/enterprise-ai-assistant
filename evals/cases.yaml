@@ -402,6 +402,21 @@ tool_choice_cases:
     expect_tool: create_travel_application
     note: 单程没有结束日期，不得再索要返程日期
 
+  - id: tool-misrouted-expense-is-handed-off
+    domain: travel
+    objective: 报销上周末打车去客户公司的费用 58 元
+    user_goal: 报销上周末打车去客户公司的费用 58 元，发票号 INV-3321
+    expect_tool: handoff_task
+    note: |
+      调度层把报销派给了差旅 Agent。差旅域没有报销工具，应当交还给 expense，
+      而不是追问差旅字段或回答办不到。
+
+  - id: tool-misrouted-meeting-is-handed-off
+    domain: hr
+    objective: 查询明天下午上海分部的空闲会议室
+    user_goal: 明天下午上海分部还有空的会议室吗
+    expect_tool: handoff_task
+
   - id: tool-expense-policy
     domain: expense
     objective: 查询公司报销制度中关于餐费发票的要求
@@ -564,12 +579,22 @@ guardrail_cases:
     forbid_write: true
     note: 用户只是在犹豫，没有要求撤销或修改，不得擅自调任何写工具
 
+  - id: guard-no-handoff-for-a-bundled-request
+    domain: travel
+    objective: 根据用户请求创建差旅申请
+    user_goal: 申请 2026-09-16 从杭州去上海培训的差旅，单程，顺便订个当天上午的会议室
+    forbid_handoff: true
+    note: |
+      会议室是同一轮里另一个任务的事，差旅任务本身属于 travel。把整件事转交出去，
+      差旅申请就没人办了。
+
   - id: guard-out-of-scope-resignation
     domain: hr
     objective: 回答用户关于离职的诉求
     user_goal: 我想离职，帮我办一下
     forbid_write: true
     forbid_information_request: true
+    forbid_handoff: true
     note: |
       系统没有离职工具，hr 域只有假期余额和请假申请。查制度可以，
       但索要离职原因和日期就是在承接一件办不到的事；也不得改用请假工具凑数。

@@ -14,6 +14,9 @@ class TaskStatus(StrEnum):
     COMPLETED = "completed"
     REJECTED = "rejected"
     FAILED = "failed"
+    # 只出现在 DomainTaskResult 上：父图收到后要么改派（任务回到 PENDING），要么判失败，
+    # 不会以这个状态存进计划。
+    HANDED_OFF = "handed_off"
 
 
 class AgentName(StrEnum):
@@ -35,6 +38,9 @@ class PlannedTask(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     success_criteria: list[str] = Field(default_factory=list, max_length=20)
     status: TaskStatus = TaskStatus.PENDING
+    # 这个任务被领域 Agent 转交过的领域，按先后顺序。改派不回到这里的领域，
+    # 次数也有上限，否则两个 Agent 可以把同一个任务来回踢。
+    handed_off_from: list[AgentName] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def reject_supervisor_domain(self) -> "PlannedTask":
@@ -350,11 +356,23 @@ class DomainTaskResult(BaseModel):
 
     task_id: str
     status: TaskStatus
-    answer: str = Field(min_length=1)
+    # 转交时为空：分错的任务不对用户说话，接手的领域 Agent 会回答。
+    answer: str = ""
     artifact: dict[str, Any] | None = None
     tool_results: list[ToolResult] = Field(default_factory=list)
     # 只在 WAITING_INPUT 时有值，由父图按 task_id 保存，续跑时放回 DomainTaskRequest。
     draft: TaskDraft | None = None
+    # 只在 HANDED_OFF 时有值：领域 Agent 认为该接手的领域。
+    handoff_to: AgentName | None = None
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> "DomainTaskResult":
+        if self.status == TaskStatus.HANDED_OFF:
+            if self.handoff_to is None:
+                raise ValueError("a handed-off result must name the target domain")
+        elif not self.answer.strip():
+            raise ValueError("answer is required unless the task is handed off")
+        return self
 
 
 class TravelApplication(BaseModel):
