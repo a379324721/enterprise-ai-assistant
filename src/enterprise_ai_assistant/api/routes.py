@@ -31,6 +31,7 @@ from enterprise_ai_assistant.api.schemas import (
 from enterprise_ai_assistant.core.config import Settings, get_settings
 from enterprise_ai_assistant.core.metrics import BUDGET_REJECTIONS, REGISTRY
 from enterprise_ai_assistant.core.models import (
+    DomainTaskResult,
     PendingConfirmation,
     PlannedTask,
     ShelvedPlan,
@@ -304,13 +305,43 @@ def _steps(tool_results: list[ToolResult], tasks: list[PlannedTask]) -> list[Tur
     ]
 
 
+def _settled_results(snapshot: Any) -> list[DomainTaskResult]:
+    """同一批并行任务里已经跑完、但还没归并进状态的结果。
+
+    父图要等整批结束才归并。两个任务都停在确认卡上时，确认完第一张，它的回答已经流出去，
+    执行步骤和任务状态却要等第二张确认完才进状态——界面上两个步骤会一起出现在第二次确认
+    之后。响应里先把这些结果算进去，步骤就能跟着各自的确认出现。
+    """
+    results: list[DomainTaskResult] = []
+    for task in getattr(snapshot, "tasks", None) or ():
+        written = getattr(task, "result", None)
+        if not isinstance(written, dict):
+            continue
+        for item in written.get("domain_results") or ():
+            results.append(DomainTaskResult.model_validate(item))
+    return results
+
+
 async def _response(app: Any, conversation_id: UUID, user_id: str) -> AssistantResponse:
     snapshot = await app.state.graph.aget_state(_config(conversation_id, user_id))
     values = snapshot.values
     if not values or values.get("user_id") != user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
     pending = _pending_confirmation(snapshot)
-    tasks = values.get("tasks", [])
+    settled = _settled_results(snapshot)
+    finished = {
+        result.task_id: result.status
+        for result in settled
+        if result.status != TaskStatus.HANDED_OFF
+    }
+    tasks = [
+        task.model_copy(update={"status": finished[task.id]}) if task.id in finished else task
+        for task in values.get("tasks", [])
+    ]
+    tool_results = [
+        *values.get("tool_results", []),
+        *(item for result in settled for item in result.tool_results),
+    ]
     if pending:
         workflow_status = "waiting_confirmation"
         tasks = [
@@ -336,10 +367,10 @@ async def _response(app: Any, conversation_id: UUID, user_id: str) -> AssistantR
         user_goal=values.get("user_goal", ""),
         tasks=tasks,
         artifacts=values.get("artifacts", {}),
-        tool_results=values.get("tool_results", []),
+        tool_results=tool_results,
         pending_confirmation=pending,
         matters=_matters(values, tasks),
-        steps=_steps(values.get("tool_results", []), tasks),
+        steps=_steps(tool_results, tasks),
     )
 
 

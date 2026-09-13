@@ -172,7 +172,14 @@ async def test_independent_tasks_run_together_and_confirm_one_card_at_a_time() -
 
     # 界面一次只出一张卡；确认完第一张，第二张仍在，且不是刚确认过的那张。
     first = await _confirm(graph)
+    # 第一张确认完、第二张还没确认时，已跑完的分支结果还没归并进状态，
+    # 但响应里要能看到它的执行步骤和完成状态，否则两个步骤会等到第二次确认后才一起出现。
+    between = await graph.aget_state(CONFIG)
+    settled = routes._settled_results(between)
+    assert [item.tool for result in settled for item in result.tool_results] == [first]
+    assert between.values["tool_results"] == []
     second = await _confirm(graph)
+    assert routes._settled_results(await graph.aget_state(CONFIG)) == []
     assert {first, second} == {"create_travel_application", "create_expense_claim"}
 
     final = await graph.aget_state(CONFIG)
