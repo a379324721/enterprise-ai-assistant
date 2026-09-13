@@ -236,6 +236,8 @@ class Run:
     task: asyncio.Task[None] | None = field(default=None, repr=False)
     started_at: float = field(default_factory=time.monotonic)
     finished_at: float | None = None
+    # 失败时给用户看的一句话；执行体没有设置时用通用文案。
+    error_message: str | None = None
 
 
 class RunConflictError(RuntimeError):

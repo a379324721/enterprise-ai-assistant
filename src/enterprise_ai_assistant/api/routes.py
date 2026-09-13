@@ -334,6 +334,32 @@ def _run_status(response: AssistantResponse) -> RunStatus:
     return RunStatus.completed
 
 
+#: 执行失败时的通用提示。
+_RUN_FAILED_MESSAGE = "智能助手执行失败，请稍后重试"
+#: 模型服务额度耗尽时的提示。这不是"稍后重试"能解决的故障，演示部署里只能找作者充值。
+QUOTA_EXHAUSTED_MESSAGE = "模型额度（token）已用完，请联系作者"
+#: 模型服务表示额度耗尽的错误码：百炼免费额度用尽（AllocationQuota.*）、百炼欠费、
+#: OpenAI 额度不足。
+_QUOTA_ERROR_CODES = ("AllocationQuota.", "Arrearage", "insufficient_quota")
+
+
+def _failure_message(error: BaseException) -> str:
+    """把执行异常翻成用户能看懂的一句话。
+
+    openai SDK 的状态码异常带着服务端返回的 code。LangGraph 可能在外面再包一层，
+    所以顺着 __cause__ / __context__ 往下找。
+    """
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        code = getattr(current, "code", None)
+        if isinstance(code, str) and code.startswith(_QUOTA_ERROR_CODES):
+            return QUOTA_EXHAUSTED_MESSAGE
+        current = current.__cause__ or current.__context__
+    return _RUN_FAILED_MESSAGE
+
+
 async def _execute_run(
     app: Any,
     run: Run,
@@ -412,11 +438,14 @@ async def _execute_run(
             "run_cancelled", run_id=run.run_id, conversation_id=str(conversation_id)
         )
         raise
-    except Exception:
+    except Exception as error:
         app.state.logger.exception(
             "graph_stream_failed", run_id=run.run_id, conversation_id=str(conversation_id)
         )
-        await publish("error", {"message": "智能助手执行失败，请稍后重试"})
+        run.error_message = _failure_message(error)
+        # code 让前端不必比对文案就能区分：额度耗尽要常驻提示，普通失败重试即可。
+        code = "quota_exhausted" if run.error_message == QUOTA_EXHAUSTED_MESSAGE else "run_failed"
+        await publish("error", {"message": run.error_message, "code": code})
         return RunStatus.failed
     finally:
         await _record_usage(app, conversation_id, user_id, tracker, settings)
@@ -547,7 +576,7 @@ async def chat(
         # 执行仍然跑完并落检查点。
         await asyncio.wait([run.task])
     if run.status is RunStatus.failed:
-        raise HTTPException(status_code=502, detail="智能助手执行失败，请稍后重试")
+        raise HTTPException(status_code=502, detail=run.error_message or _RUN_FAILED_MESSAGE)
     return await _response(request.app, payload.conversation_id, user_id)
 
 

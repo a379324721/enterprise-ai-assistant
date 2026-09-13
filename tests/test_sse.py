@@ -8,8 +8,10 @@ import pytest
 from langchain_core.messages import AIMessageChunk
 
 from enterprise_ai_assistant.api.routes import (
+    QUOTA_EXHAUSTED_MESSAGE,
     _encode_sse,
     _execute_run,
+    _failure_message,
     _pending_confirmation,
     _subscribe_sse,
 )
@@ -421,3 +423,31 @@ async def test_disconnect_cancels_the_run_only_when_the_creator_asked_for_it() -
     assert run.task is not None
     await asyncio.gather(run.task, return_exceptions=True)
     assert run.status is RunStatus.cancelled
+
+
+class _QuotaError(Exception):
+    """模拟 openai SDK 的状态码异常：服务端返回的错误码挂在 code 上。"""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(f"Error code: 403 - {code}")
+        self.code = code
+
+
+def test_quota_exhaustion_gets_its_own_message() -> None:
+    assert _failure_message(_QuotaError("AllocationQuota.FreeTierOnly")) == QUOTA_EXHAUSTED_MESSAGE
+    assert _failure_message(_QuotaError("insufficient_quota")) == QUOTA_EXHAUSTED_MESSAGE
+
+
+def test_quota_error_is_found_under_a_wrapping_exception() -> None:
+    try:
+        try:
+            raise _QuotaError("Arrearage")
+        except _QuotaError as inner:
+            raise RuntimeError("graph failed") from inner
+    except RuntimeError as outer:
+        assert _failure_message(outer) == QUOTA_EXHAUSTED_MESSAGE
+
+
+def test_other_failures_keep_the_generic_message() -> None:
+    assert _failure_message(_QuotaError("InvalidParameter")) != QUOTA_EXHAUSTED_MESSAGE
+    assert _failure_message(RuntimeError("boom")) != QUOTA_EXHAUSTED_MESSAGE
