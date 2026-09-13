@@ -1,9 +1,9 @@
 from datetime import UTC, date, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class TaskStatus(StrEnum):
@@ -71,6 +71,49 @@ class TaskPlan(BaseModel):
         return self
 
 
+class TurnRelation(StrEnum):
+    """本轮输入与上一轮遗留的待补充任务之间的关系。"""
+
+    NEW = "new"
+    CONTINUE = "continue"
+
+
+class OpenTask(BaseModel):
+    """交给 Context Supervisor 的待补充任务摘要。
+
+    只有标题和缺失字段的名称，没有任何字段值：Supervisor 需要知道"刚才在问什么"
+    才能认出"当天往返""1"这种短回复在补充谁，但拿到值就有了补写领域字段的材料。
+    """
+
+    task_id: str
+    title: str
+    domain: AgentName
+    missing_fields: list[str] = Field(default_factory=list)
+
+
+class DraftField(BaseModel):
+    """领域 Agent 在追问时报告的一个已知字段。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=64)
+    value: str = Field(min_length=1, max_length=500)
+    # memory 只是建议值，还没被用户确认；dependency 来自前置任务的产物。
+    source: Literal["user", "memory", "dependency"] = "user"
+
+
+class TaskDraft(BaseModel):
+    """任务停在待补充时的字段状态。
+
+    下一轮续跑时交还给领域 Agent。领域子图每轮从头构造 domain_messages，
+    没有这份草稿就只能指望 Supervisor 把上一轮交代过的字段全部复述进改写后的请求。
+    """
+
+    known_fields: list[DraftField] = Field(default_factory=list)
+    missing_fields: list[str] = Field(default_factory=list)
+
+
 class ContextResolution(BaseModel):
     """Supervisor 对完整会话的解析结果，不包含任何领域业务字段。
 
@@ -88,6 +131,9 @@ class ContextResolution(BaseModel):
     # 与本次请求相关的记忆 key。Supervisor 只做相关性筛选，不读取也不改写 value，
     # 领域字段的判断仍然只发生在领域子图里。
     relevant_memory_keys: list[str] = Field(default_factory=list, max_length=20)
+    # continue 表示本轮在补充上一轮停在待补充的任务：跳过 Planner，原任务续跑。
+    # 没有待补充任务时，运行时会忽略这里的 continue。
+    turn_relation: TurnRelation = TurnRelation.NEW
 
 
 class MemoryKind(StrEnum):
@@ -176,6 +222,8 @@ class DomainTaskRequest(BaseModel):
     # 不构成用户已确认的事实。子图不接触未筛选的全量记忆。
     memories: list[str] = Field(default_factory=list, max_length=20)
     recent_actions: list[RecentAction] = Field(default_factory=list)
+    # 任务上一轮停在待补充时留下的字段状态；首次执行为 None。
+    draft: TaskDraft | None = None
 
 
 class DomainTaskResult(BaseModel):
@@ -186,6 +234,8 @@ class DomainTaskResult(BaseModel):
     answer: str = Field(min_length=1)
     artifact: dict[str, Any] | None = None
     tool_results: list[ToolResult] = Field(default_factory=list)
+    # 只在 WAITING_INPUT 时有值，由父图按 task_id 保存，续跑时放回 DomainTaskRequest。
+    draft: TaskDraft | None = None
 
 
 class TravelApplication(BaseModel):

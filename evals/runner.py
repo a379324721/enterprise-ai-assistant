@@ -125,12 +125,22 @@ class EvalHarness:
 
     async def run_context_case(self, case: ContextCase) -> CaseResult:
         conversation = [turn.model_dump() for turn in case.conversation]
-        resolution = await self._planning.resolve_context(conversation)
+        resolution = await self._planning.resolve_context(
+            conversation, open_tasks=case.open_tasks
+        )
         problems: list[str] = []
         if resolution.requires_task_planning != case.expect_task_planning:
             problems.append(
                 f"requires_task_planning={resolution.requires_task_planning}"
                 f"，期望 {case.expect_task_planning}"
+            )
+        if (
+            case.expect_turn_relation is not None
+            and resolution.turn_relation != case.expect_turn_relation
+        ):
+            problems.append(
+                f"turn_relation={resolution.turn_relation.value}"
+                f"，期望 {case.expect_turn_relation.value}"
             )
         missing = [
             keyword

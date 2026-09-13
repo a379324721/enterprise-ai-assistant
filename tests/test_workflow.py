@@ -12,6 +12,7 @@ from enterprise_ai_assistant.core.models import (
     AgentName,
     ContextResolution,
     DomainTaskRequest,
+    OpenTask,
     PendingConfirmation,
     PlannedTask,
     TaskPlan,
@@ -28,7 +29,10 @@ from enterprise_ai_assistant.tools.registry import DomainToolRegistry, Registere
 
 class StubPlanningService:
     async def resolve_context(
-        self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
+        self,
+        conversation: list[dict[str, str]],
+        memory_keys: Sequence[str] = (),
+        open_tasks: Sequence[OpenTask] = (),
     ) -> ContextResolution:
         assert "上海" in conversation[-1]["content"]
         return ContextResolution(
@@ -71,7 +75,10 @@ class StubPlanningService:
 
 class DirectPlanningService:
     async def resolve_context(
-        self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
+        self,
+        conversation: list[dict[str, str]],
+        memory_keys: Sequence[str] = (),
+        open_tasks: Sequence[OpenTask] = (),
     ) -> ContextResolution:
         assert conversation[-1]["content"] == "你好"
         return ContextResolution(
@@ -585,7 +592,10 @@ class RecordingPlanningService:
         self.seen: list[list[dict[str, str]]] = []
 
     async def resolve_context(
-        self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
+        self,
+        conversation: list[dict[str, str]],
+        memory_keys: Sequence[str] = (),
+        open_tasks: Sequence[OpenTask] = (),
     ) -> ContextResolution:
         self.seen.append(conversation)
         return ContextResolution(
@@ -687,7 +697,10 @@ async def test_understand_appends_and_caps_digest() -> None:
 async def test_digest_entry_is_truncated() -> None:
     class LongRequestService(RecordingPlanningService):
         async def resolve_context(
-            self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
+            self,
+            conversation: list[dict[str, str]],
+            memory_keys: Sequence[str] = (),
+            open_tasks: Sequence[OpenTask] = (),
         ) -> ContextResolution:
             self.seen.append(conversation)
             return ContextResolution(

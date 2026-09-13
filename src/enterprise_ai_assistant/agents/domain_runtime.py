@@ -91,7 +91,17 @@ class DomainAgentRuntime:
                 # question 会被回答阶段直接转述给用户。实测它里面出现过"会议室不在
                 # 差旅申请范围内，无法为您处理"——那是下一个任务的事。
                 "question 会转述给用户：只列当前任务缺的字段并把问题问清楚，"
-                "不要评论其他任务的诉求，也不要说自己办不到。"
+                "不要评论其他任务的诉求，也不要说自己办不到。\n"
+                # 追问会结束这一轮，下一轮领域子图从头开始。known_fields 就是跨轮带过去的
+                # 全部上下文，漏填的字段下一轮只能靠 Supervisor 的改写碰运气。
+                "调用 request_information 时，把已经谈定或有建议值的字段全部写进 known_fields，"
+                "来源分别标 user、memory、dependency。输入里的 previous_draft 是本任务上一轮"
+                "追问时留下的草稿：沿用其中的字段，本轮 standalone_request 里的补充或更正优先。\n"
+                # 实测：会议室 Agent 查到两间空闲会议室后直接进入回答阶段，请用户选一间，
+                # 任务被记成已完成，用户回一个"1"就只能重新规划。
+                "查询工具返回了候选项，但写操作还需要用户做选择（例如从几间空闲会议室里挑一间）时，"
+                "任务目标尚未达成：调用 request_information，把候选项写进 question，"
+                "不要直接进入回答阶段。"
             )
         )
         runnable = self.model.bind_tools(

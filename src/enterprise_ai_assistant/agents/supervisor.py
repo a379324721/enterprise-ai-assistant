@@ -6,6 +6,7 @@ from langsmith import traceable
 from enterprise_ai_assistant.core.models import (
     ContextResolution,
     MemoryExtraction,
+    OpenTask,
     PlannedTask,
     TaskPlan,
     TaskStatus,
@@ -21,9 +22,12 @@ class SupervisorAgent:
 
     @traceable(name="supervisor-understand", run_type="chain")
     async def resolve_context(
-        self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
+        self,
+        conversation: list[dict[str, str]],
+        memory_keys: Sequence[str] = (),
+        open_tasks: Sequence[OpenTask] = (),
     ) -> ContextResolution:
-        return await self._planning.resolve_context(conversation, memory_keys)
+        return await self._planning.resolve_context(conversation, memory_keys, open_tasks)
 
     @traceable(name="supervisor-plan", run_type="chain")
     async def plan(self, context: ContextResolution) -> TaskPlan:

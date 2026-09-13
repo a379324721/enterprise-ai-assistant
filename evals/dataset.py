@@ -10,7 +10,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
-from enterprise_ai_assistant.core.models import AgentName
+from enterprise_ai_assistant.core.models import AgentName, OpenTask, TurnRelation
 
 DATASET_PATH = Path(__file__).with_name("cases.yaml")
 
@@ -31,6 +31,10 @@ class ContextCase(BaseModel):
     # 至少命中一个即可。用于指代消解有多种正确表达的场景，例如既可以点名
     # 实体（"杭州"），也可以引用更精确的业务单号（"TR-001"）。
     expect_any_keywords: list[str] = Field(default_factory=list)
+    # 上一轮停在待补充的任务。补充信息的短回复只有放在它们下面才能认出来。
+    open_tasks: list[OpenTask] = Field(default_factory=list)
+    # 留空表示不断言。
+    expect_turn_relation: TurnRelation | None = None
     note: str = ""
 
 

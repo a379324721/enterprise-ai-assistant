@@ -101,6 +101,78 @@ context_cases:
       任务（"核查申请状态与购票责任" + "解答票务预订制度"），各跑一遍领域子图、
       各给一条回答——实测 93 秒、两条答非所问。
 
+  - id: ctx-continue-short-answer-to-a-question
+    conversation:
+      - role: user
+        content: 申请周三去上海出差，顺便订个当天上午的会议室
+      - role: assistant
+        content: 提交这趟前往上海的差旅申请还需要一个信息：您的返程日期是哪天？
+      - role: user
+        content: 当天往返
+    open_tasks:
+      - task_id: task-1
+        title: 提交上海差旅申请
+        domain: travel
+        missing_fields: [end_date]
+    expect_task_planning: true
+    expect_turn_relation: continue
+    expect_keywords: ["上海"]
+    note: |
+      "当天往返"离开上一轮的追问没有意义，是在补充差旅任务。判成 new 会重新规划，
+      任务 id 和前置产物都会丢，实测会议室任务就是这样从任务列表里消失的。
+
+  - id: ctx-continue-choosing-a-candidate
+    conversation:
+      - role: user
+        content: 帮我订 9 月 16 号上午上海分部的会议室
+      - role: assistant
+        content: 查到两间空闲会议室：1. SH-301 讨论室（8 人）2. SH-302 会议室（20 人），请选择一间。
+      - role: user
+        content: "1"
+    open_tasks:
+      - task_id: task-1
+        title: 预订上海分部会议室
+        domain: meeting
+        missing_fields: [room_id]
+    expect_task_planning: true
+    expect_turn_relation: continue
+    note: 只有一个数字的回复，必须认出是在给待补充的会议室任务做选择
+
+  - id: ctx-new-topic-while-a-task-waits
+    conversation:
+      - role: user
+        content: 申请周三去上海出差
+      - role: assistant
+        content: 还需要补充出差结束日期和出差事由。
+      - role: user
+        content: 对了，我还剩几天年假？
+    open_tasks:
+      - task_id: task-1
+        title: 提交上海差旅申请
+        domain: travel
+        missing_fields: [end_date, purpose]
+    expect_task_planning: true
+    expect_turn_relation: new
+    expect_keywords: ["年假"]
+    note: 与待补充任务无关的新诉求，不能被当成补充信息塞给差旅任务
+
+  - id: ctx-thanks-while-a-task-waits-is-not-a-supplement
+    conversation:
+      - role: user
+        content: 申请周三去上海出差
+      - role: assistant
+        content: 还需要补充出差结束日期和出差事由。
+      - role: user
+        content: 好的，我问一下再告诉你
+    open_tasks:
+      - task_id: task-1
+        title: 提交上海差旅申请
+        domain: travel
+        missing_fields: [end_date, purpose]
+    expect_task_planning: false
+    expect_turn_relation: new
+    note: 没有提供任何信息，续跑只会让差旅 Agent 再问一遍同样的问题
+
 planning_cases:
   - id: plan-travel-only
     request: 帮我创建 2026-08-10 到 2026-08-14 去上海客户交流的差旅申请

@@ -21,6 +21,7 @@ from enterprise_ai_assistant.core.models import (
     MemoryExtraction,
     MemoryKind,
     MemoryRecord,
+    OpenTask,
     PlannedTask,
     RecentAction,
     TaskPlan,
@@ -54,7 +55,10 @@ class MemoryPlanningService:
         self._relevant = list(relevant_keys)
 
     async def resolve_context(
-        self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
+        self,
+        conversation: list[dict[str, str]],
+        memory_keys: Sequence[str] = (),
+        open_tasks: Sequence[OpenTask] = (),
     ) -> ContextResolution:
         del conversation
         self.seen_keys.append(list(memory_keys))

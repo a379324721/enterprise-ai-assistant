@@ -125,7 +125,7 @@ curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/api/v1/actions?lim
 | Meeting | 会议室制度查询、空闲会议室查询、预订会议室 |
 | Policy | 通用制度查询 |
 
-所有领域都可调用 `request_information` 暂停当前任务并向用户询问缺失字段。工具输入使用 Pydantic 严格校验，未知字段会被拒绝。
+所有领域都可调用 `request_information` 暂停当前任务并向用户询问缺失字段，同时报告已知字段作为草稿。用户下一轮补充时，Context Supervisor 判定为续跑，原任务带着草稿继续执行，不重新规划。工具输入使用 Pydantic 严格校验，未知字段会被拒绝。
 
 ## 示例流程
 

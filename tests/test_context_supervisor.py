@@ -4,7 +4,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
-from enterprise_ai_assistant.core.models import ContextResolution, TaskPlan
+from enterprise_ai_assistant.core.models import ContextResolution, OpenTask, TaskPlan
 
 
 class CapturingPlanningService:
@@ -12,7 +12,10 @@ class CapturingPlanningService:
         self.conversation: list[dict[str, str]] = []
 
     async def resolve_context(
-        self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
+        self,
+        conversation: list[dict[str, str]],
+        memory_keys: Sequence[str] = (),
+        open_tasks: Sequence[OpenTask] = (),
     ) -> ContextResolution:
         self.conversation = conversation
         return ContextResolution(

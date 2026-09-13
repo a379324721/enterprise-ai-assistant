@@ -64,6 +64,18 @@ cd frontend && npm run build  # tsc -b && vite build
 
 `domain_messages`、工具决策、确认状态都是子图私有状态，不进 `AssistantState`。后续任务只能通过 `artifacts[task_id]` 拿到前置任务的结构化产物，拿不到它的对话过程。人工确认通过 LangGraph interrupt payload（`PendingConfirmation`）暴露，API 层不依赖子图内部节点名。
 
+### 补充信息续跑原计划，不重新规划
+
+领域 Agent 缺字段时调用 `request_information`，任务停在 `WAITING_INPUT`，这一轮结束。`tasks`、`artifacts` 和 `drafts`（追问时报告的 `known_fields` / `missing_fields`，按 task_id 存）跨轮保留，只在下一次重新规划时清空。
+
+下一轮 `understand` 把待补充任务的摘要（`OpenTask`：标题和缺失字段**名**，没有字段值）交给 Context Supervisor，由它填 `ContextResolution.turn_relation`：
+
+- `continue`：跳过 Planner，待补充的任务放回 `PENDING` 续跑，草稿经 `DomainTaskRequest.draft` 交还领域 Agent。
+- `new` 且需要规划：清空旧计划，照常规划。
+- `new` 且不需要规划（闲聊、道谢）：旧计划原样保留，用户回头还能补充。
+
+不要改回"每轮清空再规划"：重新拆出来的任务 id、标题、粒度都可能变，前置任务的产物也跟着丢，实测会议室任务就是这样在差旅追问之后消失的。也不要给 `OpenTask` 加字段值——Supervisor 拿到值就有了补写领域字段的材料。Supervisor 在没有待补充任务时误报 `continue`，运行时会忽略。
+
 ### 谁能读原始 messages
 
 只有从对话中提取信息的两个节点：`understand`（提意图）和 `remember`（提记忆）。执行链路上的 `plan`、`select_task`、领域子图、`direct_respond` 一律只消费 `ContextResolution` 等结构化输出。

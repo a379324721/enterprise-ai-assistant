@@ -14,8 +14,10 @@ from langchain_core.messages import AIMessage, BaseMessage
 from enterprise_ai_assistant.core.models import (
     AgentName,
     ContextResolution,
+    OpenTask,
     PlannedTask,
     TaskPlan,
+    TurnRelation,
 )
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
@@ -31,7 +33,10 @@ class StubPlanning:
         self._plan = plan
 
     async def resolve_context(
-        self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
+        self,
+        conversation: list[dict[str, str]],
+        memory_keys: Sequence[str] = (),
+        open_tasks: Sequence[OpenTask] = (),
     ) -> ContextResolution:
         del conversation
         return self._resolution
@@ -212,6 +217,40 @@ async def test_context_case_fails_when_no_anaphora_form_matches() -> None:
 
 
 @pytest.mark.asyncio
+async def test_context_case_passes_open_tasks_and_checks_turn_relation() -> None:
+    class CapturingPlanning(StubPlanning):
+        seen: list[OpenTask] = []
+
+        async def resolve_context(
+            self,
+            conversation: list[dict[str, str]],
+            memory_keys: Sequence[str] = (),
+            open_tasks: Sequence[OpenTask] = (),
+        ) -> ContextResolution:
+            self.seen = list(open_tasks)
+            return await super().resolve_context(conversation, memory_keys, open_tasks)
+
+    open_task = OpenTask(
+        task_id="task-1", title="差旅申请", domain=AgentName.TRAVEL, missing_fields=["end_date"]
+    )
+    case = ContextCase(
+        id="c5",
+        conversation=[{"role": "user", "content": "当天往返"}],
+        expect_task_planning=True,
+        open_tasks=[open_task],
+        expect_turn_relation=TurnRelation.CONTINUE,
+    )
+    planning = CapturingPlanning(_resolution(True, "上海差旅当天往返"))
+    harness = EvalHarness(planning=planning, domains=StubRuntimeProvider(AIMessage(content="")))
+
+    result = await harness.run_context_case(case)
+
+    assert planning.seen == [open_task]
+    assert result.passed is False
+    assert "turn_relation=new" in result.detail
+
+
+@pytest.mark.asyncio
 async def test_planning_case_detects_wrong_domain_and_missing_dependency() -> None:
     plan = TaskPlan(
         user_goal="创建差旅并提醒报销",
@@ -376,8 +415,11 @@ async def test_unknown_tool_name_is_not_counted_as_write() -> None:
 async def test_run_suites_isolates_case_level_failures() -> None:
     class ExplodingPlanning(StubPlanning):
         async def resolve_context(
-        self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
-    ) -> ContextResolution:
+            self,
+            conversation: list[dict[str, str]],
+            memory_keys: Sequence[str] = (),
+            open_tasks: Sequence[OpenTask] = (),
+        ) -> ContextResolution:
             raise RuntimeError("模型服务不可用")
 
     dataset = load_dataset()

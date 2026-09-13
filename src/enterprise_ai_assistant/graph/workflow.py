@@ -9,8 +9,11 @@ from enterprise_ai_assistant.core.models import (
     ContextResolution,
     DomainTaskRequest,
     DomainTaskResult,
+    OpenTask,
     PlannedTask,
+    TaskDraft,
     TaskStatus,
+    TurnRelation,
 )
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow, build_domain_graph
 from enterprise_ai_assistant.graph.state import AssistantState
@@ -162,19 +165,36 @@ class Workflow:
             record.render() for record in state.get("memories", []) if record.key in selected
         ]
 
+    @staticmethod
+    def _open_tasks(state: AssistantState) -> list[OpenTask]:
+        drafts = state.get("drafts", {})
+        return [
+            OpenTask(
+                task_id=task.id,
+                title=task.title,
+                domain=task.domain,
+                missing_fields=(
+                    TaskDraft.model_validate(drafts[task.id]).missing_fields
+                    if task.id in drafts
+                    else []
+                ),
+            )
+            for task in state.get("tasks", [])
+            if task.status == TaskStatus.WAITING_INPUT
+        ]
+
     async def understand(self, state: AssistantState) -> dict[str, Any]:
+        open_tasks = self._open_tasks(state)
         # 只给 key 不给 value：Supervisor 做的是相关性筛选，不读取记忆内容，
         # 也就无从用它补写领域字段。
         context = await self.supervisor.resolve_context(
             self._conversation(state),
             [record.key for record in state.get("memories", [])],
+            open_tasks,
         )
-        return {
-            "user_goal": context.standalone_request,
+        update: dict[str, Any] = {
             "understanding": context.model_dump(mode="json"),
             "history_digest": self._extend_digest(state, context.standalone_request),
-            "tasks": [],
-            "artifacts": {},
             "tool_results": [],
             "active_task_id": None,
             "current_agent": None,
@@ -183,9 +203,43 @@ class Workflow:
             "last_answer": "",
             "turn_answers": [],
         }
+        if open_tasks and context.turn_relation == TurnRelation.CONTINUE:
+            # 补充信息不重新规划：重新拆出来的任务 id、标题和粒度都可能变，前置任务的
+            # 产物也会随 artifacts 一起被清掉。原计划保持不动，只把待补充的任务放回队列。
+            # 用户的补充在改写后的请求里，所以 user_goal 要换成这一轮的。
+            waiting = {item.task_id for item in open_tasks}
+            update["user_goal"] = context.standalone_request
+            update["tasks"] = [
+                task.model_copy(update={"status": TaskStatus.PENDING})
+                if task.id in waiting
+                else task
+                for task in state["tasks"]
+            ]
+            return update
+        if open_tasks and not context.requires_task_planning:
+            # 待补充期间插一句闲聊（"好的稍等""谢谢"）不能把计划清掉，否则用户回过头
+            # 补充时已经没有可续跑的任务。
+            return update
+        update.update(
+            {
+                "user_goal": context.standalone_request,
+                "tasks": [],
+                "artifacts": {},
+                "drafts": {},
+            }
+        )
+        return update
 
-    def after_understand(self, state: AssistantState) -> Literal["plan", "direct_respond"]:
+    def after_understand(
+        self, state: AssistantState
+    ) -> Literal["plan", "select_task", "direct_respond"]:
         context = ContextResolution.model_validate(state["understanding"])
+        # understand 只在认定为续跑时才会把任务放回 PENDING；Supervisor 在没有待补充
+        # 任务时误报 continue，任务列表已被清空，这里自然落回常规路径。
+        if context.turn_relation == TurnRelation.CONTINUE and any(
+            task.status == TaskStatus.PENDING for task in state["tasks"]
+        ):
+            return "select_task"
         return "plan" if context.requires_task_planning else "direct_respond"
 
     async def direct_respond(self, state: AssistantState) -> dict[str, Any]:
@@ -244,6 +298,7 @@ class Workflow:
                 dependency_results=dependency_results,
                 memories=self._relevant_memories(state),
                 recent_actions=list(state.get("recent_actions", [])),
+                draft=state.get("drafts", {}).get(task.id),
             ),
             "domain_result": None,
         }
@@ -267,10 +322,16 @@ class Workflow:
         artifacts = dict(state.get("artifacts", {}))
         if result.artifact is not None:
             artifacts[result.task_id] = result.artifact
+        drafts = dict(state.get("drafts", {}))
+        if result.draft is not None:
+            drafts[result.task_id] = result.draft
+        else:
+            drafts.pop(result.task_id, None)
         answers = [*state.get("turn_answers", []), result.answer]
         return {
             "tasks": tasks,
             "artifacts": artifacts,
+            "drafts": drafts,
             "tool_results": [*state.get("tool_results", []), *result.tool_results],
             "last_answer": "\n\n".join(answers),
             "turn_answers": answers,
@@ -326,7 +387,7 @@ def build_graph(
     graph.add_conditional_edges(
         "understand",
         workflow.after_understand,
-        {"plan": "plan", "direct_respond": "direct_respond"},
+        {"plan": "plan", "select_task": "select_task", "direct_respond": "direct_respond"},
     )
     graph.add_edge("direct_respond", "remember")
     graph.add_edge("plan", "select_task")

@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from enterprise_ai_assistant.core.models import DraftField
+
 
 class ToolRisk(StrEnum):
     """风险由服务端工具注册表声明，不能由模型自行决定。"""
@@ -46,6 +48,8 @@ class PolicyQueryInput(StrictToolInput):
 class InformationRequestInput(StrictToolInput):
     missing_fields: list[str] = Field(min_length=1)
     question: str = Field(min_length=1, max_length=1000)
+    # 已经谈定或有建议值的字段。任务停在待补充时存为草稿，下一轮续跑时交还给领域 Agent。
+    known_fields: list[DraftField] = Field(default_factory=list, max_length=20)
 
 
 class TravelApplicationInput(StrictToolInput):

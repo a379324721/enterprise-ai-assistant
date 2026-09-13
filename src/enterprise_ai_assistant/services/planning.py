@@ -11,6 +11,7 @@ from langsmith import traceable
 from enterprise_ai_assistant.core.models import (
     ContextResolution,
     MemoryExtraction,
+    OpenTask,
     TaskPlan,
 )
 from enterprise_ai_assistant.tools.registry import CAPABILITY_SUMMARY
@@ -25,7 +26,10 @@ def _bullets(items: Sequence[str]) -> str:
 
 class PlanningService(Protocol):
     async def resolve_context(
-        self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
+        self,
+        conversation: list[dict[str, str]],
+        memory_keys: Sequence[str] = (),
+        open_tasks: Sequence[OpenTask] = (),
     ) -> ContextResolution: ...
 
     async def plan(self, context: ContextResolution) -> TaskPlan: ...
@@ -81,11 +85,23 @@ class LLMPlanningService:
 输入会给出该用户长期档案的 key 清单（只有 key，没有值）。从中挑出与本次请求相关的，
 写入 relevant_memory_keys。这是相关性筛选：不得臆测这些 key 对应的值，
 不得把它们映射成差旅、报销、请假等领域字段，字段判断只发生在后续的领域环节。
-清单为空或没有相关项时返回空列表。""",
+清单为空或没有相关项时返回空列表。
+
+输入还会给出上一轮停在“待补充”的任务（标题和缺失字段名，没有字段值），据此填写 turn_relation：
+- continue：用户本轮在回答这些任务的追问，或补充、更正它们的信息。追问之后的短回复
+  几乎都属于这一类——“当天往返”“培训”“1”“就第一间”“上海”这类话单独看没有意义，
+  放在上一轮的问题下面才有意义。此时 requires_task_planning 设为 true，
+  standalone_request 写成包含该任务原始目标和本轮补充的完整请求。
+- new：用户提出了与待补充任务无关的新诉求，或者只是闲聊、道谢。
+  “好的”“稍等”“我问一下再告诉你”这类回应没有提供任何字段、也没有做出选择，
+  同样是 new，requires_task_planning 设为 false——续跑只会让领域 Agent 把同一个问题再问一遍。
+  拿不准时，看本轮这句话离开上一轮的追问是否还能独立成立：能就是 new。
+没有待补充任务时一律填 new。""",
                 ),
                 (
                     "human",
                     "当前日期：{today}\n该用户的长期档案 key 清单：{memory_keys}\n"
+                    "上一轮停在待补充的任务（JSON）：{open_tasks}\n"
                     "完整会话（JSON）：\n{conversation}",
                 ),
             ]
@@ -201,12 +217,18 @@ value 用简短中文陈述，不超过 200 字。
 
     @traceable(name="context-supervisor", run_type="chain")
     async def resolve_context(
-        self, conversation: list[dict[str, str]], memory_keys: Sequence[str] = ()
+        self,
+        conversation: list[dict[str, str]],
+        memory_keys: Sequence[str] = (),
+        open_tasks: Sequence[OpenTask] = (),
     ) -> ContextResolution:
         result = await self._context_resolver.ainvoke(
             {
                 "today": date.today().isoformat(),
                 "memory_keys": ", ".join(memory_keys) or "（暂无）",
+                "open_tasks": json.dumps(
+                    [item.model_dump(mode="json") for item in open_tasks], ensure_ascii=False
+                ),
                 "conversation": json.dumps(conversation, ensure_ascii=False),
             }
         )

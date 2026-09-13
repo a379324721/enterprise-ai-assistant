@@ -19,6 +19,7 @@ from enterprise_ai_assistant.core.models import (
     DomainTaskRequest,
     DomainTaskResult,
     PendingConfirmation,
+    TaskDraft,
     TaskStatus,
     ToolResult,
 )
@@ -89,6 +90,10 @@ class DomainTaskWorkflow:
             domain_input["recent_actions"] = [
                 item.render() for item in request.recent_actions
             ]
+        # 续跑时带回上一轮追问留下的草稿。和记忆一样单独成键：用户本轮的补充和更正
+        # 在 standalone_request 里，两者冲突时以本轮为准。
+        if request.draft is not None:
+            domain_input["previous_draft"] = request.draft.model_dump(mode="json")
         return {
             "domain_result": None,
             "domain_messages": [
@@ -104,6 +109,7 @@ class DomainTaskWorkflow:
             "pending_tool_call": None,
             "confirmation_approved": False,
             "artifact": None,
+            "domain_draft": None,
             "domain_tool_results": [],
         }
 
@@ -309,6 +315,10 @@ class DomainTaskWorkflow:
         artifact = dict(state.get("artifact") or {})
         if outcome.success:
             artifact[name] = outcome.model_dump(mode="json")
+        terminal = registered.terminal and outcome.success
+        draft = state.get("domain_draft")
+        if terminal:
+            draft = TaskDraft.model_validate(outcome.data)
         return {
             "domain_messages": [*state.get("domain_messages", []), message],
             "domain_tool_results": [*state.get("domain_tool_results", []), audit],
@@ -316,7 +326,8 @@ class DomainTaskWorkflow:
             "pending_confirmation": None,
             "pending_tool_call": None,
             "confirmation_approved": False,
-            "domain_waiting_input": registered.terminal and outcome.success,
+            "domain_waiting_input": terminal,
+            "domain_draft": draft,
             "domain_failed": not outcome.success,
             "domain_retry_required": False,
             "domain_tool_executed": True,
@@ -355,6 +366,7 @@ class DomainTaskWorkflow:
                 answer=answer,
                 artifact=state.get("artifact"),
                 tool_results=list(state.get("domain_tool_results", [])),
+                draft=state.get("domain_draft") if status == TaskStatus.WAITING_INPUT else None,
             ),
         }
 

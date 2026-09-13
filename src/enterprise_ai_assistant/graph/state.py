@@ -10,6 +10,7 @@ from enterprise_ai_assistant.core.models import (
     PendingConfirmation,
     PlannedTask,
     RecentAction,
+    TaskDraft,
     ToolResult,
 )
 
@@ -39,6 +40,9 @@ class AssistantState(TypedDict):
     # recall 节点在每轮开头写入，供领域子图预填字段；不参与检查点以外的持久化。
     memories: NotRequired[list[MemoryRecord]]
     recent_actions: NotRequired[list[RecentAction]]
+    # 停在待补充的任务留下的字段草稿，按 task_id 索引。和 tasks、artifacts 一样
+    # 跨轮保留到下一次重新规划，续跑时放回 DomainTaskRequest。
+    drafts: NotRequired[dict[str, TaskDraft]]
 
 
 class DomainTaskState(TypedDict):
@@ -57,4 +61,5 @@ class DomainTaskState(TypedDict):
     domain_retry_required: bool
     domain_tool_executed: bool
     artifact: NotRequired[dict[str, Any] | None]
+    domain_draft: NotRequired[TaskDraft | None]
     domain_tool_results: list[ToolResult]
