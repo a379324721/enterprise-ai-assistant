@@ -443,9 +443,7 @@ async def _execute_run(
             "graph_stream_failed", run_id=run.run_id, conversation_id=str(conversation_id)
         )
         run.error_message = _failure_message(error)
-        # code 让前端不必比对文案就能区分：额度耗尽要常驻提示，普通失败重试即可。
-        code = "quota_exhausted" if run.error_message == QUOTA_EXHAUSTED_MESSAGE else "run_failed"
-        await publish("error", {"message": run.error_message, "code": code})
+        await publish("error", {"message": run.error_message})
         return RunStatus.failed
     finally:
         await _record_usage(app, conversation_id, user_id, tracker, settings)

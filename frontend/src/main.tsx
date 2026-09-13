@@ -213,8 +213,6 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [actions, setActions] = useState<ActionItem[]>([]);
-  // 模型额度耗尽。和一次偶发失败不同，重试解决不了，所以常驻提示，直到有一轮成功。
-  const [quotaExhausted, setQuotaExhausted] = useState(false);
   // 回答正在逐字出现时不必再挂一行"正在生成回答"——气泡末尾的光标已经说明了。
   const [streamingAnswer, setStreamingAnswer] = useState(false);
   const activeAnswerId = useRef<string | null>(null);
@@ -455,15 +453,12 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
       setStreamingAnswer(true);
       setMessages((old) => old.map((message, index) => index === old.length - 1 ? {...message, text: message.text + chunk} : message));
     } else if (event === "done") {
-      setQuotaExhausted(false);
       const completed = data as Result;
       // 延迟模式下这一轮什么都还没画出来，交给 confirm 连同单据一次性提交。
       if (deferStream.current) { deferredResult.current = completed; return; }
       applyCompletion(completed, null);
     } else if (event === "error") {
-      const failure = data as {message: string; code?: string};
-      if (failure.code === "quota_exhausted") setQuotaExhausted(true);
-      throw new Error(failure.message);
+      throw new Error((data as {message: string}).message);
     }
   }
 
@@ -541,7 +536,6 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
       <div className="chatPanel">
         <div className="intro"><span>AI</span><div><strong>我是企业智能助手</strong><p>我可以协助差旅、报销、请假和制度查询。涉及提交的操作会先请你确认。</p></div></div>
         {messages.length === 0 && !loadingHistory && <div className="examples">{examples.map((item) => <button key={item} disabled={busy} onClick={() => void send(item)}>{item}<b>↗</b></button>)}</div>}
-        {quotaExhausted && <div className="loadBanner quota"><span>模型额度（token）已用完，暂时无法回答，请联系作者。</span></div>}
         {loadError && <div className="loadBanner"><span>{loadError}</span><button disabled={loadingHistory} onClick={() => void enterConversation()}>重试</button></div>}
         <div
           className="messages"
