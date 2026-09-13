@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from enterprise_ai_assistant.core.models import DraftField
 
@@ -161,6 +161,15 @@ class SubmissionQueryInput(StrictToolInput):
         description="单号，例如 MTG-20260913-BD48AD；用户没有指明具体哪张时留空，返回最近几张",
     )
     limit: int = Field(default=5, ge=1, le=20)
+
+    @field_validator("reference_id", mode="before")
+    @classmethod
+    def blank_means_unspecified(cls, value: Any) -> Any:
+        # 实测模型"留空"时传的是空字符串而不是省略字段。当成单号去查必然查不到，
+        # Agent 就会对有单据的用户说"你没有已提交的单据"。
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value.strip() if isinstance(value, str) else value
 
 
 class SubmissionRevokeInput(StrictToolInput):

@@ -343,6 +343,21 @@ async def test_submission_query_returns_every_field_but_not_the_idempotency_key(
 
 
 @pytest.mark.asyncio
+async def test_blank_reference_id_lists_recent_documents_instead_of_matching_nothing() -> None:
+    """实测模型用空字符串表示不指定单号；当成单号去查，有单据的用户会被告知一张都没有。"""
+    provider = LocalEnterpriseToolProvider(InMemoryActionRepository(), InMemoryPolicyRepository())
+    submitted = await provider.submit_leave_request(context(), _leave())
+
+    outcome = await provider.query_submissions(
+        context(), "leave_request", SubmissionQueryInput(reference_id="  ")
+    )
+
+    assert [item["reference_id"] for item in outcome.data["items"]] == [submitted.reference_id]
+    # 没指定单号就不该出现 found=false 这种"单号没命中"的信号。
+    assert "found" not in outcome.data
+
+
+@pytest.mark.asyncio
 async def test_submission_query_does_not_reveal_other_users_documents() -> None:
     """单号是用户随口能报出来的，不能靠它鉴权。"""
     provider = LocalEnterpriseToolProvider(InMemoryActionRepository(), InMemoryPolicyRepository())
