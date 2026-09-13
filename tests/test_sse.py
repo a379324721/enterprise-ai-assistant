@@ -411,6 +411,82 @@ async def test_relay_publishes_answers_that_bypassed_the_model() -> None:
     assert published[1][1]["content"] == "预计哪天返回？"
 
 
+def _branch(task_id: str) -> dict[str, Any]:
+    return {
+        "tags": ["user-visible"],
+        "agent": task_id,
+        "task_id": task_id,
+        "langgraph_checkpoint_ns": f"domain_task:{task_id}|decide:1",
+    }
+
+
+def _shown(published: list[tuple[str, dict[str, Any]]]) -> list[tuple[str, str]]:
+    """前端看到的样子：按事件顺序，每个 token 归到哪个任务。"""
+    return [(data["task_id"], data["content"]) for event, data in published if event == "token"]
+
+
+@pytest.mark.asyncio
+async def test_parallel_answers_are_shown_one_after_another() -> None:
+    relay, published = _recording_relay()
+    travel, expense = _branch("travel"), _branch("expense")
+
+    # 两个分支同时写回答，增量交错到达。
+    await relay.chunk(AIMessageChunk(content="差旅申请已经提交成功，", id="t"), travel)
+    await relay.chunk(AIMessageChunk(content="报销制度规定餐费需要发票，", id="e"), expense)
+    await relay.chunk(AIMessageChunk(content="单号 TRV-1。", id="t"), travel)
+    await relay.chunk(AIMessageChunk(content="金额以票面为准。", id="e"), expense)
+    # 标志调用结束的最后一块 id 和前面不同，靠命名空间对上。
+    await relay.chunk(AIMessageChunk(content="", id="run-t", chunk_position="last"), travel)
+    await relay.chunk(AIMessageChunk(content="", id="run-e", chunk_position="last"), expense)
+
+    # 差旅先开口，整段先出；报销那段在差旅结束前一个字都不出。
+    assert _shown(published) == [
+        ("travel", "差旅申请已经提交成功，单号 TRV-1。"),
+        ("expense", "报销制度规定餐费需要发票，金额以票面为准。"),
+    ]
+    assert [data["task_id"] for event, data in published if event == "answer_start"] == [
+        "travel",
+        "expense",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_short_answer_is_released_when_its_call_ends_not_at_the_end_of_the_run() -> None:
+    relay, published = _recording_relay()
+
+    await relay.chunk(AIMessageChunk(content="好的。", id="t"), _branch("hr"))
+    assert published == []
+    await relay.chunk(AIMessageChunk(content="", id="run", chunk_position="last"), _branch("hr"))
+
+    assert _shown(published) == [("hr", "好的。")]
+
+
+@pytest.mark.asyncio
+async def test_a_queued_branch_that_turns_into_a_tool_call_does_not_block_the_next() -> None:
+    relay, published = _recording_relay()
+    travel, meeting, hr = _branch("travel"), _branch("meeting"), _branch("hr")
+
+    await relay.chunk(AIMessageChunk(content="会议室查到了两间空闲的，", id="m"), meeting)
+    await relay.chunk(AIMessageChunk(content="我先", id="t"), travel)
+    await relay.chunk(AIMessageChunk(content="年假余额还有五天，请假前请确认。", id="h"), hr)
+    await relay.chunk(AIMessageChunk(content="", id="m2", chunk_position="last"), meeting)
+    # 排在第二的差旅分支原来是在调工具，它攒着的"我先"不能放出去，也不能挡住后面的。
+    await relay.chunk(
+        AIMessageChunk(
+            content="",
+            id="t",
+            tool_call_chunks=[{"name": "search_travel_policy", "args": "{}", "id": "c", "index": 0}],
+        ),
+        travel,
+    )
+    await relay.chunk(AIMessageChunk(content="", id="h2", chunk_position="last"), hr)
+
+    assert _shown(published) == [
+        ("meeting", "会议室查到了两间空闲的，"),
+        ("hr", "年假余额还有五天，请假前请确认。"),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_reconnect_replays_only_the_missing_events() -> None:
     manager = _manager()

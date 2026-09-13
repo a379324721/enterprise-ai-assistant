@@ -16,6 +16,20 @@ from enterprise_ai_assistant.core.models import (
 )
 
 
+def _collect_results(
+    left: list[DomainTaskResult] | None, right: list[DomainTaskResult] | None
+) -> list[DomainTaskResult]:
+    if right is None:
+        return []
+    return [*(left or []), *right]
+
+
+class DomainTaskInput(TypedDict):
+    """并行派发给单个领域任务分支的输入。"""
+
+    domain_request: DomainTaskRequest
+
+
 class AssistantState(TypedDict):
     """外层调度状态；领域模型只接收为当前任务构造的 domain_messages。"""
 
@@ -36,8 +50,10 @@ class AssistantState(TypedDict):
     understanding: NotRequired[dict[str, Any]]
     history_digest: NotRequired[list[str]]
     turn_answers: NotRequired[list[str]]
-    domain_request: NotRequired[DomainTaskRequest | None]
-    domain_result: NotRequired[DomainTaskResult | None]
+    # 本批并行派发的任务请求，由 select_task 写入。
+    domain_batch: NotRequired[list[DomainTaskRequest]]
+    # 本批各分支的结果。并行分支同时写入，需要归并规则；写 None 表示清空。
+    domain_results: Annotated[list[DomainTaskResult], _collect_results]
     # recall 节点在每轮开头写入，供领域子图预填字段；不参与检查点以外的持久化。
     memories: NotRequired[list[MemoryRecord]]
     recent_actions: NotRequired[list[RecentAction]]

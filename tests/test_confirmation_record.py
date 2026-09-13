@@ -81,14 +81,16 @@ _PENDING = PendingConfirmation(
 
 def test_resume_command_carries_the_decision(monkeypatch: pytest.MonkeyPatch) -> None:
     del monkeypatch
+    interrupt = SimpleNamespace(id="interrupt-1")
     approved = routes._resume_command(
-        ConfirmationRequest(confirmation_id=CONVERSATION_ID, approved=True), _PENDING
+        ConfirmationRequest(confirmation_id=CONVERSATION_ID, approved=True), interrupt, _PENDING
     )
     rejected = routes._resume_command(
-        ConfirmationRequest(confirmation_id=CONVERSATION_ID, approved=False), _PENDING
+        ConfirmationRequest(confirmation_id=CONVERSATION_ID, approved=False), interrupt, _PENDING
     )
 
-    assert approved.resume["approved"] is True  # type: ignore[index]
+    # 按中断 id 指明恢复哪一个：并行任务同时停在确认卡上时，给单个值 LangGraph 会报错。
+    assert approved.resume["interrupt-1"]["approved"] is True  # type: ignore[index]
     # 记录里写明是哪个操作：同一轮可能先后确认好几次，只写"确认了"回头看分不清。
     assert approved.update["messages"][0].content == "你确认了：提交差旅申请"  # type: ignore[index]
     assert rejected.update["messages"][0].content == "你取消了：提交差旅申请"  # type: ignore[index]

@@ -140,6 +140,15 @@ Supervisor 把它当成用户的新输入。
 
 图执行跑在 `RunManager` 的后台任务里（`core/runs.py`），SSE 只是订阅者。客户端断开默认不中断执行（`RUN_ON_DISCONNECT=continue`），重连带 `Last-Event-ID` 只补发缺失增量，游标滚出缓冲窗口会收到 `gap` 事件。`StreamBridge` 是可替换抽象，单进程用 `MemoryStreamBridge`，多副本部署需要跨进程实现或粘性路由。
 
+### 没有依赖的任务并行执行
+
+`select_task` 一次挑出所有依赖已完成的任务（`SupervisorAgent.runnable_tasks`），`route_task` 用 `Send` 并行派发，`apply_domain_result` 等本批全部结束后按**计划顺序**归并（回答写进会话的顺序、失败连带取消都和计划一致，不取决于谁先跑完）。有依赖的任务等下一批。
+
+- 领域子图包在 `run_domain_task` 函数里调用，不直接挂成节点：并行分支会同时写父图的 `domain_result`，改写进带归并规则的 `domain_results`（写 `None` 清空）。子图的检查点和 interrupt 照常继承。
+- 两个分支可能同时停在确认卡上。恢复必须按中断 id 指明（`_resume_command`），给单个值 LangGraph 直接报错；只恢复一个时另一个分支不会重跑它前面的决策（`tests/test_parallel.py` 断言了调用次数）。已恢复跑完的分支在本批结束前仍挂着原中断记录，`_pending_interrupt` 按 `snapshot.tasks` 过滤掉有结果的，界面一次出一张卡。本批里先确认的任务，回答要等整批结束才归并进会话。
+- 执行并行、展示串行：`_AnswerRelay` 同一时刻只转发一段回答，先开口的先流，其余攒着依次放出——前端把增量追加到最后一个气泡，交错转发会把两段话搅在一起。回答按节点执行的 `langgraph_checkpoint_ns` 区分，靠 `chunk_position="last"` 判断一次调用结束；不要改回按节点事件放行，并行时别的分支的节点事件会把另一个分支的工具调用前缀提前放出去。
+- 同一批并行的任务彼此看不到对方的回答（`recent_messages` 在派发时就定了），更容易出现"另一件事不归我管"这类越界说法，见 `docs/known-issues.md`。
+
 ### 长期记忆
 
 默认关闭（`MEMORY_ENABLED=false`）。分两层，来源不同：

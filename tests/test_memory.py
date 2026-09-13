@@ -242,7 +242,7 @@ async def test_only_relevant_memories_reach_the_domain_subgraph() -> None:
                 **recalled,
             )
         )
-    )["domain_request"]
+    )["domain_batch"][0]
 
     # job_level 没被理解阶段选中，不该进入子图。
     assert request.memories == ["preferred_transport=高铁"]
@@ -515,7 +515,7 @@ async def test_display_name_reaches_the_domain_subgraph() -> None:
         )
     )
 
-    assert update["domain_request"].user_name == "王宁"
+    assert update["domain_batch"][0].user_name == "王宁"
 
 
 @pytest.mark.asyncio
@@ -604,7 +604,7 @@ async def test_domain_agents_read_only_the_most_recent_turns_verbatim() -> None:
     update = await workflow.select_task(state)  # type: ignore[arg-type]
 
     assert [
-        (turn.role, turn.content) for turn in update["domain_request"].recent_messages
+        (turn.role, turn.content) for turn in update["domain_batch"][0].recent_messages
     ] == [
         # 窗口里排在最前的是摘要条目，窗口放得下也不给。
         ("user", "下周去上海出差，顺便订个会议室"),
@@ -625,4 +625,4 @@ async def test_domain_window_of_zero_gives_no_conversation() -> None:
 
     update = await workflow.select_task(state)  # type: ignore[arg-type]
 
-    assert update["domain_request"].recent_messages == []
+    assert update["domain_batch"][0].recent_messages == []

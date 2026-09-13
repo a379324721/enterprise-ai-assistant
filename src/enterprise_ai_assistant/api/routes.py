@@ -1,6 +1,7 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -180,14 +181,34 @@ async def _validate_chat_turn(
         raise HTTPException(status_code=409, detail="当前会话仍有待确认操作")
 
 
-def _pending_confirmation(snapshot: Any) -> PendingConfirmation | None:
-    """从公开的 interrupt 契约读取确认信息，不依赖子图内部节点名。"""
-    for item in getattr(snapshot, "interrupts", ()):
+def _pending_interrupt(snapshot: Any) -> tuple[Any, PendingConfirmation] | None:
+    """从公开的 interrupt 契约读取确认信息，不依赖子图内部节点名。
+
+    没有依赖的任务并行执行，可能同时停在两张确认卡上。只确认其中一张时，已恢复并跑完的
+    分支在同一超步结束前仍挂着原来的中断记录，所以先按任务过滤掉已有结果的，再取第一张：
+    界面一次只出一张卡，确认完再出下一张。
+    """
+    tasks = getattr(snapshot, "tasks", None)
+    if tasks:
+        items = [
+            item
+            for task in tasks
+            if getattr(task, "result", None) is None
+            for item in getattr(task, "interrupts", ())
+        ]
+    else:
+        items = list(getattr(snapshot, "interrupts", ()))
+    for item in items:
         try:
-            return PendingConfirmation.model_validate(item.value)
+            return item, PendingConfirmation.model_validate(item.value)
         except (AttributeError, ValueError):
             continue
     return None
+
+
+def _pending_confirmation(snapshot: Any) -> PendingConfirmation | None:
+    found = _pending_interrupt(snapshot)
+    return found[1] if found else None
 
 
 def _encode_sse(event: str, data: Any, event_id: int | None = None) -> str:
@@ -360,74 +381,117 @@ def _failure_message(error: BaseException) -> str:
     return _RUN_FAILED_MESSAGE
 
 
+@dataclass
+class _Answer:
+    metadata: dict[str, Any]
+    text: str = ""
+    finished: bool = False
+    # 已经推给前端的字数；此后的增量直接转发。
+    sent: int = 0
+
+
 class _AnswerRelay:
     """把领域 Agent 的回答转成 answer_start / token 事件。
 
-    回答来自决策调用：模型开口前不知道它这次是调工具还是作答，前一种的输出绝不能流给
-    用户。工具调用的增量一出现就把整条消息压掉；文字开头先攒着，攒够
-    `HOLD_CHARS` 或模型调用结束才放行——前端不会用 done 覆盖已经画出去的文字，
-    先流出去再发现是工具调用就收不回来了。
+    两件事要在这里处理：
+
+    - 回答来自决策调用：模型开口前不知道它这次是调工具还是作答，前一种的输出绝不能流给
+      用户。工具调用的增量一出现就把整条消息压掉；文字开头先攒着，攒够 `HOLD_CHARS`
+      或这次模型调用结束才放行——前端不会用 done 覆盖已经画出去的文字。
+    - 没有依赖的任务并行执行，几个领域 Agent 会同时写回答。前端把增量追加到最后一个
+      气泡，交错转发会把两段话搅在一起。所以同一时刻只转发一段：先开口的先流，其余的
+      攒着，前一段结束再依次放出。执行仍是并行的，只有展示排队。
+
+    每段回答按所在节点执行的 checkpoint 命名空间区分，而不是模型给的消息 id：
+    标志一次调用结束的 `chunk_position="last"` 那块用的是另一个 id，对不上。
     """
 
     HOLD_CHARS = 20
 
     def __init__(self, publish: Publisher) -> None:
         self._publish = publish
-        self._started: set[str] = set()
+        self._answers: dict[str, _Answer] = {}
+        # 开口的先后顺序，也是展示顺序。
+        self._queue: list[str] = []
         self._suppressed: set[str] = set()
-        self._held: dict[str, tuple[dict[str, Any], str]] = {}
+        self._active: str | None = None
 
     async def chunk(self, chunk: Any, metadata: dict[str, Any]) -> None:
-        message_id = str(chunk.id or metadata.get("task_id") or "answer")
-        if message_id in self._suppressed:
+        key = str(
+            metadata.get("langgraph_checkpoint_ns") or chunk.id or metadata.get("task_id")
+        )
+        if key in self._suppressed:
             return
         if getattr(chunk, "tool_call_chunks", None):
-            self._suppressed.add(message_id)
-            self._held.pop(message_id, None)
+            self._suppressed.add(key)
+            self._drop(key)
+            await self._advance()
             return
+        answer = self._answers.get(key)
         content = _message_text_delta(chunk.content)
-        if not content:
-            return
-        if message_id in self._started:
-            await self._token(message_id, metadata, content)
-            return
-        held = self._held[message_id][1] + content if message_id in self._held else content
-        self._held[message_id] = (metadata, held)
-        if len(held) >= self.HOLD_CHARS:
-            await self._release(message_id)
+        if answer is None:
+            if not content:
+                return
+            answer = self._answers[key] = _Answer(metadata)
+            self._queue.append(key)
+        answer.text += content
+        if getattr(chunk, "chunk_position", None) == "last":
+            answer.finished = True
+        await self._advance()
 
     async def whole(self, text: str, metadata: dict[str, Any]) -> None:
-        message_id = f"answer:{metadata.get('task_id') or 'task'}"
-        self._held[message_id] = (metadata, text)
-        await self._release(message_id)
+        key = f"answer:{metadata.get('task_id') or 'task'}"
+        self._answers[key] = _Answer(metadata, text=text, finished=True)
+        self._queue.append(key)
+        await self._advance()
 
     async def flush(self) -> None:
-        for message_id in list(self._held):
-            await self._release(message_id)
+        """执行结束时放出所有还攒着的回答。"""
+        for answer in self._answers.values():
+            answer.finished = True
+        await self._advance()
 
-    async def _release(self, message_id: str) -> None:
-        metadata, text = self._held.pop(message_id)
-        self._started.add(message_id)
-        await self._publish(
-            "answer_start",
-            {
-                "message_id": message_id,
-                "agent": metadata.get("agent"),
-                "task_id": metadata.get("task_id"),
-            },
-        )
-        await self._token(message_id, metadata, text)
+    def _drop(self, key: str) -> None:
+        self._answers.pop(key, None)
+        if key in self._queue:
+            self._queue.remove(key)
+        if self._active == key:
+            self._active = None
 
-    async def _token(self, message_id: str, metadata: dict[str, Any], content: str) -> None:
-        await self._publish(
-            "token",
-            {
-                "message_id": message_id,
-                "agent": metadata.get("agent"),
-                "task_id": metadata.get("task_id"),
-                "content": content,
-            },
-        )
+    async def _advance(self) -> None:
+        while self._queue:
+            key = self._queue[0]
+            answer = self._answers[key]
+            if self._active != key:
+                if not answer.finished and len(answer.text) < self.HOLD_CHARS:
+                    return
+                self._active = key
+                await self._send(
+                    "answer_start",
+                    {
+                        "message_id": key,
+                        "agent": answer.metadata.get("agent"),
+                        "task_id": answer.metadata.get("task_id"),
+                    },
+                )
+            if len(answer.text) > answer.sent:
+                await self._send(
+                    "token",
+                    {
+                        "message_id": key,
+                        "agent": answer.metadata.get("agent"),
+                        "task_id": answer.metadata.get("task_id"),
+                        "content": answer.text[answer.sent :],
+                    },
+                )
+                answer.sent = len(answer.text)
+            if not answer.finished:
+                return
+            self._queue.pop(0)
+            self._active = None
+
+    async def _send(self, event: str, data: dict[str, Any]) -> None:
+        await self._publish(event, data)
 
 
 async def _execute_run(
@@ -473,8 +537,6 @@ async def _execute_run(
                 if isinstance(data, dict) and isinstance(data.get("answer"), str):
                     await relay.whole(data["answer"], data)
             elif part["type"] == "tasks":
-                # 节点边界意味着上一次模型调用已经结束，还压着的短回答可以放行了。
-                await relay.flush()
                 task = part["data"]
                 # 同一个任务开始和结束各发一次，结束那次带 result/error。只认开始。
                 if "result" in task or "error" in task:
@@ -665,31 +727,37 @@ def _decision_message(approved: bool, title: str) -> SystemMessage:
     return SystemMessage(content=content, additional_kwargs={"kind": "decision"})
 
 
-def _resume_command(payload: ConfirmationRequest, pending: PendingConfirmation) -> Command[Any]:
+def _resume_command(
+    payload: ConfirmationRequest, interrupt: Any, pending: PendingConfirmation
+) -> Command[Any]:
+    decision = {
+        "confirmation_id": str(payload.confirmation_id),
+        "approved": payload.approved,
+        "comment": payload.comment,
+    }
+    # 并行分支同时中断时，LangGraph 要求按中断 id 指明恢复哪一个，给单个值会直接报错。
+    interrupt_id = getattr(interrupt, "id", None)
     # update 和 resume 一起发：卡片一关，对话里必须留下这个决定，否则回头看只剩
     # 一句没头没尾的回答。追加发生在子图恢复之前，所以它排在本轮回答的前面。
     return Command(
-        resume={
-            "confirmation_id": str(payload.confirmation_id),
-            "approved": payload.approved,
-            "comment": payload.comment,
-        },
+        resume={interrupt_id: decision} if interrupt_id else decision,
         update={"messages": [_decision_message(payload.approved, pending.title)]},
     )
 
 
 async def _validate_confirmation(
     app: Any, conversation_id: UUID, user_id: str, payload: ConfirmationRequest
-) -> PendingConfirmation:
+) -> Command[Any]:
     snapshot = await app.state.graph.aget_state(_config(conversation_id, user_id))
     if not snapshot.values or snapshot.values.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="会话不存在")
-    pending = _pending_confirmation(snapshot)
-    if pending is None:
+    found = _pending_interrupt(snapshot)
+    if found is None:
         raise HTTPException(status_code=409, detail="当前会话没有待确认操作")
+    interrupt, pending = found
     if pending.confirmation_id != payload.confirmation_id:
         raise HTTPException(status_code=409, detail="确认请求已过期，请刷新后重试")
-    return pending
+    return _resume_command(payload, interrupt, pending)
 
 
 @router.post("/conversations/{conversation_id}/confirm", response_model=AssistantResponse)
@@ -699,10 +767,8 @@ async def confirm(
     request: Request,
     user_id: CurrentUser,
 ) -> AssistantResponse:
-    pending = await _validate_confirmation(request.app, conversation_id, user_id, payload)
-    run = await _start_run(
-        request.app, _resume_command(payload, pending), conversation_id, user_id
-    )
+    command = await _validate_confirmation(request.app, conversation_id, user_id, payload)
+    run = await _start_run(request.app, command, conversation_id, user_id)
     if run.task is not None:
         await asyncio.wait([run.task])
     return await _response(request.app, conversation_id, user_id)
@@ -717,10 +783,10 @@ async def confirm_stream(
 ) -> StreamingResponse:
     """恢复持久化的人工确认中断，并流式发送剩余任务。"""
     settings = get_settings()
-    pending = await _validate_confirmation(request.app, conversation_id, user_id, payload)
+    command = await _validate_confirmation(request.app, conversation_id, user_id, payload)
     run = await _start_run(
         request.app,
-        _resume_command(payload, pending),
+        command,
         conversation_id,
         user_id,
         on_disconnect=_disconnect_mode(payload.on_disconnect, settings),

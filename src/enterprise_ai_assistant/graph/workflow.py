@@ -1,10 +1,12 @@
 import asyncio
+from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 from uuid import uuid4
 
 import structlog
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Send
 
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.core.models import (
@@ -20,7 +22,7 @@ from enterprise_ai_assistant.core.models import (
     TurnRelation,
 )
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow, build_domain_graph
-from enterprise_ai_assistant.graph.state import AssistantState
+from enterprise_ai_assistant.graph.state import AssistantState, DomainTaskInput
 from enterprise_ai_assistant.repositories.memories import MemoryRepository
 
 #: 超出消息窗口的历史以摘要形式回灌，需要显式标注来源，避免被当成用户当前发言。
@@ -34,6 +36,28 @@ NOTHING_TO_CANCEL_REPLY = "现在没有尚未办完的事项可以放弃。已�
 HANDOFF_EXHAUSTED_REPLY = "这件事我没能判断该交给哪项业务办理，能换个说法，或者说明是差旅、报销、请假还是会议室方面的事吗？"
 
 logger = structlog.get_logger()
+
+
+@dataclass
+class _Merge:
+    """归并一批任务结果时的工作副本。"""
+
+    tasks: list[PlannedTask]
+    artifacts: dict[str, Any]
+    drafts: dict[str, TaskDraft]
+    tool_results: list[Any]
+    answers: list[str]
+    new_answers: list[str] = field(default_factory=list)
+
+    def set_status(self, task_id: str, status: TaskStatus) -> None:
+        self.tasks = [
+            item.model_copy(update={"status": status}) if item.id == task_id else item
+            for item in self.tasks
+        ]
+
+    def say(self, answer: str) -> None:
+        self.answers.append(answer)
+        self.new_answers.append(answer)
 
 
 class Workflow:
@@ -332,8 +356,8 @@ class Workflow:
             "tool_results": [],
             "active_task_id": None,
             "current_agent": None,
-            "domain_request": None,
-            "domain_result": None,
+            "domain_batch": [],
+            "domain_results": None,
             "last_answer": "",
             "turn_answers": [],
         }
@@ -450,120 +474,141 @@ class Workflow:
         return {"user_goal": plan.user_goal, "tasks": tasks}
 
     async def select_task(self, state: AssistantState) -> dict[str, Any]:
-        task = self.supervisor.next_runnable(state["tasks"])
-        if task is None:
+        """挑出本批可以同时执行的任务。
+
+        依赖都已完成的任务互不影响，一次全部派发、并行执行：一轮里"查年假余额"和"查报销
+        制度"不必排队等前一个的模型调用。有依赖的任务要等前置任务完成后的下一批。
+        """
+        runnable = self.supervisor.runnable_tasks(state["tasks"])
+        if not runnable:
             return {
                 "active_task_id": None,
                 "current_agent": None,
-                "domain_request": None,
-                "domain_result": None,
+                "domain_batch": [],
+                "domain_results": None,
             }
+        selected = {task.id for task in runnable}
         tasks = [
-            item.model_copy(update={"status": TaskStatus.RUNNING}) if item.id == task.id else item
+            item.model_copy(update={"status": TaskStatus.RUNNING})
+            if item.id in selected
+            else item
             for item in state["tasks"]
         ]
         # 领域 Agent 要的是本轮改写后的请求，不是计划的总目标：续跑轮里用户的补充
         # （"当天往返""选第一间"）只在本轮的 standalone_request 里。
         context = ContextResolution.model_validate(state["understanding"])
-        dependency_results = {
-            dependency: state.get("artifacts", {}).get(dependency)
-            for dependency in task.depends_on
-            if dependency in state.get("artifacts", {})
-        }
+        artifacts = state.get("artifacts", {})
+        # 只取原文，不带 Supervisor 那份早先会话摘要：摘要是改写过的请求，
+        # 领域 Agent 读原文正是为了不依赖改写。同一批并行的任务彼此看不到对方的回答。
+        recent_messages = (
+            [
+                DialogueTurn.model_validate(turn)
+                for turn in self._conversation(state)
+                if not turn["content"].startswith(DIGEST_HEADER)
+            ][-self._domain_window :]
+            if self._domain_window > 0
+            else []
+        )
         return {
             "tasks": tasks,
-            "active_task_id": task.id,
-            "current_agent": task.domain.value,
-            "domain_request": DomainTaskRequest(
-                user_id=state["user_id"],
-                user_name=state.get("user_name", ""),
-                conversation_id=state["conversation_id"],
-                request_id=state["request_id"],
-                user_goal=context.standalone_request,
-                task=task,
-                dependency_results=dependency_results,
-                memories=self._relevant_memories(state),
-                recent_actions=list(state.get("recent_actions", [])),
-                draft=state.get("drafts", {}).get(task.id),
-                # 只取原文，不带 Supervisor 那份早先会话摘要：摘要是改写过的请求，
-                # 领域 Agent 读原文正是为了不依赖改写。
-                recent_messages=[
-                    DialogueTurn.model_validate(turn)
-                    for turn in self._conversation(state)
-                    if not turn["content"].startswith(DIGEST_HEADER)
-                ][-self._domain_window :]
-                if self._domain_window > 0
-                else [],
-            ),
-            "domain_result": None,
+            "active_task_id": runnable[0].id,
+            "current_agent": runnable[0].domain.value,
+            "domain_batch": [
+                DomainTaskRequest(
+                    user_id=state["user_id"],
+                    user_name=state.get("user_name", ""),
+                    conversation_id=state["conversation_id"],
+                    request_id=state["request_id"],
+                    user_goal=context.standalone_request,
+                    task=task,
+                    dependency_results={
+                        dependency: artifacts[dependency]
+                        for dependency in task.depends_on
+                        if dependency in artifacts
+                    },
+                    memories=self._relevant_memories(state),
+                    recent_actions=list(state.get("recent_actions", [])),
+                    draft=state.get("drafts", {}).get(task.id),
+                    recent_messages=recent_messages,
+                )
+                for task in runnable
+            ],
+            "domain_results": None,
         }
 
-    def route_task(self, state: AssistantState) -> Literal["domain_task", "done"]:
-        return "domain_task" if state.get("domain_request") else "done"
+    def route_task(self, state: AssistantState) -> list[Send] | Literal["done"]:
+        batch = state.get("domain_batch") or []
+        if not batch:
+            return "done"
+        return [Send("domain_task", {"domain_request": request}) for request in batch]
 
     async def apply_domain_result(self, state: AssistantState) -> dict[str, Any]:
-        raw_result = state.get("domain_result")
-        if raw_result is None:
-            raise RuntimeError("domain subgraph returned no result")
-        result = DomainTaskResult.model_validate(raw_result)
-        if result.status == TaskStatus.HANDED_OFF:
-            return self._reroute(state, result)
-        tasks = [
-            item.model_copy(update={"status": result.status})
-            if item.id == result.task_id
-            else item
-            for item in state["tasks"]
+        """归并本批所有任务的结果。
+
+        并行分支完成的先后不固定，按计划里的任务顺序归并：写进会话的回答、失败连带取消的
+        判断都要和计划顺序一致，否则同一请求两次执行的会话记录会不一样。
+        """
+        results = [
+            DomainTaskResult.model_validate(item) for item in state.get("domain_results") or []
         ]
-        if result.status in {TaskStatus.REJECTED, TaskStatus.FAILED}:
-            tasks = self._reject_blocked_tasks(tasks)
-        artifacts = dict(state.get("artifacts", {}))
-        if result.artifact is not None:
-            artifacts[result.task_id] = result.artifact
-        drafts = dict(state.get("drafts", {}))
-        if result.draft is not None:
-            drafts[result.task_id] = result.draft
-        else:
-            drafts.pop(result.task_id, None)
-        answers = [*state.get("turn_answers", []), result.answer]
+        if not results:
+            raise RuntimeError("domain subgraph returned no result")
+        order = {task.id: index for index, task in enumerate(state["tasks"])}
+        results.sort(key=lambda item: order.get(item.task_id, len(order)))
+        merged = _Merge(
+            tasks=list(state["tasks"]),
+            artifacts=dict(state.get("artifacts", {})),
+            drafts=dict(state.get("drafts", {})),
+            tool_results=list(state.get("tool_results", [])),
+            answers=list(state.get("turn_answers", [])),
+        )
+        for result in results:
+            merged.tool_results.extend(result.tool_results)
+            if result.status == TaskStatus.HANDED_OFF:
+                self._reroute(merged, result)
+            else:
+                self._apply(merged, result)
         return {
-            "tasks": tasks,
-            "artifacts": artifacts,
-            "drafts": drafts,
-            "tool_results": [*state.get("tool_results", []), *result.tool_results],
-            "last_answer": "\n\n".join(answers),
-            "turn_answers": answers,
-            "messages": [AIMessage(content=result.answer)],
+            "tasks": merged.tasks,
+            "artifacts": merged.artifacts,
+            "drafts": merged.drafts,
+            "tool_results": merged.tool_results,
+            "last_answer": "\n\n".join(merged.answers),
+            "turn_answers": merged.answers,
+            "messages": [AIMessage(content=answer) for answer in merged.new_answers],
             "active_task_id": None,
             "current_agent": None,
-            "domain_request": None,
-            "domain_result": None,
+            "domain_batch": [],
+            "domain_results": None,
         }
+
+    def _apply(self, merged: "_Merge", result: DomainTaskResult) -> None:
+        merged.set_status(result.task_id, result.status)
+        if result.status in {TaskStatus.REJECTED, TaskStatus.FAILED}:
+            merged.tasks = self._reject_blocked_tasks(merged.tasks)
+        if result.artifact is not None:
+            merged.artifacts[result.task_id] = result.artifact
+        if result.draft is not None:
+            merged.drafts[result.task_id] = result.draft
+        else:
+            merged.drafts.pop(result.task_id, None)
+        merged.say(result.answer)
 
     MAX_HANDOFFS = 2
 
-    def _reroute(self, state: AssistantState, result: DomainTaskResult) -> dict[str, Any]:
+    def _reroute(self, merged: "_Merge", result: DomainTaskResult) -> None:
         """把领域 Agent 交还的任务改派给它指出的领域。
 
         不回到 Supervisor 重新理解：它读的还是同一段会话，大概率再分错一次，还要多等一次
         模型调用。领域 Agent 看过自己的工具清单和其他领域的能力，它指出的去处比重新猜更准。
         去过的领域不再去、次数有上限，超出就判失败请用户换个说法，不让任务来回踢。
         """
-        task = next(item for item in state["tasks"] if item.id == result.task_id)
+        task = next(item for item in merged.tasks if item.id == result.task_id)
         target = result.handoff_to
-        visited = {*task.handed_off_from, task.domain}
-        update: dict[str, Any] = {
-            "tool_results": [*state.get("tool_results", []), *result.tool_results],
-            "active_task_id": None,
-            "current_agent": None,
-            "domain_request": None,
-            "domain_result": None,
-        }
-        drafts = dict(state.get("drafts", {}))
-        drafts.pop(task.id, None)
-        update["drafts"] = drafts
+        merged.drafts.pop(task.id, None)
         if (
             target is None
-            or target in visited
+            or target in {*task.handed_off_from, task.domain}
             or len(task.handed_off_from) >= self.MAX_HANDOFFS
         ):
             logger.warning(
@@ -572,20 +617,10 @@ class Workflow:
                 domain=task.domain.value,
                 target=target.value if target else None,
             )
-            failed = [
-                item.model_copy(update={"status": TaskStatus.FAILED})
-                if item.id == task.id
-                else item
-                for item in state["tasks"]
-            ]
-            answers = [*state.get("turn_answers", []), HANDOFF_EXHAUSTED_REPLY]
-            return {
-                **update,
-                "tasks": self._reject_blocked_tasks(failed),
-                "last_answer": "\n\n".join(answers),
-                "turn_answers": answers,
-                "messages": [AIMessage(content=HANDOFF_EXHAUSTED_REPLY)],
-            }
+            merged.set_status(task.id, TaskStatus.FAILED)
+            merged.tasks = self._reject_blocked_tasks(merged.tasks)
+            merged.say(HANDOFF_EXHAUSTED_REPLY)
+            return
         logger.info(
             "task_handed_off", task_id=task.id, source=task.domain.value, target=target.value
         )
@@ -596,10 +631,7 @@ class Workflow:
                 "handed_off_from": [*task.handed_off_from, task.domain],
             }
         )
-        return {
-            **update,
-            "tasks": [rerouted if item.id == task.id else item for item in state["tasks"]],
-        }
+        merged.tasks = [rerouted if item.id == task.id else item for item in merged.tasks]
 
     def after_domain_result(self, state: AssistantState) -> Literal["select_task", "done"]:
         return "done" if any(
@@ -635,7 +667,18 @@ def build_graph(
     graph.add_node("understand", workflow.understand)
     graph.add_node("plan", workflow.plan)
     graph.add_node("select_task", workflow.select_task)
-    graph.add_node("domain_task", build_domain_graph(domain_workflow))
+    domain_graph = build_domain_graph(domain_workflow)
+
+    async def run_domain_task(state: DomainTaskInput) -> dict[str, Any]:
+        # 子图包在函数里调用而不是直接作为节点：同一批并行的分支各自产出 domain_result，
+        # 直接挂子图会同时写父图的同一个键；这里改写进带归并规则的 domain_results。
+        # 子图的检查点和 interrupt 照常继承，确认后只恢复这一个分支，不重跑它前面的决策。
+        final = await domain_graph.ainvoke(
+            {"domain_request": state["domain_request"], "domain_result": None}
+        )
+        return {"domain_results": [final["domain_result"]]}
+
+    graph.add_node("domain_task", run_domain_task)
     graph.add_node("apply_domain_result", workflow.apply_domain_result)
 
     # 每轮开头召回一次，结尾统一经 remember 收口：所有终止分支都汇到同一个节点，
@@ -649,9 +692,7 @@ def build_graph(
     )
     graph.add_edge("plan", "select_task")
     graph.add_conditional_edges(
-        "select_task",
-        workflow.route_task,
-        {"domain_task": "domain_task", "done": "remember"},
+        "select_task", workflow.route_task, {"domain_task": "domain_task", "done": "remember"}
     )
     graph.add_edge("domain_task", "apply_domain_result")
     graph.add_conditional_edges(

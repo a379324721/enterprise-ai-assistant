@@ -48,9 +48,11 @@ class SupervisorAgent:
 
     @staticmethod
     @traceable(name="supervisor-task-scheduling", run_type="chain")
-    def next_runnable(tasks: list[PlannedTask]) -> PlannedTask | None:
+    def runnable_tasks(tasks: list[PlannedTask]) -> list[PlannedTask]:
+        """依赖都已完成、可以同时开始的全部任务，按计划顺序。"""
         completed = {task.id for task in tasks if task.status == TaskStatus.COMPLETED}
-        for task in tasks:
-            if task.status == TaskStatus.PENDING and set(task.depends_on) <= completed:
-                return task
-        return None
+        return [
+            task
+            for task in tasks
+            if task.status == TaskStatus.PENDING and set(task.depends_on) <= completed
+        ]
