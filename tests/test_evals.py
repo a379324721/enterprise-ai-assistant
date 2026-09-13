@@ -52,6 +52,7 @@ class StubPlanning:
         memories: Sequence[str] = (),
         recent_actions: Sequence[str] = (),
         user_name: str = "",
+        notices: Sequence[str] = (),
     ) -> AIMessage:
         raise AssertionError(f"not used: {context}")
 
@@ -231,7 +232,7 @@ async def test_context_case_passes_open_tasks_and_checks_turn_relation() -> None
             return await super().resolve_context(conversation, memory_keys, open_tasks)
 
     open_task = OpenTask(
-        task_id="task-1", title="差旅申请", domain=AgentName.TRAVEL, missing_fields=["end_date"]
+        plan_id="p-1", task_id="task-1", title="差旅申请", domain=AgentName.TRAVEL, missing_fields=["end_date"]
     )
     case = ContextCase(
         id="c5",

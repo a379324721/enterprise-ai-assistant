@@ -34,6 +34,7 @@ class CapturingPlanningService:
         memories: Sequence[str] = (),
         recent_actions: Sequence[str] = (),
         user_name: str = "",
+        notices: Sequence[str] = (),
     ) -> AIMessage:
         raise AssertionError(f"not used: {context}")
 

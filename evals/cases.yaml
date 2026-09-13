@@ -110,7 +110,8 @@ context_cases:
       - role: user
         content: 当天往返
     open_tasks:
-      - task_id: task-1
+      - plan_id: p-trip
+        task_id: task-1
         title: 提交上海差旅申请
         domain: travel
         missing_fields: [end_date]
@@ -130,7 +131,8 @@ context_cases:
       - role: user
         content: "1"
     open_tasks:
-      - task_id: task-1
+      - plan_id: p-trip
+        task_id: task-1
         title: 预订上海分部会议室
         domain: meeting
         missing_fields: [room_id]
@@ -147,7 +149,8 @@ context_cases:
       - role: user
         content: 对了，我还剩几天年假？
     open_tasks:
-      - task_id: task-1
+      - plan_id: p-trip
+        task_id: task-1
         title: 提交上海差旅申请
         domain: travel
         missing_fields: [end_date, purpose]
@@ -165,13 +168,102 @@ context_cases:
       - role: user
         content: 好的，我问一下再告诉你
     open_tasks:
-      - task_id: task-1
+      - plan_id: p-trip
+        task_id: task-1
         title: 提交上海差旅申请
         domain: travel
         missing_fields: [end_date, purpose]
     expect_task_planning: false
     expect_turn_relation: new
     note: 没有提供任何信息，续跑只会让差旅 Agent 再问一遍同样的问题
+
+  - id: ctx-cancel-the-current-task
+    conversation:
+      - role: user
+        content: 申请周三去上海出差
+      - role: assistant
+        content: 还需要补充出差结束日期和出差事由。
+      - role: user
+        content: 算了，这趟不去了
+    open_tasks:
+      - plan_id: p-trip
+        task_id: task-1
+        title: 提交上海差旅申请
+        domain: travel
+        missing_fields: [end_date, purpose]
+    expect_task_planning: false
+    expect_turn_relation: cancel
+    expect_target_plan_id: p-trip
+    note: 放弃还没提交的事项，不应再规划任务
+
+  - id: ctx-resume-a-shelved-task-by-name
+    conversation:
+      - role: user
+        content: 申请周三去上海出差
+      - role: assistant
+        content: 还需要补充出差结束日期和出差事由。
+      - role: user
+        content: 对了，我还剩几天年假？
+      - role: assistant
+        content: 您当前年假余额为 5 天。
+      - role: user
+        content: 好，继续刚才的出差申请，周五回来，去做客户交流
+    open_tasks:
+      - plan_id: p-trip
+        task_id: task-1
+        title: 提交上海差旅申请
+        domain: travel
+        missing_fields: [end_date, purpose]
+        shelved: true
+    expect_task_planning: true
+    expect_turn_relation: continue
+    expect_target_plan_id: p-trip
+    expect_keywords: ["上海"]
+    note: 用户点名回到被搁置的事项，必须指认它的 plan_id，而不是重新规划一张新申请
+
+  - id: ctx-short-reply-does-not-revive-a-shelved-task
+    conversation:
+      - role: user
+        content: 申请周三去上海出差
+      - role: assistant
+        content: 还需要补充出差结束日期和出差事由。
+      - role: user
+        content: 帮我订明天上午北京分部的会议室
+      - role: assistant
+        content: 查到两间空闲会议室：1. BJ-201（6 人）2. BJ-202（12 人），请选择一间。
+      - role: user
+        content: 第二间
+    open_tasks:
+      - plan_id: p-room
+        task_id: task-1
+        title: 预订北京分部会议室
+        domain: meeting
+        missing_fields: [room_id]
+      - plan_id: p-trip
+        task_id: task-1
+        title: 提交上海差旅申请
+        domain: travel
+        missing_fields: [end_date, purpose]
+        shelved: true
+    expect_task_planning: true
+    expect_turn_relation: continue
+    forbid_target_plan_ids: [p-trip]
+    expect_any_keywords: ["BJ-202", "第二间", "北京"]
+    note: |
+      短回复补充的是当前事项（会议室），target_plan_id 可以留空或填 p-room，
+      但绝不能是被搁置的差旅——那需要用户明确提起。
+
+  - id: ctx-revoking-a-submitted-form-is-not-cancel
+    conversation:
+      - role: user
+        content: 申请 9 月 16 号去上海培训，当天往返
+      - role: assistant
+        content: 差旅申请已提交，单号 TRV-20260913-59A11A。
+      - role: user
+        content: 把这张申请撤销掉
+    expect_task_planning: false
+    expect_turn_relation: new
+    note: 已提交的单据不在未办完清单里，系统没有撤销工具；判成 cancel 会让回答声称已经撤销
 
 planning_cases:
   - id: plan-travel-only

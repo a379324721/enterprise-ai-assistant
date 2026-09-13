@@ -72,10 +72,11 @@ class TaskPlan(BaseModel):
 
 
 class TurnRelation(StrEnum):
-    """本轮输入与上一轮遗留的待补充任务之间的关系。"""
+    """本轮输入与未办完事项之间的关系。"""
 
     NEW = "new"
     CONTINUE = "continue"
+    CANCEL = "cancel"
 
 
 class OpenTask(BaseModel):
@@ -85,10 +86,13 @@ class OpenTask(BaseModel):
     才能认出"当天往返""1"这种短回复在补充谁，但拿到值就有了补写领域字段的材料。
     """
 
+    plan_id: str
     task_id: str
     title: str
     domain: AgentName
     missing_fields: list[str] = Field(default_factory=list)
+    # false 是当前事项，true 是用户换话题时被搁置的事项。
+    shelved: bool = False
 
 
 class DraftField(BaseModel):
@@ -114,6 +118,19 @@ class TaskDraft(BaseModel):
     missing_fields: list[str] = Field(default_factory=list)
 
 
+class ShelvedPlan(BaseModel):
+    """用户换话题时被搁置的未办完计划，原样保存，恢复时整体换回当前计划。
+
+    不自动过期：半截的事是用户自己的工作，只有用户说"继续"或"不办了"才会离开这里。
+    """
+
+    plan_id: str
+    user_goal: str
+    tasks: list[PlannedTask]
+    artifacts: dict[str, Any] = Field(default_factory=dict)
+    drafts: dict[str, TaskDraft] = Field(default_factory=dict)
+
+
 class ContextResolution(BaseModel):
     """Supervisor 对完整会话的解析结果，不包含任何领域业务字段。
 
@@ -134,6 +151,11 @@ class ContextResolution(BaseModel):
     # continue 表示本轮在补充上一轮停在待补充的任务：跳过 Planner，原任务续跑。
     # 没有待补充任务时，运行时会忽略这里的 continue。
     turn_relation: TurnRelation = TurnRelation.NEW
+    # continue / cancel 指向的事项。补充当前事项时可以留空；恢复或取消被搁置的事项时必填。
+    target_plan_id: str | None = None
+    # 需要规划时本次请求涉及的业务领域。只有一个领域时跳过 Planner：单领域请求只会
+    # 被拆成一个任务，那次模型调用的产出事先就知道。这是意图分类，不是字段抽取。
+    domains: list[AgentName] = Field(default_factory=list, max_length=5)
 
 
 class MemoryKind(StrEnum):

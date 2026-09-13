@@ -29,6 +29,7 @@ from enterprise_ai_assistant.agents.domain_runtime import (
     DomainRuntimeFactory,
     DomainRuntimeProvider,
 )
+from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.core.models import (
     AgentName,
     ContextResolution,
@@ -142,6 +143,15 @@ class EvalHarness:
                 f"turn_relation={resolution.turn_relation.value}"
                 f"，期望 {case.expect_turn_relation.value}"
             )
+        if (
+            case.expect_target_plan_id is not None
+            and resolution.target_plan_id != case.expect_target_plan_id
+        ):
+            problems.append(
+                f"target_plan_id={resolution.target_plan_id}，期望 {case.expect_target_plan_id}"
+            )
+        if resolution.target_plan_id in case.forbid_target_plan_ids:
+            problems.append(f"target_plan_id 指向了不该恢复的事项 {resolution.target_plan_id}")
         missing = [
             keyword
             for keyword in case.expect_keywords
@@ -166,7 +176,11 @@ class EvalHarness:
         resolution = await self._planning.resolve_context(
             [{"role": "user", "content": case.request}]
         )
-        plan = await self._planning.plan(resolution)
+        # 与生产路径一致：Supervisor 判定单领域时不调用 Planner。这个评测集因此
+        # 同时考察两处的领域路由。
+        plan = SupervisorAgent.single_domain_plan(resolution) or await self._planning.plan(
+            resolution
+        )
         problems: list[str] = []
         domains = [task.domain for task in plan.tasks]
         if set(domains) != set(case.expect_domains):

@@ -19,6 +19,15 @@ from enterprise_ai_assistant.tools.registry import CAPABILITY_SUMMARY
 #: 渲染好的能力清单，作为闲聊 prompt 的常量输入。
 _CAPABILITIES = "\n".join(f"- {summary}" for summary in CAPABILITY_SUMMARY.values())
 
+#: 领域路由规则。Supervisor 判断单领域请求时跳过 Planner，两处必须按同一套规则归类，
+#: 否则同一句话走快路径和走 Planner 会落到不同领域。
+_DOMAIN_ROUTING = """\
+domain 只能是 travel、expense、hr、meeting、policy。差旅/住宿属于 travel，报销/发票属于 expense，
+请假/余额属于 hr，会议室查询与预订属于 meeting。
+制度咨询按主题归入对应领域，不要因为出现“制度”二字就投给 policy：报销制度、发票要求、
+报销时限属于 expense，差旅与住宿标准属于 travel，请假与年假规定属于 hr，会议室使用规定属于 meeting。
+policy 只接跨领域或前四类都归不进去的通用制度，例如考勤打卡、信息安全。"""
+
 
 def _bullets(items: Sequence[str]) -> str:
     return "\n".join(f"- {item}" for item in items) or "（暂无）"
@@ -40,6 +49,7 @@ class PlanningService(Protocol):
         memories: Sequence[str] = (),
         recent_actions: Sequence[str] = (),
         user_name: str = "",
+        notices: Sequence[str] = (),
     ) -> AIMessage: ...
 
     async def extract_memories(
@@ -87,25 +97,37 @@ class LLMPlanningService:
 不得把它们映射成差旅、报销、请假等领域字段，字段判断只发生在后续的领域环节。
 清单为空或没有相关项时返回空列表。
 
-输入还会给出上一轮停在“待补充”的任务（标题和缺失字段名，没有字段值），据此填写 turn_relation：
-- continue：用户本轮在回答这些任务的追问，或补充、更正它们的信息。追问之后的短回复
+requires_task_planning 为 true 时，把本次请求涉及的业务领域写入 domains，归类规则如下：
+{domain_routing}
+continue 和 cancel 时 domains 留空。
+
+输入还会给出未办完的任务（标题和缺失字段名，没有字段值）。每条带 plan_id：shelved 为 false
+的是当前事项，true 的是用户之前换话题时被搁置的事项。据此填写 turn_relation：
+- continue：用户本轮在回答当前事项的追问，或补充、更正它的信息。追问之后的短回复
   几乎都属于这一类——“当天往返”“培训”“1”“就第一间”“上海”这类话单独看没有意义，
   放在上一轮的问题下面才有意义。此时 requires_task_planning 设为 true，
   standalone_request 写成包含该任务原始目标和本轮补充的完整请求。
-- new：用户提出了与待补充任务无关的新诉求，或者只是闲聊、道谢。
-  “好的”“稍等”“我问一下再告诉你”这类回应没有提供任何字段、也没有做出选择，
+  回到被搁置的事项同样是 continue，但必须是用户明确提到了它（“继续刚才的出差申请”
+  “那个会议室还是订一下”），并把它的 plan_id 写入 target_plan_id。补充当前事项时可以不填。
+- cancel：用户明确表示某件未办完的事不办了（“算了不出差了”“会议室不用订了”），
+  target_plan_id 写那件事的 plan_id，requires_task_planning 设为 false。
+  已经提交的单据不在未办完的清单里，撤销已提交单据的诉求不是 cancel，按清单之外的诉求处理。
+- new：用户提出了与未办完事项无关的新诉求，或者只是闲聊、道谢。当前事项会由系统自动搁置，
+  你不需要处理。“好的”“稍等”“我问一下再告诉你”这类回应没有提供任何字段、也没有做出选择，
   同样是 new，requires_task_planning 设为 false——续跑只会让领域 Agent 把同一个问题再问一遍。
   拿不准时，看本轮这句话离开上一轮的追问是否还能独立成立：能就是 new。
-没有待补充任务时一律填 new。""",
+没有未办完的任务时一律填 new。""",
                 ),
                 (
                     "human",
                     "当前日期：{today}\n该用户的长期档案 key 清单：{memory_keys}\n"
-                    "上一轮停在待补充的任务（JSON）：{open_tasks}\n"
+                    "未办完的任务（JSON）：{open_tasks}\n"
                     "完整会话（JSON）：\n{conversation}",
                 ),
             ]
-        ).partial(capabilities=_CAPABILITIES) | structured.with_structured_output(
+        ).partial(
+            capabilities=_CAPABILITIES, domain_routing=_DOMAIN_ROUTING
+        ) | structured.with_structured_output(
             ContextResolution
         ).with_retry(
             stop_after_attempt=2
@@ -135,7 +157,10 @@ class LLMPlanningService:
   绝对不得声称或暗示任何单据已受理、已通过、已批准、已完成、已报销或进行到了哪个环节。
   用户询问单据状态时，说明需要发起查询后再答复，不得凭这份清单回答。
 - 不得编造清单和档案中没有出现的单号、日期、金额或字段。
-- 最多主动提及一件待办，并使用询问语气，不要连续追问或罗列多条。""",
+- 最多主动提及一件待办，并使用询问语气，不要连续追问或罗列多条。
+
+输入里的“系统已处理”是运行时本轮替用户做完的事（例如放弃了一件还没提交的事项），
+需要在回答里如实告诉用户，不得扩大成撤销、作废或修改了已提交的单据。""",
                 ),
                 (
                     "human",
@@ -146,7 +171,8 @@ class LLMPlanningService:
                     "用户称呼：{user_name}\n"
                     "本轮请求（已完成上下文消解）：{standalone_request}\n"
                     "意图概括：{intent_summary}\n"
-                    "回答语言：{user_language}",
+                    "回答语言：{user_language}\n"
+                    "系统已处理：\n{notices}",
                 ),
             ]
         ).partial(capabilities=_CAPABILITIES) | model
@@ -155,11 +181,7 @@ class LLMPlanningService:
                 (
                     "system",
                     """你是企业任务 Planner。把已完成上下文消解的请求拆成粗粒度任务 DAG。
-domain 只能是 travel、expense、hr、meeting、policy。差旅/住宿属于 travel，报销/发票属于 expense，
-请假/余额属于 hr，会议室查询与预订属于 meeting。
-制度咨询按主题归入对应领域，不要因为出现“制度”二字就投给 policy：报销制度、发票要求、
-报销时限属于 expense，差旅与住宿标准属于 travel，请假与年假规定属于 hr，会议室使用规定属于 meeting。
-policy 只接跨领域或前四类都归不进去的通用制度，例如考勤打卡、信息安全。
+{domain_routing}
 任务的粒度是“一个领域一个目标”。同一领域内部的连续步骤不要拆成多个任务——
 领域 Agent 自己会先查询再写入，把“查空闲会议室”和“预订会议室”拆开，只会让同一件事
 被回答两遍，还多查一次。只有跨领域、或后一步确实需要前一步的产物时才拆。
@@ -175,7 +197,9 @@ policy 只接跨领域或前四类都归不进去的通用制度，例如考勤�
                 ),
                 ("human", "已完成上下文消解的请求：\n{context}"),
             ]
-        ).partial(capabilities=_CAPABILITIES) | structured.with_structured_output(
+        ).partial(
+            capabilities=_CAPABILITIES, domain_routing=_DOMAIN_ROUTING
+        ) | structured.with_structured_output(
             TaskPlan
         ).with_retry(
             stop_after_attempt=2
@@ -246,6 +270,7 @@ value 用简短中文陈述，不超过 200 字。
         memories: Sequence[str] = (),
         recent_actions: Sequence[str] = (),
         user_name: str = "",
+        notices: Sequence[str] = (),
     ) -> AIMessage:
         result = await self._direct_responder.ainvoke(
             {
@@ -255,6 +280,7 @@ value 用简短中文陈述，不超过 200 字。
                 "user_language": context.user_language,
                 "memories": _bullets(memories),
                 "recent_actions": _bullets(recent_actions),
+                "notices": _bullets(notices),
             },
             config={
                 "tags": ["user-visible"],

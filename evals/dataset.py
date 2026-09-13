@@ -35,6 +35,9 @@ class ContextCase(BaseModel):
     open_tasks: list[OpenTask] = Field(default_factory=list)
     # 留空表示不断言。
     expect_turn_relation: TurnRelation | None = None
+    expect_target_plan_id: str | None = None
+    # 指向这些事项即判失败，用于"可以留空、但绝不能指错"的场景。
+    forbid_target_plan_ids: list[str] = Field(default_factory=list)
     note: str = ""
 
 

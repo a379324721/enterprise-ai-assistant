@@ -1,4 +1,5 @@
 from typing import Any, Literal
+from uuid import uuid4
 
 import structlog
 from langchain_core.messages import AIMessage
@@ -11,6 +12,7 @@ from enterprise_ai_assistant.core.models import (
     DomainTaskResult,
     OpenTask,
     PlannedTask,
+    ShelvedPlan,
     TaskDraft,
     TaskStatus,
     TurnRelation,
@@ -166,10 +168,16 @@ class Workflow:
         ]
 
     @staticmethod
-    def _open_tasks(state: AssistantState) -> list[OpenTask]:
-        drafts = state.get("drafts", {})
+    def _open_tasks_of(
+        plan_id: str,
+        tasks: list[PlannedTask],
+        drafts: dict[str, TaskDraft],
+        *,
+        shelved: bool,
+    ) -> list[OpenTask]:
         return [
             OpenTask(
+                plan_id=plan_id,
                 task_id=task.id,
                 title=task.title,
                 domain=task.domain,
@@ -178,13 +186,72 @@ class Workflow:
                     if task.id in drafts
                     else []
                 ),
+                shelved=shelved,
             )
-            for task in state.get("tasks", [])
+            for task in tasks
             if task.status == TaskStatus.WAITING_INPUT
         ]
 
+    @staticmethod
+    def _plan_id(state: AssistantState) -> str:
+        # 早于 plan_id 的检查点没有这个字段，给当前计划补一个，搁置后才能被指认。
+        return state.get("plan_id") or uuid4().hex[:8]
+
+    def _shelve_current(self, state: AssistantState) -> ShelvedPlan:
+        return ShelvedPlan(
+            plan_id=self._plan_id(state),
+            user_goal=state.get("user_goal", ""),
+            tasks=list(state.get("tasks", [])),
+            artifacts=dict(state.get("artifacts", {})),
+            drafts=dict(state.get("drafts", {})),
+        )
+
+    @staticmethod
+    def _requeue_waiting(tasks: list[PlannedTask]) -> list[PlannedTask]:
+        return [
+            task.model_copy(update={"status": TaskStatus.PENDING})
+            if task.status == TaskStatus.WAITING_INPUT
+            else task
+            for task in tasks
+        ]
+
+    def _target(
+        self,
+        state: AssistantState,
+        context: ContextResolution,
+        current_open: list[OpenTask],
+    ) -> ShelvedPlan | Literal["current"] | None:
+        """解析 continue / cancel 指向的事项；指不到任何未办完的事项时返回 None。"""
+        shelved = state.get("shelved_plans", [])
+        target_id = context.target_plan_id
+        if target_id:
+            for plan in shelved:
+                if plan.plan_id == target_id:
+                    return plan
+        if current_open:
+            return "current"
+        # 当前没有未办完的事，而被搁置的只有一件："继续刚才那个"指的只能是它。
+        # 多于一件时不猜，宁可落回常规路径重新规划，也不把补充信息塞给错的事项。
+        if len(shelved) == 1:
+            return shelved[0]
+        return None
+
     async def understand(self, state: AssistantState) -> dict[str, Any]:
-        open_tasks = self._open_tasks(state)
+        shelved = list(state.get("shelved_plans", []))
+        plan_id = self._plan_id(state)
+        current_open = self._open_tasks_of(
+            plan_id, state.get("tasks", []), state.get("drafts", {}), shelved=False
+        )
+        open_tasks = [
+            *current_open,
+            *(
+                item
+                for plan in shelved
+                for item in self._open_tasks_of(
+                    plan.plan_id, plan.tasks, plan.drafts, shelved=True
+                )
+            ),
+        ]
         # 只给 key 不给 value：Supervisor 做的是相关性筛选，不读取记忆内容，
         # 也就无从用它补写领域字段。
         context = await self.supervisor.resolve_context(
@@ -195,6 +262,8 @@ class Workflow:
         update: dict[str, Any] = {
             "understanding": context.model_dump(mode="json"),
             "history_digest": self._extend_digest(state, context.standalone_request),
+            "plan_id": plan_id,
+            "notices": [],
             "tool_results": [],
             "active_task_id": None,
             "current_agent": None,
@@ -203,29 +272,74 @@ class Workflow:
             "last_answer": "",
             "turn_answers": [],
         }
-        if open_tasks and context.turn_relation == TurnRelation.CONTINUE:
+        relation = context.turn_relation
+        target = (
+            self._target(state, context, current_open)
+            if relation in {TurnRelation.CONTINUE, TurnRelation.CANCEL}
+            else None
+        )
+
+        if relation == TurnRelation.CONTINUE and target is not None:
             # 补充信息不重新规划：重新拆出来的任务 id、标题和粒度都可能变，前置任务的
             # 产物也会随 artifacts 一起被清掉。原计划保持不动，只把待补充的任务放回队列。
             # user_goal 同样不动：它是整件事的目标，界面据此展示；本轮的补充经
             # understanding 交给领域 Agent。
-            waiting = {item.task_id for item in open_tasks}
-            update["tasks"] = [
-                task.model_copy(update={"status": TaskStatus.PENDING})
-                if task.id in waiting
-                else task
-                for task in state["tasks"]
-            ]
+            if target == "current":
+                update["tasks"] = self._requeue_waiting(state["tasks"])
+                return update
+            # 恢复被搁置的事项：它整体换回当前计划，当前计划若还没办完就换下去搁置。
+            remaining = [plan for plan in shelved if plan.plan_id != target.plan_id]
+            if current_open:
+                remaining.append(self._shelve_current(state))
+            update.update(
+                {
+                    "plan_id": target.plan_id,
+                    "user_goal": target.user_goal,
+                    "tasks": self._requeue_waiting(target.tasks),
+                    "artifacts": target.artifacts,
+                    "drafts": target.drafts,
+                    "shelved_plans": remaining,
+                }
+            )
             return update
-        if open_tasks and not context.requires_task_planning:
-            # 待补充期间插一句闲聊（"好的稍等""谢谢"）不能把计划清掉，否则用户回过头
-            # 补充时已经没有可续跑的任务。
+
+        if relation == TurnRelation.CANCEL and target is not None:
+            # 只放弃还没提交的部分。已经提交的单据是业务事实，系统没有撤销工具，
+            # 这里也不假装处理它们。
+            unfinished = {TaskStatus.WAITING_INPUT, TaskStatus.PENDING}
+            if target == "current":
+                dropped = [task.title for task in state["tasks"] if task.status in unfinished]
+                update["tasks"] = [
+                    task.model_copy(update={"status": TaskStatus.REJECTED})
+                    if task.status in unfinished
+                    else task
+                    for task in state["tasks"]
+                ]
+                update["drafts"] = {}
+            else:
+                dropped = [task.title for task in target.tasks if task.status in unfinished]
+                update["shelved_plans"] = [
+                    plan for plan in shelved if plan.plan_id != target.plan_id
+                ]
+            update["notices"] = [f"已放弃尚未提交的事项：{'、'.join(dropped)}"]
             return update
+
+        if not context.requires_task_planning:
+            # 闲聊、道谢、清单外的诉求都不动计划：待补充期间插一句"好的稍等"，
+            # 用户回过头补充时任务还在。
+            return update
+
+        # 新的业务请求。当前计划没办完就静默搁置，用户说"继续刚才那个"时还能换回来。
+        if current_open:
+            shelved.append(self._shelve_current(state))
         update.update(
             {
+                "plan_id": uuid4().hex[:8],
                 "user_goal": context.standalone_request,
                 "tasks": [],
                 "artifacts": {},
                 "drafts": {},
+                "shelved_plans": shelved,
             }
         )
         return update
@@ -234,8 +348,10 @@ class Workflow:
         self, state: AssistantState
     ) -> Literal["plan", "select_task", "direct_respond"]:
         context = ContextResolution.model_validate(state["understanding"])
-        # understand 只在认定为续跑时才会把任务放回 PENDING；Supervisor 在没有待补充
-        # 任务时误报 continue，任务列表已被清空，这里自然落回常规路径。
+        if state.get("notices"):
+            return "direct_respond"
+        # understand 只在认定为续跑时才会把任务放回 PENDING；Supervisor 误报 continue
+        # 却指不到任何未办完的事项时，这里自然落回常规路径。
         if context.turn_relation == TurnRelation.CONTINUE and any(
             task.status == TaskStatus.PENDING for task in state["tasks"]
         ):
@@ -250,6 +366,7 @@ class Workflow:
             self._relevant_memories(state),
             [action.render() for action in state.get("recent_actions", [])],
             state.get("user_name", ""),
+            state.get("notices", []),
         )
         answer = self._answer_text(response)
         if not answer:
@@ -262,7 +379,7 @@ class Workflow:
 
     async def plan(self, state: AssistantState) -> dict[str, Any]:
         context = ContextResolution.model_validate(state["understanding"])
-        plan = await self.supervisor.plan(context)
+        plan = self.supervisor.single_domain_plan(context) or await self.supervisor.plan(context)
         tasks = [task.model_copy(update={"status": TaskStatus.PENDING}) for task in plan.tasks]
         return {"user_goal": plan.user_goal, "tasks": tasks}
 

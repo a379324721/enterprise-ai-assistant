@@ -88,6 +88,7 @@ class MemoryPlanningService:
         memories: Sequence[str] = (),
         recent_actions: Sequence[str] = (),
         user_name: str = "",
+        notices: Sequence[str] = (),
     ) -> AIMessage:
         del context
         self.seen_direct.append((list(memories), list(recent_actions)))

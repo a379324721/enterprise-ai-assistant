@@ -10,6 +10,7 @@ from enterprise_ai_assistant.core.models import (
     PendingConfirmation,
     PlannedTask,
     RecentAction,
+    ShelvedPlan,
     TaskDraft,
     ToolResult,
 )
@@ -43,6 +44,12 @@ class AssistantState(TypedDict):
     # 停在待补充的任务留下的字段草稿，按 task_id 索引。和 tasks、artifacts 一样
     # 跨轮保留到下一次重新规划，续跑时放回 DomainTaskRequest。
     drafts: NotRequired[dict[str, TaskDraft]]
+    # 当前计划的标识，Supervisor 用它指认要续跑或取消的事项。早于该字段的检查点没有它。
+    plan_id: NotRequired[str]
+    # 换话题时被搁置的未办完计划，跨轮保留，不自动过期。
+    shelved_plans: NotRequired[list[ShelvedPlan]]
+    # 运行时对本轮做出的、需要如实告诉用户的处理（如放弃了哪件事），交给闲聊节点转述。
+    notices: NotRequired[list[str]]
 
 
 class DomainTaskState(TypedDict):

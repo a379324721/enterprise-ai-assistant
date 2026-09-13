@@ -35,6 +35,7 @@ class ScriptedPlanning:
     def __init__(self, resolutions: list[ContextResolution]) -> None:
         self._resolutions = list(resolutions)
         self.seen_open_tasks: list[list[OpenTask]] = []
+        self.seen_notices: list[list[str]] = []
         self.plan_calls = 0
 
     async def resolve_context(
@@ -74,8 +75,10 @@ class ScriptedPlanning:
         memories: Sequence[str] = (),
         recent_actions: Sequence[str] = (),
         user_name: str = "",
+        notices: Sequence[str] = (),
     ) -> AIMessage:
         del context, memories, recent_actions, user_name
+        self.seen_notices.append(list(notices))
         return AIMessage(content="不客气")
 
 
@@ -145,12 +148,16 @@ def _resolution(
     *,
     planning: bool = True,
     relation: TurnRelation = TurnRelation.NEW,
+    target: str | None = None,
+    domains: Sequence[AgentName] = (),
 ) -> ContextResolution:
     return ContextResolution(
         standalone_request=request,
         intent_summary=request,
         requires_task_planning=planning,
         turn_relation=relation,
+        target_plan_id=target,
+        domains=list(domains),
     )
 
 
@@ -206,13 +213,14 @@ async def test_supplement_resumes_the_waiting_task_without_replanning() -> None:
 
     assert planning.plan_calls == 1
     # Supervisor 只拿到标题和缺失字段名，拿不到字段值。
-    assert planning.seen_open_tasks[1] == [
+    assert [item.model_dump(exclude={"plan_id"}) for item in planning.seen_open_tasks[1]] == [
         OpenTask(
+            plan_id="",
             task_id="task-1",
             title="查询差旅制度",
             domain=AgentName.TRAVEL,
             missing_fields=["end_date"],
-        )
+        ).model_dump(exclude={"plan_id"})
     ]
     assert _statuses(second) == [
         ("task-1", TaskStatus.COMPLETED),
@@ -256,7 +264,7 @@ async def test_small_talk_while_waiting_keeps_the_plan() -> None:
 
 
 @pytest.mark.asyncio
-async def test_new_request_while_waiting_replaces_the_plan() -> None:
+async def test_new_request_while_waiting_shelves_the_plan() -> None:
     planning = ScriptedPlanning(
         [
             _resolution("去上海出差并查考勤制度"),
@@ -265,7 +273,7 @@ async def test_new_request_while_waiting_replaces_the_plan() -> None:
     )
     graph, runtimes = _build(planning)
 
-    await _turn(graph, "去上海出差，顺便查下考勤制度")
+    first = await _turn(graph, "去上海出差，顺便查下考勤制度")
     second = await _turn(graph, "年假怎么规定的")
 
     assert planning.plan_calls == 2
@@ -273,6 +281,147 @@ async def test_new_request_while_waiting_replaces_the_plan() -> None:
     assert runtimes.seen[-1][0] == "task-1"
     assert "previous_draft" not in runtimes.seen[-1][1]
     assert _statuses(second)[0] == ("task-1", TaskStatus.WAITING_INPUT)
+    [shelved] = second["shelved_plans"]
+    assert shelved.plan_id == first["plan_id"] != second["plan_id"]
+    assert shelved.user_goal == "去上海出差并查考勤制度"
+    assert "task-1" in shelved.drafts
+
+
+@pytest.mark.asyncio
+async def test_resuming_a_shelved_plan_swaps_it_back_in() -> None:
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差并查考勤制度"),
+            _resolution("查询年假制度"),
+        ]
+    )
+    graph, runtimes = _build(planning)
+    trip = await _turn(graph, "去上海出差，顺便查下考勤制度")
+    leave = await _turn(graph, "年假怎么规定的")
+
+    planning._resolutions.append(
+        _resolution("继续上海出差申请", relation=TurnRelation.CONTINUE, target=trip["plan_id"])
+    )
+    resumed = await _turn(graph, "继续刚才的出差申请")
+
+    assert planning.plan_calls == 2
+    assert resumed["plan_id"] == trip["plan_id"]
+    assert resumed["user_goal"] == "去上海出差并查考勤制度"
+    assert _statuses(resumed) == [
+        ("task-1", TaskStatus.COMPLETED),
+        ("task-2", TaskStatus.COMPLETED),
+    ]
+    # 草稿随计划一起换回来；被换下去的年假计划还没办完，轮到它搁置。
+    assert runtimes.seen[-2][1]["previous_draft"]["known_fields"][0]["value"] == "上海"
+    [shelved] = resumed["shelved_plans"]
+    assert shelved.plan_id == leave["plan_id"]
+
+
+@pytest.mark.asyncio
+async def test_continue_without_target_resumes_the_only_shelved_plan() -> None:
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差并查考勤制度"),
+            _resolution("查询考勤制度", domains=[AgentName.POLICY]),
+            _resolution("继续上海出差申请", relation=TurnRelation.CONTINUE),
+        ]
+    )
+    graph, _ = _build(planning)
+    trip = await _turn(graph, "去上海出差，顺便查下考勤制度")
+    await _turn(graph, "考勤怎么规定的")
+
+    resumed = await _turn(graph, "继续刚才那个")
+
+    assert resumed["plan_id"] == trip["plan_id"]
+    assert resumed["shelved_plans"] == []
+    assert _statuses(resumed)[0] == ("task-1", TaskStatus.COMPLETED)
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_current_plan_rejects_unfinished_tasks() -> None:
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差并查考勤制度"),
+            _resolution("不出差了", planning=False, relation=TurnRelation.CANCEL),
+        ]
+    )
+    graph, _ = _build(planning)
+    await _turn(graph, "去上海出差，顺便查下考勤制度")
+
+    cancelled = await _turn(graph, "算了不出差了")
+
+    assert planning.plan_calls == 1
+    assert _statuses(cancelled) == [
+        ("task-1", TaskStatus.REJECTED),
+        ("task-2", TaskStatus.REJECTED),
+    ]
+    assert cancelled["drafts"] == {}
+    assert planning.seen_notices == [["已放弃尚未提交的事项：查询差旅制度、查询通用制度"]]
+    assert cancelled["last_answer"] == "不客气"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_shelved_plan_drops_it() -> None:
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差并查考勤制度"),
+            _resolution("查询考勤制度", domains=[AgentName.POLICY]),
+        ]
+    )
+    graph, _ = _build(planning)
+    trip = await _turn(graph, "去上海出差，顺便查下考勤制度")
+    policy = await _turn(graph, "考勤怎么规定的")
+    planning._resolutions.append(
+        _resolution(
+            "不出差了", planning=False, relation=TurnRelation.CANCEL, target=trip["plan_id"]
+        )
+    )
+
+    cancelled = await _turn(graph, "出差那个不办了")
+
+    assert cancelled["shelved_plans"] == []
+    # 当前计划是已经办完的考勤查询，不受影响。
+    assert cancelled["plan_id"] == policy["plan_id"]
+    assert _statuses(cancelled) == [("task-1", TaskStatus.COMPLETED)]
+    assert len(planning.seen_notices[-1]) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_with_nothing_unfinished_is_ignored() -> None:
+    planning = ScriptedPlanning(
+        [_resolution("撤销已提交的差旅申请", planning=False, relation=TurnRelation.CANCEL)]
+    )
+    graph, _ = _build(planning)
+
+    state = await _turn(graph, "把刚才的差旅申请撤了")
+
+    assert planning.seen_notices == [[]]
+    assert state["last_answer"] == "不客气"
+
+
+@pytest.mark.asyncio
+async def test_single_domain_request_skips_the_planner() -> None:
+    planning = ScriptedPlanning([_resolution("查询考勤制度", domains=[AgentName.POLICY])])
+    graph, _ = _build(planning)
+
+    state = await _turn(graph, "考勤怎么规定的")
+
+    assert planning.plan_calls == 0
+    assert [(task.domain, task.status) for task in state["tasks"]] == [
+        (AgentName.POLICY, TaskStatus.COMPLETED)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_multi_domain_request_still_uses_the_planner() -> None:
+    planning = ScriptedPlanning(
+        [_resolution("出差并查考勤", domains=[AgentName.TRAVEL, AgentName.POLICY])]
+    )
+    graph, _ = _build(planning)
+
+    await _turn(graph, "去上海出差，顺便查下考勤制度")
+
+    assert planning.plan_calls == 1
 
 
 @pytest.mark.asyncio

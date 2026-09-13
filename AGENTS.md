@@ -51,10 +51,10 @@ cd frontend && npm run build  # tsc -b && vite build
 三层各自的禁区写在各自的 prompt 里（`services/planning.py`、`agents/domain_runtime.py`）：
 
 - **Context Supervisor**（`resolve_context`）只消解指代、判断意图、生成独立请求。**不得抽取或补写差旅、报销、请假等领域字段。**
-- **Planner**（`plan`）只产出任务 DAG：领域、目标、成功标准、依赖。**不选工具、不生成参数、不判断风险。**
+- **Planner**（`plan`）只产出任务 DAG：领域、目标、成功标准、依赖。**不选工具、不生成参数、不判断风险。** Supervisor 在 `ContextResolution.domains` 里只给出一个领域时跳过 Planner，由 `SupervisorAgent.single_domain_plan` 直接构造单任务计划——单领域请求交给 Planner 也只会拆出一个任务。两处的领域归类共用 `services/planning.py` 的 `_DOMAIN_ROUTING`，改归类规则只改那一处。
 - **领域 Agent**（`DomainAgentRuntime`）才判断字段是否齐全、选择工具、解释结果。
 
-领域有 travel、expense、hr、meeting 四个业务域加一个兜底的 policy。新增领域时，`CAPABILITY_SUMMARY`、`_DOMAIN_INSTRUCTIONS`、planner prompt 的领域清单和评测集都要跟上——评测里有一条断言会检查数据集是否覆盖了每个领域。
+领域有 travel、expense、hr、meeting 四个业务域加一个兜底的 policy。新增领域时，`CAPABILITY_SUMMARY`、`_DOMAIN_INSTRUCTIONS`、`_DOMAIN_ROUTING` 和评测集都要跟上——评测里有一条断言会检查数据集是否覆盖了每个领域。
 
 往上层塞领域逻辑是最常见的错误改法。需要字段级能力时，应该落在领域子图里。
 
@@ -64,17 +64,20 @@ cd frontend && npm run build  # tsc -b && vite build
 
 `domain_messages`、工具决策、确认状态都是子图私有状态，不进 `AssistantState`。后续任务只能通过 `artifacts[task_id]` 拿到前置任务的结构化产物，拿不到它的对话过程。人工确认通过 LangGraph interrupt payload（`PendingConfirmation`）暴露，API 层不依赖子图内部节点名。
 
-### 补充信息续跑原计划，不重新规划
+### 未办完的事项：续跑、搁置、取消
 
-领域 Agent 缺字段时调用 `request_information`，任务停在 `WAITING_INPUT`，这一轮结束。`tasks`、`artifacts` 和 `drafts`（追问时报告的 `known_fields` / `missing_fields`，按 task_id 存）跨轮保留，只在下一次重新规划时清空。
+领域 Agent 缺字段时调用 `request_information`，任务停在 `WAITING_INPUT`，这一轮结束。当前计划（`plan_id`、`user_goal`、`tasks`、`artifacts`，以及追问时报告的 `drafts`）跨轮保留；用户换话题时，没办完的计划整体移进 `shelved_plans`，不自动过期。
 
-下一轮 `understand` 把待补充任务的摘要（`OpenTask`：标题和缺失字段**名**，没有字段值）交给 Context Supervisor，由它填 `ContextResolution.turn_relation`：
+每轮 `understand` 把当前计划和搁置计划里待补充任务的摘要（`OpenTask`：`plan_id`、标题、缺失字段**名**、是否搁置，没有字段值）交给 Context Supervisor，由它填 `turn_relation` 和 `target_plan_id`：
 
-- `continue`：跳过 Planner，待补充的任务放回 `PENDING` 续跑，草稿经 `DomainTaskRequest.draft` 交还领域 Agent。`user_goal` 不变（界面展示的是整件事的目标），本轮的补充经 `standalone_request` 进 `DomainTaskRequest.user_goal`。
-- `new` 且需要规划：清空旧计划，照常规划。
-- `new` 且不需要规划（闲聊、道谢）：旧计划原样保留，用户回头还能补充。
+- `continue`：跳过 Planner，待补充的任务放回 `PENDING` 续跑，草稿经 `DomainTaskRequest.draft` 交还领域 Agent。指向搁置计划时整体换回来，当前计划没办完就换下去搁置。`user_goal` 不变（界面展示的是整件事的目标），本轮的补充经 `standalone_request` 进 `DomainTaskRequest.user_goal`。
+- `cancel`：目标计划里 `WAITING_INPUT` / `PENDING` 的任务改为 `REJECTED`（搁置计划直接移除），经 `notices` 交给 `direct_respond` 如实告知。已提交的单据不在清单里，也不受影响——系统没有撤销工具。
+- `new` 且需要规划：当前计划没办完就搁置，然后照常规划。
+- `new` 且不需要规划（闲聊、道谢、清单外诉求）：什么都不动，用户回头还能补充。
 
-不要改回"每轮清空再规划"：重新拆出来的任务 id、标题、粒度都可能变，前置任务的产物也跟着丢，实测会议室任务就是这样在差旅追问之后消失的。也不要给 `OpenTask` 加字段值——Supervisor 拿到值就有了补写领域字段的材料。Supervisor 在没有待补充任务时误报 `continue`，运行时会忽略。
+指向规则（`Workflow._target`）：`target_plan_id` 命中搁置计划就用它；否则当前计划有待补充任务就是当前计划；否则搁置计划只有一件时就是它；都不满足则忽略 `continue` / `cancel`，按常规路径处理。多件搁置时不猜，宁可重新规划也不把补充信息塞给错的事项。
+
+不要改回"每轮清空再规划"：重新拆出来的任务 id、标题、粒度都可能变，前置任务的产物也跟着丢，实测会议室任务就是这样在差旅追问之后消失的。也不要给 `OpenTask` 加字段值——Supervisor 拿到值就有了补写领域字段的材料。
 
 ### 谁能读原始 messages
 
