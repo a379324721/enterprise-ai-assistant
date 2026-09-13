@@ -42,6 +42,7 @@ from enterprise_ai_assistant.tools import LocalEnterpriseToolProvider, ToolConte
 from enterprise_ai_assistant.tools.registry import DomainToolRegistry
 from evals.dataset import (
     ContextCase,
+    ConversationTurn,
     DomainAnswerCase,
     EvalDataset,
     GuardrailCase,
@@ -219,6 +220,7 @@ class EvalHarness:
         user_goal: str,
         case_id: str,
         memories: Sequence[str] = (),
+        recent_messages: Sequence[ConversationTurn] = (),
     ) -> tuple[DomainRuntime, AIMessage]:
         """复刻 DomainTaskWorkflow.initialize 构造的首轮输入。"""
         task = PlannedTask(id=case_id, title=case_id, domain=domain, objective=objective)
@@ -229,6 +231,8 @@ class EvalHarness:
         }
         if memories:
             payload["user_memory"] = list(memories)
+        if recent_messages:
+            payload["recent_messages"] = [turn.model_dump() for turn in recent_messages]
         runtime = self._runtime(domain, case_id)
         response = await runtime.decide(
             objective,
@@ -239,7 +243,12 @@ class EvalHarness:
 
     async def run_tool_choice_case(self, case: ToolChoiceCase) -> CaseResult:
         _, response = await self._decide(
-            case.domain, case.objective, case.user_goal, case.id, case.memories
+            case.domain,
+            case.objective,
+            case.user_goal,
+            case.id,
+            case.memories,
+            case.recent_messages,
         )
         if not response.tool_calls:
             return CaseResult(
@@ -255,7 +264,12 @@ class EvalHarness:
 
     async def run_guardrail_case(self, case: GuardrailCase) -> CaseResult:
         runtime, response = await self._decide(
-            case.domain, case.objective, case.user_goal, case.id, case.memories
+            case.domain,
+            case.objective,
+            case.user_goal,
+            case.id,
+            case.memories,
+            case.recent_messages,
         )
         problems: list[str] = []
         names = [str(call["name"]) for call in response.tool_calls]

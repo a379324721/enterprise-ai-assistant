@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     context_window_messages: int = Field(default=12, ge=0)
     # 保留的历史摘要条数（每轮一条），决定超出消息窗口后还能回溯多少轮指代。
     context_digest_turns: int = Field(default=20, ge=0)
+    # 领域 Agent 读的最近会话条数。比 Supervisor 的窗口小：它只需要把手头的任务放回
+    # 语境里，读得越多越容易从不相干的旧事项里捡字段。0 表示不给会话原文。
+    domain_context_messages: int = Field(default=10, ge=0)
 
     # 跨会话长期记忆。默认关闭：记错一条画像会污染该用户后续所有会话，
     # 需要先有删除入口和灰度范围再打开。

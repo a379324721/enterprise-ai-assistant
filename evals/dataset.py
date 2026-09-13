@@ -67,6 +67,8 @@ class ToolChoiceCase(BaseModel):
     also_accept: list[str] = Field(default_factory=list)
     # 注入该用户的历史画像，形如 "preferred_transport=高铁"。
     memories: list[str] = Field(default_factory=list)
+    # 交给领域 Agent 的最近会话原文，形如 {role: user|assistant, content: ...}。
+    recent_messages: list[ConversationTurn] = Field(default_factory=list)
     note: str = ""
 
 
@@ -84,6 +86,8 @@ class GuardrailCase(BaseModel):
     # 用于诉求不属于任何领域、或只是夹带了别的任务的场景：转交只会让任务在领域间空转。
     forbid_handoff: bool = False
     memories: list[str] = Field(default_factory=list)
+    # 交给领域 Agent 的最近会话原文，形如 {role: user|assistant, content: ...}。
+    recent_messages: list[ConversationTurn] = Field(default_factory=list)
     note: str = ""
 
 

@@ -579,12 +579,17 @@ async def test_remember_does_not_wait_for_the_extraction() -> None:
 
 
 @pytest.mark.asyncio
-async def test_domain_agents_see_what_the_assistant_said_but_not_the_user() -> None:
-    """领域 Agent 要知道自己方说过什么才不会重复追问、互相打架；用户原话仍只经改写进入。"""
-    workflow = Workflow(SupervisorAgent(MemoryPlanningService()))
+async def test_domain_agents_read_only_the_most_recent_turns_verbatim() -> None:
+    """领域 Agent 读最近几条原文，含本轮前面任务刚写的回答；不带改写过的早先摘要。"""
+    workflow = Workflow(
+        SupervisorAgent(MemoryPlanningService()), history_window=4, domain_window=5
+    )
     state = _state(
         understanding=_understanding([]),
+        history_digest=["早先问过报销制度"],
         messages=[
+            HumanMessage(content="报销制度是什么"),
+            AIMessage(content="报销需在 30 天内提交。"),
             HumanMessage(content="下周去上海出差，顺便订个会议室"),
             AIMessage(content="请问返程日期是哪天？"),
             HumanMessage(content="当天往返"),
@@ -598,7 +603,26 @@ async def test_domain_agents_see_what_the_assistant_said_but_not_the_user() -> N
 
     update = await workflow.select_task(state)  # type: ignore[arg-type]
 
-    assert update["domain_request"].assistant_replies == [
-        "请问返程日期是哪天？",
-        "差旅申请已提交，单号 TRV-1。",
+    assert [
+        (turn.role, turn.content) for turn in update["domain_request"].recent_messages
+    ] == [
+        # 窗口里排在最前的是摘要条目，窗口放得下也不给。
+        ("user", "下周去上海出差，顺便订个会议室"),
+        ("assistant", "请问返程日期是哪天？"),
+        ("user", "当天往返"),
+        ("assistant", "差旅申请已提交，单号 TRV-1。"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_domain_window_of_zero_gives_no_conversation() -> None:
+    workflow = Workflow(SupervisorAgent(MemoryPlanningService()), domain_window=0)
+    state = _state(
+        understanding=_understanding([]),
+        messages=[HumanMessage(content="下周去上海出差")],
+        tasks=[PlannedTask(id="task-1", title="出差", domain=AgentName.TRAVEL, objective="申请")],
+    )
+
+    update = await workflow.select_task(state)  # type: ignore[arg-type]
+
+    assert update["domain_request"].recent_messages == []

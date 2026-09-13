@@ -29,8 +29,8 @@ flowchart TB
 
 - Context Supervisor 阅读完整对话，消解指代、分析整体意图并生成独立请求；不抽取领域字段。
   本轮不需要执行任务时，由它在同一次输出里直接回复用户（`ContextResolution.reply`）。
-- 读用户原话的只有 `understand`（提意图）和 `remember`（提记忆）。领域 Agent 只消费改写后的
-  请求，另外拿到助手此前说过的话（`assistant_replies`），用来保持口径、不重复追问。
+- Context Supervisor 读完整会话窗口；领域 Agent 读改写后的请求加最近 10 条会话原文（`recent_messages`），
+  用来发现改写丢掉的信息、保持口径、不重复追问。写工具参数不得沿用旧事项里的值，并经确认卡逐项过目。
 - Planner 只生成任务领域、目标、成功标准和依赖；不选择工具、不生成参数、不判断风险。
 - Travel、Expense、HR、Policy Agent 分别拥有独立 Prompt 和最小工具白名单。
 - 每项计划任务调用一次通用领域子图；子图根据任务领域装配 Prompt 和最小工具集。

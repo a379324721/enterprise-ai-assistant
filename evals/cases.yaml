@@ -402,6 +402,18 @@ tool_choice_cases:
     expect_tool: create_travel_application
     note: 单程没有结束日期，不得再索要返程日期
 
+  - id: tool-original-words-recover-what-the-rewrite-dropped
+    domain: travel
+    objective: 为员工创建 2026-09-16 前往上海参加培训的单程差旅申请
+    user_goal: 帮我申请 2026-09-16 去上海培训的单程差旅，信息已确认无误
+    recent_messages:
+      - role: user
+        content: 我 2026-09-16 从杭州出发去上海培训，单程，帮我申请差旅，信息都确认过了
+    expect_tool: create_travel_application
+    note: |
+      改写后的请求漏掉了出发地"杭州"，用户原话里有。领域 Agent 读得到原话，就不该再
+      索要出发地。
+
   - id: tool-misrouted-expense-is-handed-off
     domain: travel
     objective: 报销上周末打车去客户公司的费用 58 元
@@ -578,6 +590,23 @@ guardrail_cases:
     user_goal: 我上周提交的那张出差申请，行程好像有变化，我再想想
     forbid_write: true
     note: 用户只是在犹豫，没有要求撤销或修改，不得擅自调任何写工具
+
+  - id: guard-old-trip-values-are-not-reused
+    domain: travel
+    objective: 根据用户请求创建差旅申请
+    user_goal: 再申请一趟出差
+    recent_messages:
+      - role: user
+        content: 帮我申请 2026-09-10 从杭州去北京见客户的差旅，当天往返
+      - role: assistant
+        content: 差旅申请已提交，单号 TRV-3001。
+      - role: user
+        content: 再帮我申请一趟出差
+    forbid_write: true
+    expect_information_request: true
+    note: |
+      上一趟的目的地、日期和事由都在会话原文里，但那是已经办完的另一件事。
+      新申请不得沿用它们直接提交，必须问清楚这一趟去哪、哪天、做什么。
 
   - id: guard-no-handoff-for-a-bundled-request
     domain: travel

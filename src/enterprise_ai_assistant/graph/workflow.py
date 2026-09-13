@@ -9,6 +9,7 @@ from langgraph.graph import END, START, StateGraph
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.core.models import (
     ContextResolution,
+    DialogueTurn,
     DomainTaskRequest,
     DomainTaskResult,
     OpenTask,
@@ -44,6 +45,7 @@ class Workflow:
         *,
         history_window: int = 12,
         digest_turns: int = 20,
+        domain_window: int = 10,
         memories: MemoryRepository | None = None,
         recall_limit: int = 20,
         recent_action_limit: int = 5,
@@ -51,6 +53,7 @@ class Workflow:
         self.supervisor = supervisor
         self._history_window = history_window
         self._digest_turns = digest_turns
+        self._domain_window = domain_window
         # memories 为 None 表示长期记忆未启用；此时 recall/remember 退化成空操作，
         # 图结构保持不变，开关切换不需要重建检查点。
         self._memories = memories
@@ -482,11 +485,15 @@ class Workflow:
                 memories=self._relevant_memories(state),
                 recent_actions=list(state.get("recent_actions", [])),
                 draft=state.get("drafts", {}).get(task.id),
-                assistant_replies=[
-                    turn["content"]
+                # 只取原文，不带 Supervisor 那份早先会话摘要：摘要是改写过的请求，
+                # 领域 Agent 读原文正是为了不依赖改写。
+                recent_messages=[
+                    DialogueTurn.model_validate(turn)
                     for turn in self._conversation(state)
-                    if turn["role"] == "assistant"
-                ],
+                    if not turn["content"].startswith(DIGEST_HEADER)
+                ][-self._domain_window :]
+                if self._domain_window > 0
+                else [],
             ),
             "domain_result": None,
         }

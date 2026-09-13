@@ -54,7 +54,7 @@ client = Client(api_key=s.langsmith_api_key.get_secret_value(), api_url=s.langsm
 - **找某一轮**：根 run 的 `extra.metadata` 带 `user_id` 和 `conversation_id`（`routes.py` 的 `_config` 写入）。用 `client.list_runs(project_name=s.langsmith_project, is_root=True, start_time=...)` 取回后按这两个字段过滤；根 run 的 `inputs.messages` 就是这一轮的用户输入，确认恢复的轮次没有 messages。
 - **看节点输入输出**：`client.list_runs(trace_id=<根 run id>)` 取整棵树，按 `dotted_order` 排序。`context-supervisor` 的 outputs 是 `ContextResolution`，`run_type == "llm"` 的子 run 的 inputs 是完整 prompt。
 - **本机网络**：shell 里有 SOCKS 代理变量，而 httpx 没装 socksio。访问 LangSmith 和模型服务的脚本要用 `env -u all_proxy -u ALL_PROXY` 启动。
-- **看不到 trace 时**：会话停在确认卡上，父图 checkpoint 里还留着本轮的 `understanding` 和 `domain_request`（其中有 `assistant_replies`），可以用 `AsyncPostgresSaver.aget_tuple({"configurable": {"thread_id": <conversation_id>, "checkpoint_ns": ""}})` 读出来。
+- **看不到 trace 时**：会话停在确认卡上，父图 checkpoint 里还留着本轮的 `understanding` 和 `domain_request`（其中有 `recent_messages`），可以用 `AsyncPostgresSaver.aget_tuple({"configurable": {"thread_id": <conversation_id>, "checkpoint_ns": ""}})` 读出来。
 
 ## 前端
 
@@ -109,9 +109,9 @@ cd frontend && npm run build  # tsc -b && vite build
 对用户输出文字的模型只有两类，而且都必须知道助手之前说过什么，否则会重复称呼、重复追问、同一条消息里互相否定：
 
 - **Context Supervisor**（`understand`）：读完整会话窗口（含全部助手回复），本轮不执行任务时在同一次结构化输出里写 `ContextResolution.reply`。没有单独的闲聊节点——拆出去的节点看不到会话，重复称呼、许诺办不到的事都出在这里。`reply` 由校验器强制：不执行任务、也不是取消的轮次缺 `reply` 就算输出无效，交给结构化输出的重试。代价是这类回复一次性给出，不逐字流出（结构化输出必须关流式）。
-- **领域 Agent**（`decide`）：不读会话，但经 `DomainTaskRequest.assistant_replies` 拿到同一窗口里助手说过的所有话，包括本轮排在前面的任务刚写进 `messages` 的回答。回答不另起一次调用：执行过工具之后的 `decide` 不再调工具时，它的文字就是回答（`answering=True`，打 `user-visible` 标签流出）；`request_information` 的 `question` 原样发出，不经模型，经 LangGraph custom 流推给 SSE。SSE 侧的 `_AnswerRelay` 先压住回答开头，见到工具调用增量就整条丢弃——前端不会用 `done` 覆盖已经画出去的文字。不带工具的 `respond` 只兜底用户拒绝确认、工具失败和 `decide` 给不出文字这几种情况。
+- **领域 Agent**（`decide`）：经 `DomainTaskRequest.recent_messages` 读最近 `DOMAIN_CONTEXT_MESSAGES`（默认 10）条会话原文，用户和助手的都有，包括本轮排在前面的任务刚写进 `messages` 的回答；不带 Supervisor 那份早先会话摘要。回答不另起一次调用：执行过工具之后的 `decide` 不再调工具时，它的文字就是回答（`answering=True`，打 `user-visible` 标签流出）；`request_information` 的 `question` 原样发出，不经模型，经 LangGraph custom 流推给 SSE。SSE 侧的 `_AnswerRelay` 先压住回答开头，见到工具调用增量就整条丢弃——前端不会用 `done` 覆盖已经画出去的文字。不带工具的 `respond` 只兜底用户拒绝确认、工具失败和 `decide` 给不出文字这几种情况。
 
-用户原话只有 `understand` 和 `remember` 读。领域 Agent 拿到的用户意图只经 Supervisor 改写后的 `standalone_request`，这是领域字段来源可控的前提；`assistant_replies` 只用于保持口径，prompt 禁止从中取值直接调写工具。
+领域 Agent 读原文而不是只拿改写后的 `standalone_request`：改写会丢信息或解析错（评测 `tool-original-words-recover-what-the-rewrite-dropped` 里漏掉了出发地），只有改写时领域 Agent 发现不了，也不知道用户追问的"为什么"指什么。代价是可能从不相干的旧事项里串字段，由两层守住：prompt 规定写工具参数只能取自改写请求、草稿、依赖产物和用户针对**当前这件事**说过的话，旧事项的值不得沿用、assistant 消息不作取值来源（评测 `guard-old-trip-values-are-not-reused`）；确认卡把写工具的每个参数逐项给用户过目。窗口比 Supervisor 的小，是为了少给串字段的材料；不要为了"信息更全"把它调成完整会话。
 
 其余用户可见文字都是模板，不经模型：确认卡片（`PendingConfirmation.title` 取 `TOOL_LABELS`，`fields` 的中文名取工具入参契约里的 `Field(title=...)`，取值标签取 `json_schema_extra["value_labels"]`，有测试检查每个写工具字段都声明了 title）、执行步骤、取消事项的回复、错误提示。写工具的参数在 `decide` 阶段就按契约校验（`RegisteredTool.argument_error`），非法参数交还模型更正，不会先弹出确认卡。
 

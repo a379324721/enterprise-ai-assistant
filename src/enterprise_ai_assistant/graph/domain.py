@@ -78,7 +78,7 @@ class DomainTaskWorkflow:
 
     async def initialize(self, state: DomainTaskState) -> dict[str, Any]:
         request = self._request(state)
-        domain_input = {
+        domain_input: dict[str, Any] = {
             "standalone_request": request.user_goal,
             "task": request.task.model_dump(mode="json"),
             "dependency_results": request.dependency_results,
@@ -97,8 +97,10 @@ class DomainTaskWorkflow:
         # 在 standalone_request 里，两者冲突时以本轮为准。
         if request.draft is not None:
             domain_input["previous_draft"] = request.draft.model_dump(mode="json")
-        if request.assistant_replies:
-            domain_input["assistant_replies"] = list(request.assistant_replies)
+        if request.recent_messages:
+            domain_input["recent_messages"] = [
+                turn.model_dump() for turn in request.recent_messages
+            ]
         return {
             "domain_result": None,
             "domain_messages": [

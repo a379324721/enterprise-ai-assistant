@@ -328,6 +328,11 @@ class ToolResult(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class DialogueTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class DomainTaskRequest(BaseModel):
     """父图交给领域子图的稳定输入契约。"""
 
@@ -345,10 +350,11 @@ class DomainTaskRequest(BaseModel):
     recent_actions: list[RecentAction] = Field(default_factory=list)
     # 任务上一轮停在待补充时留下的字段状态；首次执行为 None。
     draft: TaskDraft | None = None
-    # 助手此前对用户说过的话，按时间顺序，含本轮排在前面的任务的回答。领域 Agent 据此
-    # 保持口径一致：不重复已经问过的问题、不否定别的任务刚说过的话、不重复称呼。
-    # 这里只有助手的话。用户原话仍然只经 Supervisor 改写后以 user_goal 进入。
-    assistant_replies: list[str] = Field(default_factory=list)
+    # 最近几条会话原文（用户和助手），按时间顺序，含本轮排在前面的任务刚写下的回答。
+    # 原先只给助手说过的话、用户意图只经 Supervisor 改写后的 user_goal 进入，可改写本身会
+    # 丢信息或解析错，领域 Agent 没有原话就发现不了；也不知道用户追问的"为什么"指什么。
+    # 字段来源的底线改由 prompt 规则和确认卡守住：写工具的每个参数都在卡上逐项给用户过目。
+    recent_messages: list[DialogueTurn] = Field(default_factory=list, max_length=50)
 
 
 class DomainTaskResult(BaseModel):
