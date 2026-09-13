@@ -7,11 +7,9 @@ import "./streaming.css";
 
 type Task = {id: string; title: string; domain: string; objective: string; status: string};
 type Confirmation = {confirmation_id: string; summary: string; action: string; payload: Record<string, unknown>};
-type PendingInput = {input_id: string; task_id: string; question: string};
 type Result = {
   conversation_id: string; status: string; answer: string; user_goal: string;
   tasks: Task[]; artifacts: Record<string, unknown>; pending_confirmation?: Confirmation | null;
-  pending_input?: PendingInput | null;
 };
 type ActionItem = {reference_id: string; action_type: string; summary: string; created_at: string; fields: Record<string, string>};
 //: decision 不是对话双方说的话，而是用户在确认卡片上做的选择。后端把它作为一条
@@ -278,18 +276,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
           `/api/v1/conversations/${session.conversationId}`,
           {headers: authHeaders, signal},
         );
-        if (snapshot.ok) {
-          const state = await snapshot.json() as Result;
-          setResult(state);
-          // 追问的文本不在会话历史里：它由领域子图的 respond 产出，而子图挂在
-          // interrupt 上还没返回，父图也就没把它并进 messages。刷新后从 payload
-          // 补一条回去，否则界面上只有一句"回答上面的问题"而上面什么都没有。
-          const question = state.pending_input?.question;
-          if (question) {
-            setMessages((old) => old.at(-1)?.text === question
-              ? old : [...old, {role: "assistant", text: question}]);
-          }
-        }
+        if (snapshot.ok) setResult(await snapshot.json() as Result);
       }
     } catch (issue) {
       // 中止来自 effect 清理，不是故障；其余情况必须说出来，否则后端没起时
@@ -351,10 +338,6 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
   function applyCompletion(
     completed: Result, actionList: ActionItem[] | null, segments?: AnswerSegment[],
   ) {
-    // 追问那一轮不调 respond，所以没有流式回答；问题原文（request_information 的
-    // question）就是助手这一条消息。优先于 answer：恢复路径上 answer 可能还留着
-    // 上一个任务的回答，拿它显示就是重复一遍旧内容。
-    const answer = completed.pending_input?.question ?? completed.answer;
     setMessages((old) => {
       if (segments) {
         // 延迟渲染的那一轮没有占位气泡（不然会是个挂着光标的空泡），攒下的段落
@@ -366,16 +349,16 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
             taskId: segment.taskId, agent: segment.agent,
           }))];
         }
-        // 一个 token 都没来过：追问轮（问题在 answer 里）、又冒出一个待确认
-        // （那时没有回答，卡片自己会出来），或者回答走了非流式路径。
-        if (answer) return [...old, {role: "assistant", text: answer}];
+        // 一个 token 都没来过：可能是回答走了非流式路径，也可能又冒出一个待确认
+        // （那时没有回答，卡片自己会出来）。
+        if (completed.answer) return [...old, {role: "assistant", text: completed.answer}];
         if (completed.status === "waiting_confirmation") return old;
         return [...old, {role: "assistant", text: "未生成有效回复，请重试。"}];
       }
       const last = old.at(-1);
       if (!last || last.role !== "assistant" || last.text) return old;
-      if (answer) {
-        return old.map((message, index) => index === old.length - 1 ? {...message, text: answer} : message);
+      if (completed.answer) {
+        return old.map((message, index) => index === old.length - 1 ? {...message, text: completed.answer} : message);
       }
       if (completed.status === "waiting_confirmation") return old.slice(0, -1);
       return old.map((message, index) => index === old.length - 1 ? {...message, text: "未生成有效回复，请重试。"} : message);
@@ -438,11 +421,6 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
   async function send(preset?: string) {
     const text = (preset ?? input).trim();
     if (!text || busy) return;
-    // 领域任务正在等字段时，这句话是对那个提问的回答，不是新的一轮：走恢复入口，
-    // 任务 DAG 留在检查点里接着跑。当成新一轮发出去会让 plan 重新规划，同一请求
-    // 里还没执行的任务就被新计划覆盖掉了。
-    const awaiting = result?.pending_input;
-    if (awaiting) { if (preset === undefined) setInput(""); await provideInput(awaiting, text); return; }
     // 点示例时输入框里可能有用户打了一半的草稿，不替他清掉。
     if (preset === undefined) setInput("");
     setBusy(true); setProgress("正在连接智能助手");
@@ -462,32 +440,6 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
     } finally {
       setBusy(false); setProgress(""); setStreamingAnswer(false);
       activeAnswerId.current = null;
-    }
-  }
-
-  /** 回答领域任务的追问。和确认走同一条恢复路径，所以这一轮同样不逐字渲染。 */
-  async function provideInput(awaiting: PendingInput, text: string) {
-    setBusy(true); setProgress("正在继续处理这个任务");
-    setMessages((old) => [...old, {role: "user", text}]);
-    stickToBottom.current = true;
-    // 问题已经答了，提示条当场撤掉；失败时放回去，否则服务端还在等而界面没了入口。
-    setResult((old) => old ? {...old, pending_input: null} : old);
-    deferStream.current = true; deferredResult.current = null; deferredSegments.current = [];
-    try {
-      const response = guard(await fetch(`/api/v1/conversations/${session.conversationId}/input/stream`, {
-        method: "POST", headers: authHeaders,
-        body: JSON.stringify({input_id: awaiting.input_id, text}),
-      }));
-      await consumeSse(response, handleStreamEvent);
-      const completed = deferredResult.current;
-      if (completed) applyCompletion(completed, await fetchActions(), deferredSegments.current);
-    } catch (issue) {
-      setMessages((old) => [...old, {role: "assistant", text: describeFailure(issue, "系统异常")}]);
-      setResult((old) => old && !old.pending_input ? {...old, pending_input: awaiting} : old);
-    } finally {
-      setBusy(false); setProgress(""); setStreamingAnswer(false);
-      activeAnswerId.current = null;
-      deferStream.current = false; deferredResult.current = null; deferredSegments.current = [];
     }
   }
 
@@ -556,12 +508,6 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
           </div>)}
           {busy && !streamingAnswer && <div className="thinking"><span className="spinner"/>{progress || "正在处理…"}</div>}
         </div>
-        {/* 问题只在对话里出现一次（那条消息的正文就是 question），这里不再重复，
-            只把"轮到你了"说清楚——光靠输入框的 placeholder 太容易被忽略。 */}
-        {result?.pending_input && <div className="inputCard">
-          <div className="risk">需要你补充</div>
-          <p>助手需要上面这条信息才能继续。在下面的输入框回答，这个任务会接着往下走。</p>
-        </div>}
         {result?.pending_confirmation && <div className="confirmCard"><div className="risk">需要你的确认</div><strong>{result.pending_confirmation.summary}</strong><p>系统只会在你确认后执行该操作。</p><div><button className="cancel" disabled={busy} onClick={() => void confirm(false)}>取消</button><button className="approve" disabled={busy} onClick={() => void confirm(true)}>确认执行</button></div></div>}
         <form onSubmit={(event) => { event.preventDefault(); void send(); }}>
           <textarea
@@ -574,9 +520,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
               event.preventDefault();
               void send();
             }}
-            placeholder={result?.pending_input
-              ? "回答上面的问题…（回车发送，Shift + 回车换行）"
-              : "描述你想办理的事情…（回车发送，Shift + 回车换行）"}
+            placeholder="描述你想办理的事情…（回车发送，Shift + 回车换行）"
             rows={2}
           />
           <button disabled={busy}>发送</button>

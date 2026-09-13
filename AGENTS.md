@@ -62,13 +62,7 @@ cd frontend && npm run build  # tsc -b && vite build
 
 `graph/workflow.py` 是调度图，`graph/domain.py` 是领域任务子图。两者之间只有 `DomainTaskRequest` 和 `DomainTaskResult`（`core/models.py`）。
 
-`domain_messages`、工具决策、确认状态都是子图私有状态，不进 `AssistantState`。后续任务只能通过 `artifacts[task_id]` 拿到前置任务的结构化产物，拿不到它的对话过程。
-
-子图有两种中断，都通过 LangGraph interrupt payload 暴露，API 层不依赖子图内部节点名：写操作前的人工确认（`PendingConfirmation`）和缺字段时的追问（`PendingInput`，payload 里的 `kind` 是判别位）。两者的标识都必须在进入中断**之前**存进子图状态——中断节点会在 resume 时重新执行，当场生成的 id 和客户端回带的那个对不上。
-
-**追问不结束本轮。** 早先 `request_information` 之后整轮就收尾，用户的回答成为新的一轮、重新走 `understand` → `plan`，于是同一请求里尚未执行的任务被新计划覆盖掉——"出差顺便订个会议室"补完事由之后，会议室任务凭空消失，而差旅那张单还有被重复创建的风险（幂等键按 `request_id` 派生，新一轮就是新的键）。现在它和确认走同一条恢复路径（`POST /conversations/{id}/input/stream`），任务 DAG 留在检查点里原地继续。挂在追问上的会话不接受普通 `chat` 请求（409）：那会被当成新的一次 invoke，把中断点连同 DAG 一起丢掉。
-
-追问轮**不走 `respond`**：面向用户的问题就是 `request_information` 的 `question` 参数，让模型再复述一遍既多花一次调用，又会同时存在两份措辞不同的问题（界面上就成了对话里问一遍、提示条里再问一遍）。因此这一轮没有流式输出，`question` 就是助手那条消息的正文，它**不在** `messages` 里。恢复时 `_resume_input_command` 把提问（`AIMessage`）和回答（`HumanMessage`）成对补进历史——不补的话刷新之后对话中间凭空少一条，看起来像用户无缘无故答了"培训"。用户尚未回答就刷新的那段时间里，界面从 `pending_input.question` 临时补显示。
+`domain_messages`、工具决策、确认状态都是子图私有状态，不进 `AssistantState`。后续任务只能通过 `artifacts[task_id]` 拿到前置任务的结构化产物，拿不到它的对话过程。人工确认通过 LangGraph interrupt payload（`PendingConfirmation`）暴露，API 层不依赖子图内部节点名。
 
 ### 谁能读原始 messages
 

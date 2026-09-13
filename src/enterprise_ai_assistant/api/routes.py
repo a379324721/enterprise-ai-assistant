@@ -1,11 +1,11 @@
 import asyncio
 import json
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.types import Command
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response, StreamingResponse
@@ -21,17 +21,12 @@ from enterprise_ai_assistant.api.schemas import (
     DemoAuthResponse,
     DevTokenRequest,
     HealthResponse,
-    InputRequest,
     MemoryListResponse,
     TokenResponse,
 )
 from enterprise_ai_assistant.core.config import Settings, get_settings
 from enterprise_ai_assistant.core.metrics import BUDGET_REJECTIONS, REGISTRY
-from enterprise_ai_assistant.core.models import (
-    PendingConfirmation,
-    PendingInput,
-    TaskStatus,
-)
+from enterprise_ai_assistant.core.models import PendingConfirmation, TaskStatus
 from enterprise_ai_assistant.core.observability import LLMUsageTracker
 from enterprise_ai_assistant.core.runs import (
     END_SENTINEL,
@@ -172,10 +167,6 @@ async def _validate_chat_turn(
         raise HTTPException(status_code=404, detail="会话不存在")
     if _pending_confirmation(snapshot) is not None:
         raise HTTPException(status_code=409, detail="当前会话仍有待确认操作")
-    # 挂在追问上的线程不能再发普通消息：那会被当成新的一次 invoke，中断点连同
-    # 整个任务 DAG 一起丢掉。回答要走 /input，放弃则清空会话。
-    if _pending_input(snapshot) is not None:
-        raise HTTPException(status_code=409, detail="当前会话有待补充的问题")
 
 
 def _pending_confirmation(snapshot: Any) -> PendingConfirmation | None:
@@ -184,23 +175,6 @@ def _pending_confirmation(snapshot: Any) -> PendingConfirmation | None:
         try:
             return PendingConfirmation.model_validate(item.value)
         except (AttributeError, ValueError):
-            continue
-    return None
-
-
-def _pending_input(snapshot: Any) -> PendingInput | None:
-    """从同一个 interrupt 通道读取追问。
-
-    两种中断共用这个通道，靠 payload 里的 kind 区分，不靠"哪个模型 validate
-    得过"——那种判别会随字段增减悄悄失效。
-    """
-    for item in getattr(snapshot, "interrupts", ()):
-        value = getattr(item, "value", None)
-        if not isinstance(value, Mapping) or value.get("kind") != "input":
-            continue
-        try:
-            return PendingInput.model_validate(value)
-        except ValueError:
             continue
     return None
 
@@ -238,22 +212,12 @@ async def _response(app: Any, conversation_id: UUID, user_id: str) -> AssistantR
     if not values or values.get("user_id") != user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
     pending = _pending_confirmation(snapshot)
-    awaiting = _pending_input(snapshot)
     tasks = values.get("tasks", [])
     if pending:
         workflow_status = "waiting_confirmation"
         tasks = [
             task.model_copy(update={"status": TaskStatus.WAITING_CONFIRMATION})
             if task.id == pending.task_id
-            else task
-            for task in tasks
-        ]
-    elif awaiting:
-        # 子图挂在 interrupt 上，父图里这个任务还是 running；面板要显示"待补充"。
-        workflow_status = "waiting_input"
-        tasks = [
-            task.model_copy(update={"status": TaskStatus.WAITING_INPUT})
-            if task.id == awaiting.task_id
             else task
             for task in tasks
         ]
@@ -276,7 +240,6 @@ async def _response(app: Any, conversation_id: UUID, user_id: str) -> AssistantR
         artifacts=values.get("artifacts", {}),
         tool_results=values.get("tool_results", []),
         pending_confirmation=pending,
-        pending_input=awaiting,
     )
 
 
@@ -558,43 +521,6 @@ def _resume_command(payload: ConfirmationRequest) -> Command[Any]:
     )
 
 
-def _resume_input_command(payload: InputRequest, awaiting: PendingInput) -> Command[Any]:
-    """恢复追问，并把这一问一答补进会话历史。
-
-    追问本身由领域子图的 respond 产出，而子图此刻挂在 interrupt 上还没返回，父图
-    也就没有把它并进 messages——用户看到的那句话只活在本轮的流式输出里，刷新之后
-    对话中间凭空少一条，看起来像自己无缘无故答了"培训"。所以这里把提问和回答成对
-    写进去。
-
-    回答用 HumanMessage：它就是用户说的话，下一轮的 Context Supervisor 要靠它消解
-    指代。确认决定那条用的是 SystemMessage，因为那不是用户说的，两者刻意不同。
-    """
-    return Command(
-        resume={"input_id": str(payload.input_id), "text": payload.text},
-        update={
-            "messages": [
-                AIMessage(content=awaiting.question),
-                HumanMessage(content=payload.text),
-            ]
-        },
-    )
-
-
-async def _validate_input(
-    app: Any, conversation_id: UUID, user_id: str, payload: InputRequest
-) -> PendingInput:
-    """校验这条回答对得上当前挂着的那次提问，并把提问原文交回给调用方。"""
-    snapshot = await app.state.graph.aget_state(_config(conversation_id, user_id))
-    if not snapshot.values or snapshot.values.get("user_id") != user_id:
-        raise HTTPException(status_code=404, detail="会话不存在")
-    awaiting = _pending_input(snapshot)
-    if awaiting is None:
-        raise HTTPException(status_code=409, detail="当前会话没有待补充的问题")
-    if awaiting.input_id != payload.input_id:
-        raise HTTPException(status_code=409, detail="该问题已过期，请刷新后重试")
-    return awaiting
-
-
 async def _validate_confirmation(
     app: Any, conversation_id: UUID, user_id: str, payload: ConfirmationRequest
 ) -> None:
@@ -637,31 +563,6 @@ async def confirm_stream(
     run = await _start_run(
         request.app,
         _resume_command(payload),
-        conversation_id,
-        user_id,
-        on_disconnect=_disconnect_mode(payload.on_disconnect, settings),
-    )
-    return _stream_response(request, run, apply_on_disconnect=True)
-
-
-@router.post("/conversations/{conversation_id}/input/stream")
-async def provide_input_stream(
-    conversation_id: UUID,
-    payload: InputRequest,
-    request: Request,
-    user_id: CurrentUser,
-) -> StreamingResponse:
-    """回答领域任务的追问，并继续流式执行剩余任务。
-
-    走的是和人工确认同一条恢复路径：任务 DAG 留在检查点里，补完字段原地继续，
-    而不是把回答当成新的一轮重新规划——那会让同一请求里尚未执行的任务被新计划
-    覆盖掉。
-    """
-    settings = get_settings()
-    awaiting = await _validate_input(request.app, conversation_id, user_id, payload)
-    run = await _start_run(
-        request.app,
-        _resume_input_command(payload, awaiting),
         conversation_id,
         user_id,
         on_disconnect=_disconnect_mode(payload.on_disconnect, settings),

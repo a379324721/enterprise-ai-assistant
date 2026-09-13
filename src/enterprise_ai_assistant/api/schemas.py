@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field
 from enterprise_ai_assistant.core.models import (
     MemoryRecord,
     PendingConfirmation,
-    PendingInput,
     PlannedTask,
     RecentAction,
     ToolResult,
@@ -18,18 +17,6 @@ class ChatRequest(BaseModel):
     conversation_id: UUID = Field(default_factory=uuid4)
     request_id: UUID = Field(default_factory=uuid4)
     # SSE 断开时是否终止后台执行；留空则采用服务端默认策略。
-    on_disconnect: Literal["cancel", "continue"] | None = None
-
-
-class InputRequest(BaseModel):
-    """回答领域任务的追问。
-
-    input_id 必须回带：它标识具体是哪一次提问，避免把回答接到一个已经被别的
-    客户端答过、或者早已过期的问题上。
-    """
-
-    input_id: UUID
-    text: str = Field(min_length=1, max_length=4000)
     on_disconnect: Literal["cancel", "continue"] | None = None
 
 
@@ -49,8 +36,6 @@ class AssistantResponse(BaseModel):
     artifacts: dict[str, Any]
     tool_results: list[ToolResult]
     pending_confirmation: PendingConfirmation | None = None
-    # 领域任务缺字段时挂起的提问。和确认一样是可继续的中断点，不是本轮的终点。
-    pending_input: PendingInput | None = None
     # 仍在执行时给出当前运行标识，客户端据此重新订阅事件流。
     run_id: str | None = None
 

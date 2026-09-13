@@ -8,7 +8,6 @@ from enterprise_ai_assistant.core.models import (
     DomainTaskResult,
     MemoryRecord,
     PendingConfirmation,
-    PendingInput,
     PlannedTask,
     RecentAction,
     ToolResult,
@@ -50,7 +49,6 @@ class DomainTaskState(TypedDict):
     domain_messages: list[Any]
     domain_iterations: int
     pending_confirmation: NotRequired[PendingConfirmation | None]
-    pending_input: NotRequired[PendingInput | None]
     pending_tool_call: NotRequired[dict[str, Any] | None]
     confirmation_approved: NotRequired[bool]
     domain_waiting_input: bool
