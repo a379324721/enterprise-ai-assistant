@@ -26,7 +26,7 @@ class AgentName(StrEnum):
 
 
 class PlannedTask(BaseModel):
-    """Planner 只描述领域目标和依赖，不决定字段、工具或风险。"""
+    """任务只描述领域目标和依赖，不决定字段、工具或风险。"""
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     title: str = Field(min_length=1, max_length=200)
@@ -69,6 +69,50 @@ class TaskPlan(BaseModel):
         if visited != ids:
             raise ValueError("task dependencies must form an acyclic graph")
         return self
+
+
+class TaskOutline(BaseModel):
+    """Context Supervisor 在理解结果里直接给出的任务。
+
+    和 PlannedTask 分开定义：状态、成功标准由运行时维护，不该出现在模型要填的结构里。
+    """
+
+    title: str = Field(min_length=1, max_length=200)
+    domain: AgentName
+    objective: str = Field(min_length=1, max_length=2000)
+    # 用前置任务的领域指代它，不用 id 或序号。实测不开思考时，字符串 id 数组会被写成
+    # ['id": ']，加 schema 说明也过半失败；整数序号则 0 起和 1 起混用，歧义消不掉。
+    # 拆分规则本来就是一个领域一个目标，领域足以唯一指代任务，而枚举值模型写得稳。
+    # 只能依赖排在前面的任务，环无从出现。任务 id 由运行时按位置生成为 task-N。
+    depends_on: list[AgentName] = Field(
+        default_factory=list,
+        description="依赖的前置任务的领域，只能是排在本任务前面的任务的 domain",
+    )
+
+
+def plan_from_outlines(user_goal: str, outlines: list[TaskOutline]) -> TaskPlan:
+    """把 Supervisor 给出的任务换成运行时的计划；依赖非法时抛 ValueError。"""
+    tasks: list[PlannedTask] = []
+    earlier: dict[AgentName, str] = {}
+    for position, outline in enumerate(outlines, start=1):
+        missing = [domain for domain in outline.depends_on if domain not in earlier]
+        if missing:
+            raise ValueError(
+                f"task {position} depends on {[item.value for item in missing]}, "
+                "which is not an earlier task"
+            )
+        task_id = f"task-{position}"
+        tasks.append(
+            PlannedTask(
+                id=task_id,
+                title=outline.title,
+                domain=outline.domain,
+                objective=outline.objective,
+                depends_on=[earlier[domain] for domain in dict.fromkeys(outline.depends_on)],
+            )
+        )
+        earlier.setdefault(outline.domain, task_id)
+    return TaskPlan(user_goal=user_goal, tasks=tasks)
 
 
 class TurnRelation(StrEnum):
@@ -150,17 +194,35 @@ class ContextResolution(BaseModel):
     # 与本次请求相关的记忆 key。Supervisor 只做相关性筛选，不读取也不改写 value，
     # 领域字段的判断仍然只发生在领域子图里。
     relevant_memory_keys: list[str] = Field(default_factory=list, max_length=20)
-    # continue 表示本轮在补充上一轮停在待补充的任务：跳过 Planner，原任务续跑。
+    # continue 表示本轮在补充上一轮停在待补充的任务：不重新规划，原任务续跑。
     # 没有待补充任务时，运行时会忽略这里的 continue。
     turn_relation: TurnRelation = TurnRelation.NEW
     # continue / cancel 指向的事项。补充当前事项时可以留空；恢复或取消被搁置的事项时必填。
     target_plan_id: str | None = None
-    # 需要规划时本次请求涉及的业务领域。只有一个领域时跳过 Planner：单领域请求只会
-    # 被拆成一个任务，那次模型调用的产出事先就知道。这是意图分类，不是字段抽取。
-    domains: list[AgentName] = Field(default_factory=list, max_length=5)
+    # 新的业务请求拆出的任务 DAG。原先由单独的 Planner 调用产出，但它的输入只有这份理解
+    # 结果，领域归类也已经在这里做完，多一次调用只多出依赖关系这点信息。并进同一次输出后，
+    # 每个需要执行的轮次省一次模型调用。只描述领域、目标和依赖，不是字段抽取。
+    # continue 轮次也要求给出：能续跑时运行时忽略它，误报 continue、指认不到事项时照它执行。
+    # 仍然留空时运行时退回 Planner。
+    tasks: list[TaskOutline] = Field(default_factory=list, max_length=20)
     # 直接对用户的回复。只在本轮不执行任务、也不是取消事项时使用；其余情况运行时忽略它：
     # 执行任务时由领域 Agent 说话，取消事项时运行时按真实处理结果说话。
     reply: str = Field(default="", max_length=4000)
+
+    @property
+    def domains(self) -> list[AgentName]:
+        return [task.domain for task in self.tasks]
+
+    def plan(self) -> TaskPlan | None:
+        if not self.tasks:
+            return None
+        return plan_from_outlines(self.standalone_request, self.tasks)
+
+    @model_validator(mode="after")
+    def validate_tasks(self) -> "ContextResolution":
+        # 依赖非法在这里抛错，交给结构化输出的重试；放到规划节点才发现的话，整轮只能失败。
+        self.plan()
+        return self
 
     @model_validator(mode="after")
     def validate_reply(self) -> "ContextResolution":

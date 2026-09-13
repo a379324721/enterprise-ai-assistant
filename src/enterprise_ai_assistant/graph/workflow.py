@@ -439,7 +439,7 @@ class Workflow:
 
     async def plan(self, state: AssistantState) -> dict[str, Any]:
         context = ContextResolution.model_validate(state["understanding"])
-        plan = self.supervisor.single_domain_plan(context) or await self.supervisor.plan(context)
+        plan = await self.supervisor.plan(context)
         tasks = [task.model_copy(update={"status": TaskStatus.PENDING}) for task in plan.tasks]
         return {"user_goal": plan.user_goal, "tasks": tasks}
 

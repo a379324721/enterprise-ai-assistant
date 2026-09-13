@@ -71,8 +71,8 @@ cd frontend && npm run build  # tsc -b && vite build
 
 三层各自的禁区写在各自的 prompt 里（`services/planning.py`、`agents/domain_runtime.py`）：
 
-- **Context Supervisor**（`resolve_context`）只消解指代、判断意图、生成独立请求。**不得抽取或补写差旅、报销、请假等领域字段。**
-- **Planner**（`plan`）只产出任务 DAG：领域、目标、成功标准、依赖。**不选工具、不生成参数、不判断风险。** Supervisor 在 `ContextResolution.domains` 里只给出一个领域时跳过 Planner，由 `SupervisorAgent.single_domain_plan` 直接构造单任务计划——单领域请求交给 Planner 也只会拆出一个任务。两处的领域归类共用 `services/planning.py` 的 `_DOMAIN_ROUTING`，改归类规则只改那一处。
+- **Context Supervisor**（`resolve_context`）消解指代、判断意图、生成独立请求，并在同一次结构化输出里给出任务 DAG（`ContextResolution.tasks`：领域、标题、目标、依赖）。依赖写前置任务的**领域**而不是 id：不开思考时模型写字符串 id 数组会生成残缺值，写整数序号会 0 起 1 起混用，而拆分粒度本来就是一个领域一个目标。`continue` 轮次也要给出任务，误报 `continue`、指认不到事项时照它执行。**不得抽取或补写差旅、报销、请假等领域字段，不选工具、不生成参数、不判断风险。** 依赖指向的领域不在排在前面的任务里时，`ContextResolution` 校验抛错（只能依赖前面的任务，也就不会成环），交给结构化输出重试。
+- **Planner**（`plan`）只是兜底：理解结果需要执行、模型却漏写了任务时才调用，`SupervisorAgent.plan` 负责二选一。原先它是每个多领域轮次的必经调用，但它的输入只有理解结果，领域归类也已在理解阶段做完，并进去每轮省一次模型调用。两处的领域归类共用 `services/planning.py` 的 `_DOMAIN_ROUTING`，改归类规则只改那一处。
 - **领域 Agent**（`DomainAgentRuntime`）才判断字段是否齐全、选择工具、解释结果。
 
 领域有 travel、expense、hr、meeting 四个业务域加一个兜底的 policy。新增领域时，`CAPABILITY_SUMMARY`、`_DOMAIN_INSTRUCTIONS`、`_DOMAIN_ROUTING` 和评测集都要跟上——评测里有一条断言会检查数据集是否覆盖了每个领域。
@@ -91,7 +91,7 @@ cd frontend && npm run build  # tsc -b && vite build
 
 每轮 `understand` 把当前计划和搁置计划里待补充任务的摘要（`OpenTask`：`plan_id`、标题、缺失字段**名**、是否搁置，没有字段值）交给 Context Supervisor，由它填 `turn_relation` 和 `target_plan_id`：
 
-- `continue`：跳过 Planner，待补充的任务放回 `PENDING` 续跑，草稿经 `DomainTaskRequest.draft` 交还领域 Agent。指向搁置计划时整体换回来，当前计划没办完就换下去搁置。`user_goal` 不变（界面展示的是整件事的目标），本轮的补充经 `standalone_request` 进 `DomainTaskRequest.user_goal`。
+- `continue`：不重新规划，待补充的任务放回 `PENDING` 续跑，草稿经 `DomainTaskRequest.draft` 交还领域 Agent。指向搁置计划时整体换回来，当前计划没办完就换下去搁置。`user_goal` 不变（界面展示的是整件事的目标），本轮的补充经 `standalone_request` 进 `DomainTaskRequest.user_goal`。
 - `cancel`：目标计划里 `WAITING_INPUT` / `PENDING` 的任务改为 `REJECTED`（搁置计划直接移除），回复由运行时按实际放弃的事项用固定文案写出（`Workflow._cancelled_text`），指认不到事项时回 `NOTHING_TO_CANCEL_REPLY`——不用模型写的 `reply`，模型在同一次输出里无从知道运行时能不能指认到它。已提交的单据不在清单里，也不受影响——撤销已提交单据是 `new` 的业务请求，走领域的 `revoke_*` 工具。
 - `new` 且需要规划：当前计划没办完就搁置，然后照常规划。
 - `new` 且不需要规划（闲聊、道谢、清单外诉求）：什么都不动，直接发出 `ContextResolution.reply`，用户回头还能补充。

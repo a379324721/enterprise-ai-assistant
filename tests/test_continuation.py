@@ -15,6 +15,7 @@ from enterprise_ai_assistant.core.models import (
     ContextResolution,
     OpenTask,
     PlannedTask,
+    TaskOutline,
     TaskPlan,
     TaskStatus,
     TurnRelation,
@@ -151,7 +152,9 @@ def _resolution(
         requires_task_planning=planning,
         turn_relation=relation,
         target_plan_id=target,
-        domains=list(domains),
+        tasks=[
+            TaskOutline(title=request, domain=domain, objective=request) for domain in domains
+        ],
         reply="" if planning or relation == TurnRelation.CANCEL else "不客气",
     )
 
@@ -396,7 +399,7 @@ async def test_cancel_with_nothing_unfinished_is_ignored() -> None:
 
 
 @pytest.mark.asyncio
-async def test_single_domain_request_skips_the_planner() -> None:
+async def test_tasks_from_the_supervisor_skip_the_planner() -> None:
     planning = ScriptedPlanning([_resolution("查询考勤制度", domains=[AgentName.POLICY])])
     graph, _ = _build(planning)
 
@@ -409,13 +412,27 @@ async def test_single_domain_request_skips_the_planner() -> None:
 
 
 @pytest.mark.asyncio
-async def test_multi_domain_request_still_uses_the_planner() -> None:
+async def test_multi_domain_tasks_from_the_supervisor_skip_the_planner() -> None:
     planning = ScriptedPlanning(
         [_resolution("出差并查考勤", domains=[AgentName.TRAVEL, AgentName.POLICY])]
     )
     graph, _ = _build(planning)
 
-    await _turn(graph, "去上海出差，顺便查下考勤制度")
+    state = await _turn(graph, "去上海出差，顺便查下考勤制度")
+
+    assert planning.plan_calls == 0
+    assert [(task.id, task.domain) for task in state["tasks"]] == [
+        ("task-1", AgentName.TRAVEL),
+        ("task-2", AgentName.POLICY),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_business_request_without_tasks_falls_back_to_the_planner() -> None:
+    planning = ScriptedPlanning([_resolution("查询差旅制度")])
+    graph, _ = _build(planning)
+
+    await _turn(graph, "差旅制度")
 
     assert planning.plan_calls == 1
 

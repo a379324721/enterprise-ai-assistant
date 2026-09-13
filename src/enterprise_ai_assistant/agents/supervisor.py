@@ -3,7 +3,6 @@ from collections.abc import Sequence
 from langsmith import traceable
 
 from enterprise_ai_assistant.core.models import (
-    AgentName,
     ContextResolution,
     MemoryExtraction,
     OpenTask,
@@ -33,8 +32,12 @@ class SupervisorAgent:
             conversation, memory_keys, open_tasks, recent_actions, user_name
         )
 
-    @traceable(name="supervisor-plan", run_type="chain")
     async def plan(self, context: ContextResolution) -> TaskPlan:
+        """理解结果里已有任务时直接用；没有时才退回单独的 Planner 调用。"""
+        return context.plan() or await self._replan(context)
+
+    @traceable(name="supervisor-plan", run_type="chain")
+    async def _replan(self, context: ContextResolution) -> TaskPlan:
         return await self._planning.plan(context)
 
     @traceable(name="supervisor-extract-memories", run_type="chain")
@@ -42,28 +45,6 @@ class SupervisorAgent:
         self, conversation: list[dict[str, str]], known: list[str]
     ) -> MemoryExtraction:
         return await self._planning.extract_memories(conversation, known)
-
-    @staticmethod
-    def single_domain_plan(context: ContextResolution) -> TaskPlan | None:
-        """Supervisor 已认定只涉及一个领域时，直接构造单任务计划，省掉一次 Planner 调用。
-
-        Planner 的规则是"一个领域一个目标"，单领域请求交给它也只会拆出一个任务，
-        等它的只是一次可预知结果的结构化输出。领域不唯一或没给出时返回 None，走 Planner。
-        """
-        domains = set(context.domains) - {AgentName.SUPERVISOR}
-        if len(domains) != 1 or len(set(context.domains)) != 1:
-            return None
-        return TaskPlan(
-            user_goal=context.standalone_request,
-            tasks=[
-                PlannedTask(
-                    id="task-1",
-                    title=context.intent_summary[:200],
-                    domain=domains.pop(),
-                    objective=context.standalone_request[:2000],
-                )
-            ],
-        )
 
     @staticmethod
     @traceable(name="supervisor-task-scheduling", run_type="chain")

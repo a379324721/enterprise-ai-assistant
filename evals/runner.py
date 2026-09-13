@@ -181,11 +181,8 @@ class EvalHarness:
         resolution = await self._planning.resolve_context(
             [{"role": "user", "content": case.request}]
         )
-        # 与生产路径一致：Supervisor 判定单领域时不调用 Planner。这个评测集因此
-        # 同时考察两处的领域路由。
-        plan = SupervisorAgent.single_domain_plan(resolution) or await self._planning.plan(
-            resolution
-        )
+        # 与生产路径一致：任务由 Supervisor 在理解结果里给出，没给出时才退回 Planner。
+        plan = await SupervisorAgent(self._planning).plan(resolution)
         problems: list[str] = []
         domains = [task.domain for task in plan.tasks]
         if set(domains) != set(case.expect_domains):

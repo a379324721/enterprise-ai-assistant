@@ -18,8 +18,8 @@ from enterprise_ai_assistant.tools.registry import CAPABILITY_SUMMARY
 #: 渲染好的能力清单，Supervisor 与 Planner 共用，prompt 里只此一份能力边界。
 _CAPABILITIES = "\n".join(f"- {summary}" for summary in CAPABILITY_SUMMARY.values())
 
-#: 领域路由规则。Supervisor 判断单领域请求时跳过 Planner，两处必须按同一套规则归类，
-#: 否则同一句话走快路径和走 Planner 会落到不同领域。
+#: 领域路由规则。任务通常由 Supervisor 直接拆出，Planner 只兜底，两处必须按同一套规则
+#: 归类，否则同一句话走哪条路径会落到不同领域。
 _DOMAIN_ROUTING = """\
 domain 只能是 travel、expense、hr、meeting、policy。差旅/住宿属于 travel，报销/发票属于 expense，
 请假/余额属于 hr，会议室查询与预订属于 meeting。
@@ -92,9 +92,20 @@ class LLMPlanningService:
   以及能力之外的诉求，例如代买机票火车票、办理离职调岗、代替审批——交给领域环节只会空转，
   最后给用户一堆办不到的承诺。
 
-requires_task_planning 为 true 时，把本次请求涉及的业务领域写入 domains，归类规则如下：
+## 拆分任务（tasks）
+requires_task_planning 为 true 时，把 standalone_request 拆成粗粒度任务写入 tasks，continue
+也要写：能续跑时系统沿用原来的任务、忽略这里，找不到可续跑的事项时就按这里执行。
+cancel 时 tasks 留空。领域归类规则如下：
 {domain_routing}
-continue 和 cancel 时 domains 留空。
+- 粒度是“一个领域一个目标”，多数请求只有一个任务。同一领域内部的连续步骤不要拆开——
+  领域环节自己会先查询再写入，把“查空闲会议室”和“预订会议室”拆开，只会让同一件事
+  被回答两遍。只有跨领域、或后一步确实需要前一步的产物时才拆成多个任务。
+- 后一步需要前一步的产物时，按先后顺序排列，在后一步的 depends_on 里写前一步的 domain：
+  “出差期间订个会议室”拆成 travel 和 depends_on 为 ["travel"] 的 meeting，因为会议室的
+  地点和日期来自差旅任务的产物。互不相干的任务 depends_on 为空数组。
+- title 是给用户看的简短事项名（如“上海出差申请”）；
+  objective 说明这个任务要达成什么，不得抽取或补写字段，不选工具，不判断风险。
+- 不得增加用户没有要求的写操作，不得把能力清单之外的事写成任务。
 
 ## 与未办完事项的关系（turn_relation）
 输入会给出未办完的任务（标题和缺失字段名，没有字段值）。每条带 plan_id：shelved 为 false
@@ -145,6 +156,8 @@ continue 和 cancel 时 domains 留空。
         ).with_retry(
             stop_after_attempt=2
         )
+        # 任务通常由 Context Supervisor 在理解结果里直接给出，这条链只是兜底：理解结果
+        # 需要执行、模型却漏写了任务时才会调用。
         self._planner = ChatPromptTemplate.from_messages(
             [
                 (
