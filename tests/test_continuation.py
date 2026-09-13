@@ -436,3 +436,77 @@ async def test_continue_without_a_waiting_task_falls_back_to_planning() -> None:
     assert planning.plan_calls == 1
     assert planning.seen_open_tasks == [[]]
     assert _statuses(state)[0] == ("task-1", TaskStatus.WAITING_INPUT)
+
+
+class FailOnceRuntimeFactory(DraftAwareRuntimeFactory):
+    """续跑时第一次调用模型抛错，模拟模型服务额度耗尽。"""
+
+    def __init__(self, registry: DomainToolRegistry) -> None:
+        super().__init__(registry)
+        self.fail_next_resume = True
+
+    def create(self, agent: AgentName, context: ToolContext) -> DraftAwareRuntime:
+        runtime = super().create(agent, context)
+        factory = self
+        original = runtime.decide
+
+        async def decide(
+            task_objective: str, messages: list[BaseMessage], *, task_id: str
+        ) -> AIMessage:
+            payload = json.loads(str(messages[0].content))
+            if "previous_draft" in payload and factory.fail_next_resume:
+                factory.fail_next_resume = False
+                raise RuntimeError("Error code: 403 - Free quota exhausted")
+            return await original(task_objective, messages, task_id=task_id)
+
+        runtime.decide = decide  # type: ignore[method-assign]
+        return runtime
+
+
+@pytest.mark.asyncio
+async def test_a_resume_that_crashed_can_be_resumed_again() -> None:
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差并查考勤制度"),
+            _resolution("去上海出差单程", relation=TurnRelation.CONTINUE),
+            _resolution("去上海出差单程", relation=TurnRelation.CONTINUE),
+        ]
+    )
+    provider = LocalEnterpriseToolProvider(
+        InMemoryActionRepository(), InMemoryPolicyRepository()
+    )
+    runtimes = FailOnceRuntimeFactory(DomainToolRegistry(provider))
+    graph = build_graph(
+        Workflow(SupervisorAgent(planning)), DomainTaskWorkflow(runtimes), InMemorySaver()
+    )
+    await _turn(graph, "去上海出差，顺便查下考勤制度")
+
+    with pytest.raises(RuntimeError, match="403"):
+        await _turn(graph, "单程")
+
+    retried = await _turn(graph, "单程")
+
+    # 重发时 Supervisor 仍然看得到那件待补充的事，于是续跑而不是重新规划。
+    assert [item.task_id for item in planning.seen_open_tasks[2]] == ["task-1"]
+    assert planning.plan_calls == 1
+    assert _statuses(retried) == [
+        ("task-1", TaskStatus.COMPLETED),
+        ("task-2", TaskStatus.COMPLETED),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_first_attempt_crash_leaves_the_task_pending_not_waiting() -> None:
+    tasks = [
+        PlannedTask(
+            id="task-1",
+            title="差旅",
+            domain=AgentName.TRAVEL,
+            objective="差旅",
+            status=TaskStatus.RUNNING,
+        )
+    ]
+
+    [recovered] = Workflow._recover_interrupted(tasks, {})
+
+    assert recovered.status == TaskStatus.PENDING

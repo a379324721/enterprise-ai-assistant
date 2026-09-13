@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 import structlog
@@ -263,7 +263,34 @@ class Workflow:
             return shelved[0]
         return None
 
+    @staticmethod
+    def _recover_interrupted(
+        tasks: list[PlannedTask], drafts: dict[str, TaskDraft]
+    ) -> list[PlannedTask]:
+        """把上一轮中途失败、停在 RUNNING 的任务放回可续跑的状态。
+
+        同一会话同时只有一次执行，understand 开始时不可能有任务真的在跑。停在 RUNNING
+        说明上一轮在领域子图里抛了异常（例如模型服务 403），任务状态没来得及写回。
+        不恢复的话它既不算待补充也不会被调度：用户重发补充信息时 Supervisor 看不到
+        未办完的事项，只能重新规划，草稿随之丢失。有草稿说明它本来停在待补充上，
+        放回 WAITING_INPUT；没有草稿说明第一次执行就失败了，放回 PENDING。
+        """
+        return [
+            task.model_copy(
+                update={
+                    "status": TaskStatus.WAITING_INPUT
+                    if task.id in drafts
+                    else TaskStatus.PENDING
+                }
+            )
+            if task.status == TaskStatus.RUNNING
+            else task
+            for task in tasks
+        ]
+
     async def understand(self, state: AssistantState) -> dict[str, Any]:
+        recovered = self._recover_interrupted(state.get("tasks", []), state.get("drafts", {}))
+        state = cast(AssistantState, {**state, "tasks": recovered})
         shelved = list(state.get("shelved_plans", []))
         plan_id = self._plan_id(state)
         current_open = self._open_tasks_of(
@@ -290,6 +317,8 @@ class Workflow:
             "understanding": context.model_dump(mode="json"),
             "history_digest": self._extend_digest(state, context.standalone_request),
             "plan_id": plan_id,
+            # 恢复后的任务状态要写回检查点，否则闲聊轮之后它还停在 RUNNING。
+            "tasks": recovered,
             "notices": [],
             "tool_results": [],
             "active_task_id": None,
