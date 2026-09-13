@@ -360,8 +360,8 @@ class Workflow:
             return update
 
         if relation == TurnRelation.CANCEL and target is not None:
-            # 只放弃还没提交的部分。已经提交的单据是业务事实，系统没有撤销工具，
-            # 这里也不假装处理它们。
+            # 只放弃还没提交的部分。已经提交的单据是业务事实，撤销要走领域的撤销工具
+            # 和人工确认，这里不替用户处理它们。
             unfinished = {TaskStatus.WAITING_INPUT, TaskStatus.PENDING}
             if target == "current":
                 dropped = [task.title for task in state["tasks"] if task.status in unfinished]

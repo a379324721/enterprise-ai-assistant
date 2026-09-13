@@ -20,7 +20,7 @@ type Result = {
   tasks: Task[]; artifacts: Record<string, unknown>; pending_confirmation?: Confirmation | null;
   matters: Matter[]; steps: TurnStep[];
 };
-type ActionItem = {reference_id: string; action_type: string; summary: string; created_at: string; fields: Record<string, string>};
+type ActionItem = {reference_id: string; action_type: string; summary: string; created_at: string; fields: Record<string, string>; revoked_at: string | null};
 //: decision 不是对话双方说的话，而是用户在确认卡片上做的选择。后端把它作为一条
 //: SystemMessage 追加到会话历史，所以刷新后仍在；本地这条只是为了立刻有反馈。
 //: steps 是这一轮执行过的工具调用，只在本地插入，不进会话历史——刷新后不再显示。
@@ -534,7 +534,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
     </header>
     <section className="layout">
       <div className="chatPanel">
-        <div className="intro"><span>AI</span><div><strong>我是企业智能助手</strong><p>我可以协助差旅、报销、请假和制度查询。涉及提交的操作会先请你确认。</p></div></div>
+        <div className="intro"><span>AI</span><div><strong>我是企业智能助手</strong><p>我可以协助差旅、报销、请假、会议室预订和制度查询，也能帮你查已提交单据的状态。涉及提交的操作会先请你确认。</p></div></div>
         {messages.length === 0 && !loadingHistory && <div className="examples">{examples.map((item) => <button key={item} disabled={busy} onClick={() => void send(item)}>{item}<b>↗</b></button>)}</div>}
         {loadError && <div className="loadBanner"><span>{loadError}</span><button disabled={loadingHistory} onClick={() => void enterConversation()}>重试</button></div>}
         <div
@@ -600,9 +600,9 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
         <div className="asideHead actionsHead"><span>我的单据</span>{actions.length > 0 && <small>{actions.length}</small>}</div>
         {actions.length === 0 && <p className="asideIdle">这里会列出你提交过的单据</p>}
         <div className="actionList">{actions.map((item, index) => <div className="action" key={item.reference_id || `action-${index}`}>
-          {/* 每条都标"已提交"。workflow_actions 只知道适配器被调用过，不知道外部
-              系统的审批结果；不写状态，这份列表就会被整体读成"这些都批了"。 */}
-          <div><strong>{ACTION_LABELS[item.action_type] || item.action_type}</strong><em>已提交</em><small>{item.created_at.slice(5, 10)}</small></div>
+          {/* 只分"已提交"和"已撤销"。workflow_actions 不知道外部系统的审批结果；
+              不写状态，这份列表就会被整体读成"这些都批了"。 */}
+          <div><strong>{ACTION_LABELS[item.action_type] || item.action_type}</strong><em>{item.revoked_at ? "已撤销" : "已提交"}</em><small>{item.created_at.slice(5, 10)}</small></div>
           {/* 字段名不翻译也不重排，顺序由后端白名单决定，前端只负责拼；枚举取值才翻译。 */}
           <p>{Object.values(item.fields).map((value) => VALUE_LABELS[value] ?? value).join(" · ")}</p>
           <code>{item.reference_id}</code>

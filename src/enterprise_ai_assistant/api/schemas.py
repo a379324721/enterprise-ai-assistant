@@ -99,8 +99,8 @@ class TokenResponse(BaseModel):
 class MemoryListResponse(BaseModel):
     """用户可见的记忆清单。
 
-    画像可以删除；近期单据只是 workflow_actions 的投影，要作废得走业务流程，
-    所以在这里是只读的。
+    画像可以删除；近期单据只是 workflow_actions 的投影，要撤销得在对话里走业务流程
+    （撤销工具要人工确认），所以在这里是只读的。
     """
 
     memories: list[MemoryRecord]
@@ -111,8 +111,8 @@ class ActionListResponse(BaseModel):
     """当前用户提交过的单据清单。
 
     数据来自 workflow_actions，与长期记忆开关无关：单据是业务事实，不是画像。
-    这张表只知道适配器被调用过，不知道外部系统的审批结果，所以这里没有状态字段——
-    界面上凭它显示"审批中"或"已通过"都是幻觉。
+    这张表只知道适配器被调用过、以及本系统里有没有撤销过，不知道外部系统的审批结果，
+    所以只有撤销标记而没有审批状态——界面上凭它显示"审批中"或"已通过"都是幻觉。
     """
 
     actions: list[RecentAction]

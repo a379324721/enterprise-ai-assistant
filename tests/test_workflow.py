@@ -131,6 +131,7 @@ class ScriptedRuntime:
                     {
                         "name": "create_travel_application",
                         "args": {
+                            "origin": "杭州",
                             "destination": "上海",
                             "start_date": "2026-08-10",
                             "end_date": "2026-08-14",

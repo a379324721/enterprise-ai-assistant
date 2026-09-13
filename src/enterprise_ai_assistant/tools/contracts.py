@@ -1,3 +1,4 @@
+import datetime as dt
 from datetime import date, time
 from decimal import Decimal
 from enum import StrEnum
@@ -56,6 +57,9 @@ class InformationRequestInput(StrictToolInput):
 
 
 class TravelApplicationInput(StrictToolInput):
+    # 出发地决定交通方式和差旅标准，没有它的申请单审批人无从判断；
+    # "我的单据"里只写目的地时，也分不清是去上海还是从上海出发。
+    origin: str = Field(min_length=1, max_length=200)
     destination: str = Field(min_length=1, max_length=200)
     start_date: date
     # 单程（调动、外派、返程另行申请）没有结束日期。行程类型单独成字段而不是只把
@@ -133,6 +137,76 @@ class MeetingRoomBookingInput(StrictToolInput):
         return self
 
 
+class SubmissionQueryInput(StrictToolInput):
+    """查询当前用户提交过的单据。单据类型由工具注册表固定，用户身份由运行时注入。"""
+
+    reference_id: str | None = Field(
+        default=None,
+        max_length=64,
+        description="单号，例如 MTG-20260913-BD48AD；用户没有指明具体哪张时留空，返回最近几张",
+    )
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class SubmissionRevokeInput(StrictToolInput):
+    """撤销一张已提交的单据。单据类型由工具注册表固定。"""
+
+    reference_id: str = Field(min_length=1, max_length=64, description="要撤销的单号")
+
+
+class SubmissionUpdateInput(StrictToolInput):
+    """修改已提交单据的公共部分：只传要改的字段，没传的沿用原值。"""
+
+    reference_id: str = Field(min_length=1, max_length=64, description="要修改的单号")
+
+    def changes(self) -> dict[str, Any]:
+        return self.model_dump(mode="json", exclude={"reference_id"}, exclude_none=True)
+
+    @model_validator(mode="after")
+    def validate_has_changes(self) -> "SubmissionUpdateInput":
+        # 空修改在确认卡上看起来和真修改一样，用户点了确认却什么也没发生。
+        if not self.changes():
+            raise ValueError("at least one field must be changed")
+        return self
+
+
+class TravelApplicationUpdateInput(SubmissionUpdateInput):
+    origin: str | None = Field(default=None, min_length=1, max_length=200)
+    destination: str | None = Field(default=None, min_length=1, max_length=200)
+    start_date: date | None = None
+    trip_type: Literal["round_trip", "one_way"] | None = Field(
+        default=None, description="改成 one_way 时原来的 end_date 会被清掉；改成 round_trip 必须给 end_date"
+    )
+    end_date: date | None = None
+    purpose: str | None = Field(default=None, min_length=1, max_length=1000)
+
+
+class ExpenseClaimUpdateInput(SubmissionUpdateInput):
+    expense_type: str | None = Field(default=None, min_length=1, max_length=100)
+    amount: Decimal | None = Field(default=None, gt=0)
+    currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
+    receipt_refs: list[str] | None = Field(default=None, min_length=1)
+    travel_reference: str | None = Field(default=None, max_length=256)
+
+
+class LeaveRequestUpdateInput(SubmissionUpdateInput):
+    leave_type: str | None = Field(default=None, min_length=1, max_length=100)
+    start_date: date | None = None
+    end_date: date | None = None
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class MeetingBookingUpdateInput(SubmissionUpdateInput):
+    room_id: str | None = Field(
+        default=None, min_length=1, max_length=64, description="换房间时必须是空闲查询结果里的 room_id"
+    )
+    # 字段名 date 会遮住同名类型，注解里得走模块路径。
+    date: dt.date | None = None
+    start_time: time | None = None
+    end_time: time | None = None
+    subject: str | None = Field(default=None, min_length=1, max_length=200)
+
+
 class BusinessToolOutcome(BaseModel):
     tool: str
     success: bool
@@ -169,4 +243,28 @@ class EnterpriseToolProvider(Protocol):
 
     async def submit_leave_request(
         self, context: ToolContext, payload: LeaveRequestInput
+    ) -> BusinessToolOutcome: ...
+
+    async def query_submissions(
+        self, context: ToolContext, action_type: str, payload: SubmissionQueryInput
+    ) -> BusinessToolOutcome: ...
+
+    async def revoke_submission(
+        self, context: ToolContext, action_type: str, payload: SubmissionRevokeInput
+    ) -> BusinessToolOutcome: ...
+
+    async def update_travel_application(
+        self, context: ToolContext, payload: TravelApplicationUpdateInput
+    ) -> BusinessToolOutcome: ...
+
+    async def update_expense_claim(
+        self, context: ToolContext, payload: ExpenseClaimUpdateInput
+    ) -> BusinessToolOutcome: ...
+
+    async def update_leave_request(
+        self, context: ToolContext, payload: LeaveRequestUpdateInput
+    ) -> BusinessToolOutcome: ...
+
+    async def update_meeting_booking(
+        self, context: ToolContext, payload: MeetingBookingUpdateInput
     ) -> BusinessToolOutcome: ...

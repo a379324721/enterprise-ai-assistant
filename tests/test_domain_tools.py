@@ -32,10 +32,14 @@ def test_each_domain_only_receives_its_allowlisted_tools() -> None:
     assert names == {
         "search_expense_policy",
         "create_expense_claim",
+        "query_expense_claims",
+        "update_expense_claim",
+        "revoke_expense_claim",
         "request_information",
     }
     assert "create_travel_application" not in names
     assert next(item for item in expense if item.tool.name == "create_expense_claim").risk == ToolRisk.WRITE
+    assert next(item for item in expense if item.tool.name == "update_expense_claim").risk == ToolRisk.WRITE
 
 
 @pytest.mark.asyncio

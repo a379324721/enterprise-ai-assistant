@@ -150,6 +150,11 @@ class EvalHarness:
             problems.append(
                 f"target_plan_id={resolution.target_plan_id}，期望 {case.expect_target_plan_id}"
             )
+        if case.expect_domains and set(resolution.domains) != set(case.expect_domains):
+            problems.append(
+                f"domains={[item.value for item in resolution.domains]}"
+                f"，期望 {[item.value for item in case.expect_domains]}"
+            )
         if resolution.target_plan_id in case.forbid_target_plan_ids:
             problems.append(f"target_plan_id 指向了不该恢复的事项 {resolution.target_plan_id}")
         missing = [
@@ -247,8 +252,8 @@ class EvalHarness:
             names = [str(call["name"]) for call in response.tool_calls]
             return CaseResult("tool_choice", case.id, False, f"一次调用了多个工具 {names}")
         chosen = str(response.tool_calls[0]["name"])
-        passed = chosen == case.expect_tool
-        detail = "" if passed else f"选中 {chosen}，期望 {case.expect_tool}"
+        passed = chosen == case.expect_tool or chosen in case.also_accept
+        detail = "" if passed else f"选中 {chosen}，期望 {[case.expect_tool, *case.also_accept]}"
         return CaseResult("tool_choice", case.id, passed, detail)
 
     async def run_guardrail_case(self, case: GuardrailCase) -> CaseResult:

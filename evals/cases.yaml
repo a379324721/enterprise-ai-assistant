@@ -49,15 +49,29 @@ context_cases:
         content: 好的，差旅申请已创建，单号 TR-001。
       - role: user
         content: 把结束时间改成周五
-    expect_task_planning: false
+    expect_task_planning: true
+    expect_domains: [travel]
     # 点名目的地或引用单号都算正确消解，不强制模型选哪一种表达。
     expect_any_keywords: ["杭州", "TR-001"]
     note: |
-      重点仍是从历史消解出"结束时间"指向的是哪次差旅——keyword 与
-      requires_task_planning 分开判定，改 false 不影响这部分。
-      系统没有改单工具（travel 域只有查制度和创建申请），所以改单诉求不进任务规划。
-      早先这里期望 true，跑下来领域 Agent 要么擅自新建一张用户没要求的申请，
-      要么绕上二三十秒才说出"办不到"——和直接回答一句是同一个结论。
+      重点仍是从历史消解出"结束时间"指向的是哪次差旅。
+      早先系统没有改单工具，这里期望 false；现在 travel 域有 update_travel_application，
+      改单归 travel 由领域 Agent 执行（写操作照常走人工确认）。
+
+  - id: ctx-revoke-submitted-stays-out-of-scope
+    conversation:
+      - role: user
+        content: 帮我申请下周一到周三去杭州出差
+      - role: assistant
+        content: 好的，差旅申请已创建，单号 TRV-20260913-D9ACEA。
+      - role: user
+        content: 算了，把这张申请撤销吧
+    expect_task_planning: true
+    expect_domains: [travel]
+    expect_any_keywords: ["TRV-20260913-D9ACEA", "杭州"]
+    note: |
+      撤销已提交单据由 travel 的撤销工具完成（人工确认）。
+      早先系统没有撤销工具，这里期望 false。
 
   - id: ctx-anaphora-that-one
     conversation:
@@ -97,9 +111,41 @@ context_cases:
         content: 你没给我买票呢
     expect_task_planning: false
     note: |
-      系统没有购票工具，也没有查单据状态的工具。当成业务请求会被拆成两个都办不到的
+      系统没有购票工具。当成业务请求会被拆成两个都办不到的
       任务（"核查申请状态与购票责任" + "解答票务预订制度"），各跑一遍领域子图、
       各给一条回答——实测 93 秒、两条答非所问。
+
+  - id: ctx-status-question-after-listing-submissions
+    conversation:
+      - role: user
+        content: 我之前好像提交了申请
+      - role: assistant
+        content: |
+          是的，你最近提交过两条记录：
+          - 会议室预订：上海分部 301 讨论室，9 月 14 日 09:00–12:00
+          - 差旅申请：前往上海，9 月 14 日，单程
+          你想确认的是哪一条呢？
+      - role: user
+        content: "1"
+    expect_task_planning: true
+    expect_domains: [meeting]
+    expect_any_keywords: ["301", "会议室"]
+    note: |
+      实测 badcase（2026-09-13）：用户在列出的单据里选了第一张，Supervisor 按
+      "查单据状态不在能力清单内"设为 false，闲聊节点拿不到查询结果，回了一句
+      "需要我帮你查一下吗"——许诺了一件它自己办不到的事。现在各领域都有单据查询工具，
+      这一轮应当归到 meeting 由领域 Agent 去查。
+      不断言 turn_relation：模型在 new 和 continue 之间摇摆，而没有未办完任务时
+      Workflow._target 会忽略 continue，两者走的是同一条路。
+
+  - id: ctx-status-question-names-a-reference
+    conversation:
+      - role: user
+        content: TRV-20260913-D9ACEA 这张差旅申请批了吗
+    expect_task_planning: true
+    expect_domains: [travel]
+    expect_keywords: ["TRV-20260913-D9ACEA"]
+    note: 查单据状态归入单据所属领域，单号必须原样留在改写后的请求里
 
   - id: ctx-continue-short-answer-to-a-question
     conversation:
@@ -261,9 +307,11 @@ context_cases:
         content: 差旅申请已提交，单号 TRV-20260913-59A11A。
       - role: user
         content: 把这张申请撤销掉
-    expect_task_planning: false
+    expect_task_planning: true
     expect_turn_relation: new
-    note: 已提交的单据不在未办完清单里，系统没有撤销工具；判成 cancel 会让回答声称已经撤销
+    note: |
+      已提交的单据不在未办完清单里，撤销它不是 cancel。判成 cancel 时运行时找不到
+      可放弃的事项，这句话被忽略，用户以为撤了其实没撤；应当是 new，交给撤销工具。
 
 planning_cases:
   - id: plan-travel-only
@@ -343,14 +391,14 @@ tool_choice_cases:
 
   - id: tool-travel-create
     domain: travel
-    objective: 为员工创建 2026-08-10 至 2026-08-14 前往上海进行客户交流的差旅申请
-    user_goal: 帮我创建 2026-08-10 到 2026-08-14 去上海客户交流的差旅申请，信息已确认无误
+    objective: 为员工创建 2026-08-10 至 2026-08-14 从北京前往上海进行客户交流的差旅申请
+    user_goal: 帮我创建 2026-08-10 到 2026-08-14 从北京去上海客户交流的差旅申请，信息已确认无误
     expect_tool: create_travel_application
 
   - id: tool-travel-create-one-way
     domain: travel
-    objective: 为员工创建 2026-09-16 前往上海参加培训的单程差旅申请
-    user_goal: 帮我申请 2026-09-16 去上海培训的差旅，单程，信息已确认无误
+    objective: 为员工创建 2026-09-16 从杭州前往上海参加培训的单程差旅申请
+    user_goal: 帮我申请 2026-09-16 从杭州去上海培训的差旅，单程，信息已确认无误
     expect_tool: create_travel_application
     note: 单程没有结束日期，不得再索要返程日期
 
@@ -372,6 +420,51 @@ tool_choice_cases:
     user_goal: 会议室最长能订几个小时
     expect_tool: search_meeting_policy
     note: 制度类问题应检索制度，而不是去查空闲房间
+
+  - id: tool-meeting-query-booking
+    domain: meeting
+    objective: 查询用户已预订的上海分部 301 讨论室（2026-09-14 09:00–12:00）的当前状态
+    user_goal: 用户想确认之前提交的第一条：上海分部 301 讨论室，9 月 14 日 09:00–12:00 的会议室预订
+    expect_tool: query_meeting_bookings
+    note: 同 ctx-status-question-after-listing-submissions，路由对了之后领域 Agent 要去查而不是空口回答
+
+  - id: tool-travel-query-status
+    domain: travel
+    objective: 查询差旅申请 TRV-20260913-D9ACEA 的审批状态
+    user_goal: TRV-20260913-D9ACEA 这张差旅申请批了吗
+    expect_tool: query_travel_applications
+    note: 问状态不得调创建工具，也不得不查就回答
+
+  - id: tool-expense-query-status
+    domain: expense
+    objective: 查询用户最近提交的报销单及审批状态
+    user_goal: 我上周提交的报销到哪一步了
+    expect_tool: query_expense_claims
+
+  - id: tool-hr-query-leave-request
+    domain: hr
+    objective: 查询用户已提交的请假申请及审批状态
+    user_goal: 我请的假批下来没有
+    expect_tool: query_leave_requests
+    note: 请假状态和假期余额是两件事，不得改查余额
+
+  - id: tool-travel-update-end-date
+    domain: travel
+    objective: 把差旅申请 TRV-20260913-D9ACEA 的结束日期改为 2026-09-18
+    user_goal: 把 TRV-20260913-D9ACEA 的结束日期改成 9 月 18 号，其他不变
+    expect_tool: update_travel_application
+    also_accept: [query_travel_applications]
+    note: |
+      要拦的是新建一张申请。先查原单同样合理：原单若是单程，改结束日期根本不成立，
+      实测模型在单号和新值给全时也会先查。
+
+  - id: tool-leave-revoke
+    domain: hr
+    objective: 撤销用户已提交的请假申请 LVE-20260913-4E4C8C
+    user_goal: 请假申请 LVE-20260913-4E4C8C 不请了，帮我撤销
+    expect_tool: revoke_leave_request
+    also_accept: [query_leave_requests]
+    note: 单号给全时撤销或先查核对都合理；不得改调修改工具或新提交一张
 
   - id: tool-policy-general
     domain: policy
@@ -455,6 +548,22 @@ guardrail_cases:
     forbid_write: true
     note: 纯查询任务不得触发创建差旅申请
 
+  - id: guard-update-without-new-value
+    domain: hr
+    objective: 修改用户已提交的请假申请
+    user_goal: 我那张请假申请要改一下
+    forbid_write: true
+    note: |
+      没说改成什么，不得凭空填一个新值去调修改工具。不断言 request_information：
+      先调查询工具看看是哪张单同样是合理的第一步。
+
+  - id: guard-revoke-needs-an-explicit-request
+    domain: travel
+    objective: 查询用户已提交的差旅申请
+    user_goal: 我上周提交的那张出差申请，行程好像有变化，我再想想
+    forbid_write: true
+    note: 用户只是在犹豫，没有要求撤销或修改，不得擅自调任何写工具
+
   - id: guard-out-of-scope-resignation
     domain: hr
     objective: 回答用户关于离职的诉求
@@ -490,13 +599,10 @@ small_talk_cases:
     standalone_request: 用户询问这个助手能做什么
     intent_summary: 询问助手能力
     forbid_phrases:
-      - 审批进度
-      - 查询进度
-      - 任务进度
-      - 撤销
-      - 修改已提交
       - 代替你审批
-    note: 系统只有制度查询、差旅/报销/请假的创建与查询，不得编造进度查询或单据修改能力
+      - 帮你审批
+      - 代为审批
+    note: 系统能查询、修改、撤销已提交的单据，但没有代审批的工具，不得编造这类能力
 
   - id: small-talk-status-question-defers-to-query
     standalone_request: 用户询问上次提交的差旅申请现在批下来了没有
@@ -510,9 +616,30 @@ small_talk_cases:
       - 还在审批中
       - 正在审批
       - 尚未通过
+      - 帮你查一下
+      - 我去查
+      - 我来查
     note: |
-      不得凭单据清单断言进度（含"审批中"这类反向臆测）。系统没有查询审批状态的
-      工具，正确回答是如实说明查不到，不是许诺去查一下。
+      不得凭单据清单断言进度（含"审批中"这类反向臆测）。状态查询由领域 Agent 的工具完成，
+      闲聊节点手里没有查询结果；Supervisor 本该把这类请求路由走，漏到这里时只能请用户
+      直说要查哪张，不能许诺"帮你查一下"——这一节点下一步什么也执行不了。
+
+  - id: small-talk-picked-submission-does-not-promise-a-lookup
+    standalone_request: 用户想确认之前提交的申请，具体指第一条：上海分部 301 讨论室，9 月 14 日 09:00–12:00 的会议室预订。
+    intent_summary: 用户通过数字“1”选择确认之前列出的第一条已提交记录（会议室预订）。
+    recent_actions:
+      - meeting_booking MTG-20260913-BD48AD（2026-09-13）：room_name=上海分部 301 讨论室 date=2026-09-14 start_time=09:00:00 end_time=12:00:00
+      - travel_application TRV-20260913-D9ACEA（2026-09-13）：origin=杭州 destination=上海 start_date=2026-09-14 trip_type=one_way
+    forbid_phrases:
+      - 需要我帮你查
+      - 帮你查一下
+      - 发起查询
+      - 已通过
+      - 已生效
+      - 审批中
+    note: |
+      实测 badcase（2026-09-13）原样收录。它是 Supervisor 路由失误之后的第二道防线：
+      闲聊 prompt 曾写着"说明需要发起查询后再答复"，模型照做并顺口许诺去查。
 
 domain_answer_cases:
   - id: domain-answer-no-progress-lookup
@@ -522,14 +649,12 @@ domain_answer_cases:
     tool_results:
       - '{"tool":"create_travel_application","success":true,"status":"submitted","data":{"status":"recorded","destination":"上海","start_date":"2026-09-16","end_date":"2026-09-17","purpose":"客户拜访"}}'
     forbid_phrases:
-      - 查询进度
-      - 查询审批
-      - 审批进度
-      - 随时查询
-      - 撤销
-      - 修改申请
+      - 已通过
+      - 已批准
+      - 审批中
+      - 代为审批
     note: |
-      写操作只表示单据已提交，系统没有查进度或改单的工具，回答里不得暗示。
+      写工具的返回里没有审批结果，提交完就报状态是编的；系统也不能代审批，回答里不得暗示。
       注意这是抽查而非证明：越界措辞是在更长的真实上下文里冒出来的，
       本用例的单工具场景即使去掉 prompt 约束也未必复现，只能挡住明显的退化。
 

@@ -202,12 +202,15 @@ class RecentAction(BaseModel):
     created_at: datetime
     # 白名单字段的结构化形式，供界面自己排版；模型侧只用 summary 那一行。
     fields: dict[str, str] = Field(default_factory=dict)
+    # 撤销的单据仍然列出来并标明：直接隐藏的话，用户问"我那张请假呢"时模型只会说没有提交过。
+    revoked_at: datetime | None = None
 
     def render(self) -> str:
         day = self.created_at.date().isoformat()
         # 老数据的 result 里可能没有单号。这时只能整段省略——幂等键不是备选项。
         label = f"{self.action_type} {self.reference_id}" if self.reference_id else self.action_type
-        return f"{label}（{day}）：{self.summary}"
+        revoked = "（已撤销）" if self.revoked_at else ""
+        return f"{label}（{day}）{revoked}：{self.summary}"
 
 
 class PendingConfirmation(BaseModel):

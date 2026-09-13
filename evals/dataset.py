@@ -38,6 +38,9 @@ class ContextCase(BaseModel):
     expect_target_plan_id: str | None = None
     # 指向这些事项即判失败，用于"可以留空、但绝不能指错"的场景。
     forbid_target_plan_ids: list[str] = Field(default_factory=list)
+    # 留空表示不断言。只在 requires_task_planning 为 true 时有意义：领域归错了，
+    # 单领域快路径会把请求交给没有对应工具的 Agent。
+    expect_domains: list[AgentName] = Field(default_factory=list)
     note: str = ""
 
 
@@ -60,6 +63,8 @@ class ToolChoiceCase(BaseModel):
     objective: str = Field(min_length=1)
     user_goal: str = Field(min_length=1)
     expect_tool: str = Field(min_length=1)
+    # 同样正确的第一步。只用于确实存在多个合理起手的场景，例如修改前先查原单。
+    also_accept: list[str] = Field(default_factory=list)
     # 注入该用户的历史画像，形如 "preferred_transport=高铁"。
     memories: list[str] = Field(default_factory=list)
     note: str = ""
@@ -83,7 +88,7 @@ class GuardrailCase(BaseModel):
 class DomainAnswerCase(BaseModel):
     """考察领域 Agent 的最终回答不越出系统真实能力。
 
-    写操作只表示单据已提交，系统没有查询审批进度、修改或撤销单据的工具，
+    写操作只表示单据已提交，状态只能来自单据查询工具；系统没有代审批的工具，
     回答里出现这类承诺就是幻觉。
     """
 

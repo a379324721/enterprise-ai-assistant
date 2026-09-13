@@ -71,7 +71,7 @@ cd frontend && npm run build  # tsc -b && vite build
 每轮 `understand` 把当前计划和搁置计划里待补充任务的摘要（`OpenTask`：`plan_id`、标题、缺失字段**名**、是否搁置，没有字段值）交给 Context Supervisor，由它填 `turn_relation` 和 `target_plan_id`：
 
 - `continue`：跳过 Planner，待补充的任务放回 `PENDING` 续跑，草稿经 `DomainTaskRequest.draft` 交还领域 Agent。指向搁置计划时整体换回来，当前计划没办完就换下去搁置。`user_goal` 不变（界面展示的是整件事的目标），本轮的补充经 `standalone_request` 进 `DomainTaskRequest.user_goal`。
-- `cancel`：目标计划里 `WAITING_INPUT` / `PENDING` 的任务改为 `REJECTED`（搁置计划直接移除），经 `notices` 交给 `direct_respond` 如实告知。已提交的单据不在清单里，也不受影响——系统没有撤销工具。
+- `cancel`：目标计划里 `WAITING_INPUT` / `PENDING` 的任务改为 `REJECTED`（搁置计划直接移除），经 `notices` 交给 `direct_respond` 如实告知。已提交的单据不在清单里，也不受影响——撤销已提交单据是 `new` 的业务请求，走领域的 `revoke_*` 工具。
 - `new` 且需要规划：当前计划没办完就搁置，然后照常规划。
 - `new` 且不需要规划（闲聊、道谢、清单外诉求）：什么都不动，用户回头还能补充。
 
@@ -100,7 +100,11 @@ Supervisor 把它当成用户的新输入。
 
 工具风险由服务端注册表声明（`tools/registry.py` 的 `ToolRisk`），不由模型判断。所有 `WRITE` 工具在执行前保存检查点并逐个要求用户确认。写操作经 `PostgresActionRepository.execute_once` 落 `workflow_actions` 表做幂等，`idempotency_key` 同时就是对外的 `reference_id`。
 
-注意 `result.status` 是 `"recorded"`，只表示适配器被调用过，**不代表外部企业系统已受理或审批通过**。任何"已通过""审批中"的说法都是幻觉。
+注意 `result.status` 是 `"recorded"`，只表示适配器被调用过，**不代表外部企业系统已受理或审批通过**。审批状态只能来自各领域的单据查询工具（`query_*`，READ 风险，只按 `ToolContext.user_id` 查，单号不作鉴权依据），不是来自查询结果的"已通过""审批中"都是幻觉。本地适配器的状态是 `mock_submission_status` 按单号哈希给出的替身，改过的单据回到审批中。
+
+查询工具返回单据的**全部**字段，不走 `_ACTION_SUMMARY_FIELDS` 白名单：白名单防的是每轮被动注入（用户没问，请假原因也跟着档案进上下文），查询是本人对自己单据的主动请求，修改前也必须拿到原值。修改工具（`update_*`）是 WRITE，照常逐个确认；它只传要改的字段，合并后按新建时的同一份契约重新校验，原单据行原地更新，另记一行 `<action_type>_update` 做幂等和审计。撤销工具（`revoke_*`，WRITE）只给原单据打 `revoked_at` 标记不删行，另记 `<action_type>_revoke`；撤销是终态，撤销后不能再修改，"我的单据"标为已撤销，会议室撤销后时段让出。系统没有代审批的工具。
+
+查状态的请求由 Context Supervisor 归入单据所属领域（规则在 `_DOMAIN_ROUTING`）。闲聊节点手里没有查询结果，不得断言状态，也不得许诺"帮你查一下"——它下一步什么也执行不了。
 
 ### 执行与 SSE 连接解耦
 
