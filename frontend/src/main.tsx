@@ -27,9 +27,9 @@ type ActionItem = {reference_id: string; action_type: string; summary: string; c
 type Message = {
   role: "user" | "assistant" | "decision" | "steps"; text: string; index?: number;
   steps?: TurnStep[];
-  // 这段回答属于哪个任务。流式期间只有 answer_start 带来的领域名可用，done 之后
-  // 能在 result.tasks 里换到真正的任务标题。历史消息没有这两个字段。
-  taskId?: string; agent?: string;
+  // 这段回答属于哪个任务。流式期间只有 answer_start 带来的领域名可用，本轮结束时
+  // 从这一轮的 result.tasks 里取到任务标题记在消息上。历史消息没有这几个字段。
+  taskId?: string; agent?: string; title?: string;
 };
 //: 延迟渲染那一轮攒下的回答段落，一段对应一个任务。
 type AnswerSegment = {taskId?: string; agent?: string; text: string};
@@ -367,13 +367,26 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
 
   /** 这一段回答属于哪个任务。
    *
-   *  流式期间只有领域名（answer_start 带的 agent），done 之后 result.tasks 里
-   *  能换到真正的任务标题。历史消息没有 task_id，返回空串即不显示标题。
+   *  流式期间只有领域名（answer_start 带的 agent），本轮结束后换成记在消息上的任务标题。
+   *  历史消息没有 task_id，返回空串即不显示标题。
    */
   function sectionLabel(message: Message): string {
     if (!message.taskId && !message.agent) return "";
-    const task = result?.tasks.find((item) => item.id === message.taskId);
-    return task?.title || DOMAIN_LABELS[message.agent ?? ""] || "";
+    return message.title || DOMAIN_LABELS[message.agent ?? ""] || "";
+  }
+
+  /** 把本轮任务标题记到本轮的回答上。
+   *
+   *  不能渲染时再去最新的 result.tasks 里按 task_id 查：每个新计划的任务 id 都从 task-1
+   *  排起，下一件事一办完，前面请假的回答就会顶着"提交上海出差申请"的标题。只补还没有
+   *  标题的消息，已经定下的不会被后面的轮次改掉。
+   */
+  function withTitles(current: Message[], tasks: Task[]): Message[] {
+    const titles = new Map(tasks.map((task) => [task.id, task.title]));
+    return current.map((message) => {
+      const title = message.taskId && !message.title ? titles.get(message.taskId) : undefined;
+      return title ? {...message, title} : message;
+    });
   }
 
   /** 把一个任务的执行步骤插到它的回答前面：先做了什么，再说结果。
@@ -403,7 +416,15 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
   ) {
     const fresh = completed.steps.filter((step) => !shownSteps.current.has(step.id));
     fresh.forEach((step) => shownSteps.current.add(step.id));
-    setMessages((current) => {
+    setMessages((current) => withTitles(settle(current), completed.tasks));
+    setResult(completed);
+    // 事项由后端从检查点投影，每一轮都是权威的全量，闲聊轮也照样覆盖。
+    setMatters(completed.matters);
+    // 没有调用过工具的轮次不可能新增单据，不必再拉一次。
+    if (actionList) setActions(actionList);
+    else if (completed.steps.length > 0) void fetchActions().then((list) => list && setActions(list));
+
+    function settle(current: Message[]): Message[] {
       // 步骤插在本轮用户那句话（或确认决定）之后、回答之前：先做了什么，再说结果。
       let old = current;
       if (fresh.length > 0) {
@@ -436,13 +457,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
       }
       if (completed.status === "waiting_confirmation") return old.slice(0, -1);
       return old.map((message, index) => index === old.length - 1 ? {...message, text: "未生成有效回复，请重试。"} : message);
-    });
-    setResult(completed);
-    // 事项由后端从检查点投影，每一轮都是权威的全量，闲聊轮也照样覆盖。
-    setMatters(completed.matters);
-    // 没有调用过工具的轮次不可能新增单据，不必再拉一次。
-    if (actionList) setActions(actionList);
-    else if (completed.steps.length > 0) void fetchActions().then((list) => list && setActions(list));
+    }
   }
 
   function handleStreamEvent({event, data}: SseMessage) {
