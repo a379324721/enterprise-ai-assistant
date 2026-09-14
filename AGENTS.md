@@ -33,7 +33,7 @@ uv run python -m evals.runner --json report.json --min-accuracy 0.85
 
 **评测会真实调用模型服务，产生费用**，所以不在 CI 每次推送时跑（`eval.yml` 是手动触发 + 每周定时）。改动 prompt 后应当手动跑一次。
 
-改动思考开关或 `DOMAIN_THINKING_BUDGET` 后同样要跑，至少跑 `guardrail`：领域 Agent 关掉思考会在缺字段时直接调写工具（说明见 `core/config.py`）。
+改动思考开关、`DOMAIN_THINKING_BUDGET` 或温度后同样要跑，至少跑 `guardrail`，而且要连跑两轮：领域 Agent 关掉思考、预算太小或温度 0 都会偶发在缺字段时直接调写工具，单轮通过说明不了问题；评测按 token 计费，两轮不一致时再加跑（说明见 `core/config.py`）。
 
 `guardrail` 和 `small_talk` 是硬指标：前者不通过意味着模型可能在信息不全或被诱导时执行企业写操作，后者不通过意味着模型会凭最近单据编造审批状态。新增评测用例写在 `evals/cases.yaml`，新增 suite 需要同步 `evals/dataset.py`、`evals/runner.py` 的 `SUITES` 和 `eval.yml` 的 choices。
 

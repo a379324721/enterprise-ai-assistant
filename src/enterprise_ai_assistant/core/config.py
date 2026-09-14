@@ -26,20 +26,22 @@ class Settings(BaseSettings):
     # 两类调用分开配，依据是 qwen3.7-flash 上的评测：
     # - Context Supervisor（理解、规划、记忆抽取）开关思考结果一样，关掉。
     # - 领域 Agent 关掉思考后 guardrail 从 12/12 掉到 9/12，缺结束日期也直接提交差旅
-    #   申请；预算 200 仍是 9/12，500 恢复 12/12。
+    #   申请；预算 200 仍是 9/12。500 单轮能过，但连跑三轮（温度 0）有两轮缺字段直接提交。
     supervisor_enable_thinking: Annotated[
         bool | None, BeforeValidator(lambda value: None if value == "" else value)
     ] = False
     domain_enable_thinking: Annotated[
         bool | None, BeforeValidator(lambda value: None if value == "" else value)
     ] = True
-    # 领域 Agent 推理 token 的上限，0 表示不限。
-    domain_thinking_budget: int = Field(default=500, ge=0)
-    # 采样温度同样分角色配。原先全局写死 0，但 Qwen3 的模型说明不建议思考模式用贪心解码
-    # （温度 0），容易在推理里陷入重复；实测不限预算时领域 Agent 一次决策推理了 81,920
-    # token、622 秒才停。Supervisor 关思考、只做结构化输出，保持 0 让理解结果稳定。
+    # 领域 Agent 推理 token 的上限，0 表示不限。不要设成不限：实测一次决策推理了 81,920
+    # token、622 秒才停。2000 配温度 0.6 在界面上实测没有编造字段，耗时可以接受。
+    domain_thinking_budget: int = Field(default=2000, ge=0)
+    # 采样温度同样分角色配。Qwen3 的模型说明不建议思考模式用贪心解码（温度 0），容易在推理
+    # 里陷入重复，领域 Agent 开着思考，用它推荐的 0.6。Supervisor 关思考，做的是分类和结构化
+    # 输出，保持 0：同一句"1 嗯"不能这次判续跑、下次判新请求。校验失败时错误会交还模型，
+    # 重试的输入不同，温度 0 不会让重试原样失败。
     supervisor_temperature: float = Field(default=0.0, ge=0, le=2)
-    domain_temperature: float = Field(default=0.0, ge=0, le=2)
+    domain_temperature: float = Field(default=0.6, ge=0, le=2)
     langsmith_tracing: bool = True
     langsmith_api_key: SecretStr | None = None
     langsmith_endpoint: str = "https://api.smith.langchain.com"
