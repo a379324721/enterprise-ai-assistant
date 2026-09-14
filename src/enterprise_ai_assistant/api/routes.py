@@ -32,6 +32,7 @@ from enterprise_ai_assistant.core.config import Settings, get_settings
 from enterprise_ai_assistant.core.metrics import BUDGET_REJECTIONS, REGISTRY
 from enterprise_ai_assistant.core.models import (
     DomainTaskResult,
+    DraftField,
     PendingConfirmation,
     PlannedTask,
     ShelvedPlan,
@@ -245,6 +246,7 @@ def _matter(
     drafts: dict[str, TaskDraft],
     *,
     shelved: bool,
+    pending: PendingConfirmation | None = None,
 ) -> Matter | None:
     """把一个计划投影成事项卡；没有卡在待补充或待确认上的计划不是事项。"""
     focus = next(
@@ -257,7 +259,20 @@ def _matter(
     )
     if focus is None:
         return None
-    draft = TaskDraft.model_validate(drafts[focus.id]) if focus.id in drafts else TaskDraft()
+    if pending is not None and pending.task_id == focus.id:
+        # 草稿只在追问时写入、归并时才清掉。用户补完字段后任务直接停到确认卡上，草稿还是
+        # 追问那一刻的，卡片会在"待确认"下面列出一排早已补齐的"待补充"。待确认时字段
+        # 以确认卡上即将提交的参数为准。
+        draft = TaskDraft(
+            known_fields=[
+                # 确认卡的字段没有长度约束，事由这类自由文本可能超出草稿字段的上限。
+                DraftField(name=item.name[:64], label=item.label[:64], value=item.value[:500])
+                for item in pending.fields
+                if item.value.strip()
+            ]
+        )
+    else:
+        draft = TaskDraft.model_validate(drafts[focus.id]) if focus.id in drafts else TaskDraft()
     status: Literal["waiting_input", "waiting_confirmation", "shelved"] = (
         "shelved"
         if shelved
@@ -279,9 +294,17 @@ def _matter(
     )
 
 
-def _matters(values: dict[str, Any], tasks: list[PlannedTask]) -> list[Matter]:
+def _matters(
+    values: dict[str, Any],
+    tasks: list[PlannedTask],
+    pending: PendingConfirmation | None = None,
+) -> list[Matter]:
     current = _matter(
-        str(values.get("plan_id", "")), tasks, values.get("drafts", {}), shelved=False
+        str(values.get("plan_id", "")),
+        tasks,
+        values.get("drafts", {}),
+        shelved=False,
+        pending=pending,
     )
     shelved: list[ShelvedPlan] = values.get("shelved_plans", [])
     # 最近搁置的排在前面：用户最可能想接着办的是刚放下的那件。
@@ -369,7 +392,7 @@ async def _response(app: Any, conversation_id: UUID, user_id: str) -> AssistantR
         artifacts=values.get("artifacts", {}),
         tool_results=tool_results,
         pending_confirmation=pending,
-        matters=_matters(values, tasks),
+        matters=_matters(values, tasks, pending),
         steps=_steps(tool_results, tasks),
     )
 
@@ -534,11 +557,22 @@ async def _publish_task_done(
     """
     await relay.flush()
     tool_results = [ToolResult.model_validate(item) for item in data.get("tool_results") or []]
+    # 只投影当前计划。搁置计划在执行中途不会变，前端保留原有的那几张。
+    matter = _matter(
+        str(data.get("plan_id", "")),
+        [PlannedTask.model_validate(item) for item in data.get("tasks") or []],
+        {
+            task_id: TaskDraft.model_validate(draft)
+            for task_id, draft in (data.get("drafts") or {}).items()
+        },
+        shelved=False,
+    )
     await publish(
         "task_done",
         {
             "task_id": data["task_done"],
             "steps": [step.model_dump(mode="json") for step in _steps(tool_results, [])],
+            "matter": matter.model_dump(mode="json") if matter else None,
         },
     )
 

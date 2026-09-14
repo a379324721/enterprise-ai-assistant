@@ -6,7 +6,9 @@ from uuid import UUID
 from enterprise_ai_assistant.api.routes import _matters, _steps
 from enterprise_ai_assistant.core.models import (
     AgentName,
+    ConfirmationField,
     DraftField,
+    PendingConfirmation,
     PlannedTask,
     ShelvedPlan,
     TaskDraft,
@@ -46,6 +48,40 @@ def test_waiting_plan_becomes_a_card_focused_on_the_stuck_task() -> None:
     assert card.known_fields[0].value == "上海"
     assert card.missing_fields == ["会议主题"]
     assert [item.status for item in card.tasks] == [TaskStatus.COMPLETED, TaskStatus.WAITING_INPUT]
+
+
+def test_waiting_confirmation_card_shows_the_arguments_about_to_be_submitted() -> None:
+    """草稿停在追问那一刻：补齐字段后进入确认，卡片不能还列着一排"待补充"。"""
+    tasks = [
+        _task("task-1", "上海出差申请", TaskStatus.WAITING_CONFIRMATION, AgentName.TRAVEL),
+        _task("task-2", "预订上海会议室", TaskStatus.PENDING, AgentName.MEETING),
+    ]
+    stale = TaskDraft(
+        known_fields=[DraftField(name="destination", label="目的地", value="上海")],
+        missing_fields=["出发地", "结束日期", "出差事由"],
+    )
+    pending = PendingConfirmation(
+        task_id="task-1",
+        action="create_travel_application",
+        tool_call_id="call-1",
+        title="提交差旅申请",
+        fields=[
+            ConfirmationField(name="origin", label="出发地", value="北京"),
+            ConfirmationField(name="destination", label="目的地", value="上海"),
+            ConfirmationField(name="purpose", label="出差事由", value="培训"),
+        ],
+        payload={},
+    )
+
+    [card] = _matters({"plan_id": "p-1", "drafts": {"task-1": stale}}, tasks, pending)
+
+    assert card.status == "waiting_confirmation"
+    assert [(item.label, item.value) for item in card.known_fields] == [
+        ("出发地", "北京"),
+        ("目的地", "上海"),
+        ("出差事由", "培训"),
+    ]
+    assert card.missing_fields == []
 
 
 def test_shelved_plans_follow_the_current_one_most_recent_first() -> None:

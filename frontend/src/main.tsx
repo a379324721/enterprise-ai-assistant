@@ -477,9 +477,20 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
     } else if (event === "task_done") {
       // 一个任务办完了。确认之后常常还有依赖它的任务要跑十几秒，不能让这个任务的步骤和
       // 回答陪着等到整轮结束：步骤连同回答按任务依次呈现。
-      const finished = data as {task_id: string; steps: TurnStep[]};
+      const finished = data as {task_id: string; steps: TurnStep[]; matter?: Matter | null};
       const fresh = finished.steps.filter((step) => !shownSteps.current.has(step.id));
       fresh.forEach((step) => shownSteps.current.add(step.id));
+      // 右栏跟着任务走：差旅提交完、会议室还在跑的那十几秒里，卡片不能还挂着"待确认"。
+      // 后端只投影当前计划，搁置的几张原样保留；整轮的权威全量仍由 done 覆盖。
+      if (finished.matter !== undefined) {
+        const current = finished.matter;
+        setResult((old) => old ? {
+          ...old,
+          // 本轮刚从搁置换回来的计划，旧快照里还是一张搁置卡，按 plan_id 去重。
+          matters: [...(current ? [current] : []), ...old.matters.filter((item) =>
+            item.status === "shelved" && item.plan_id !== current?.plan_id)],
+        } : old);
+      }
       if (deferStream.current) {
         const own = deferredSegments.current.filter((segment) => segment.taskId === finished.task_id && segment.text.trim());
         deferredSegments.current = deferredSegments.current.filter((segment) => segment.taskId !== finished.task_id);

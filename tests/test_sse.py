@@ -511,6 +511,25 @@ class TaskDoneGraph(FakeGraph):
                         "created_at": "2026-09-13T10:00:00+00:00",
                     }
                 ],
+                "plan_id": "p-1",
+                "tasks": [
+                    {
+                        "id": "task-1",
+                        "title": "上海出差申请",
+                        "domain": "travel",
+                        "objective": "提交差旅申请",
+                        "status": "completed",
+                    },
+                    {
+                        "id": "task-2",
+                        "title": "预订上海会议室",
+                        "domain": "meeting",
+                        "objective": "预订会议室",
+                        "depends_on": ["task-1"],
+                        "status": "waiting_input",
+                    },
+                ],
+                "drafts": {"task-2": {"known_fields": [], "missing_fields": ["会议主题"]}},
             },
         }
 
@@ -532,6 +551,9 @@ async def test_task_done_carries_labelled_steps_after_the_tasks_answer() -> None
     done = next(data for event, data in events if event == "task_done")
     assert done["task_id"] == "task-1"
     assert [step["label"] for step in done["steps"]] == ["提交差旅申请"]
+    # 右栏不等整轮结束：差旅办完的这一刻，事项卡已经换成卡在待补充上的会议室。
+    assert (done["matter"]["task_id"], done["matter"]["status"]) == ("task-2", "waiting_input")
+    assert done["matter"]["missing_fields"] == ["会议主题"]
 
 
 @pytest.mark.asyncio

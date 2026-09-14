@@ -573,12 +573,19 @@ class Workflow:
             # 执行步骤原本只随整轮结束的 done 下发。确认之后还有后续任务时，前端要等后续任务
             # 也跑完才知道这个任务做了什么，只能把所有步骤和回答攒到最后一起画。这里每归并
             # 一个任务就推一次，界面可以按任务依次呈现。转交出去的任务没有回答，不推。
+            # 右栏的事项同理：不带归并后的计划，右栏要到整轮结束才从"待确认"翻过来。
             write(
                 {
                     "task_done": result.task_id,
                     "tool_results": [
                         item.model_dump(mode="json") for item in result.tool_results
                     ],
+                    "plan_id": state.get("plan_id", ""),
+                    "tasks": [task.model_dump(mode="json") for task in merged.tasks],
+                    "drafts": {
+                        task_id: TaskDraft.model_validate(draft).model_dump(mode="json")
+                        for task_id, draft in merged.drafts.items()
+                    },
                 }
             )
         return {
