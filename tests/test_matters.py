@@ -209,6 +209,21 @@ def test_steps_use_server_side_tool_labels() -> None:
     assert len({step.id for step in steps}) == 2
 
 
+def test_a_task_the_user_cancelled_shows_no_steps() -> None:
+    """取消没有回答，卡片之前查过的步骤会孤零零挂在"你取消了"下面。"""
+    at = datetime(2026, 9, 13, tzinfo=UTC)
+    results = [
+        ToolResult(task_id="task-1", tool="get_leave_balance", success=True, created_at=at),
+        ToolResult(task_id="task-2", tool="search_travel_policy", success=True, created_at=at),
+    ]
+    tasks = [
+        _task("task-1", "提交请假申请", TaskStatus.REJECTED, AgentName.HR),
+        _task("task-2", "查询差旅制度", TaskStatus.COMPLETED, AgentName.TRAVEL),
+    ]
+
+    assert [step.task_id for step in _steps(results, tasks)] == ["task-2"]
+
+
 def test_every_registered_tool_has_a_label() -> None:
     """新增工具忘了起中文名，界面上就会冒出一个英文函数名。"""
     registry = DomainToolRegistry(

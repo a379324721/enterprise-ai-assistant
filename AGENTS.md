@@ -70,10 +70,10 @@ FastAPI + LangGraph 的多 Agent 系统。`graph/workflow.py` 是调度父图，
 
 ### 谁对用户说话
 
-- 只有两类模型输出文字：Supervisor 的 `reply`（结构化输出，一次性给出，校验器强制不执行的轮次必须有 `reply`），和领域 Agent 的回答（执行过工具后 `decide` 的文字，打 `user-visible` 流出；`respond` 只兜底拒绝确认、工具失败、没给文字）。执行过工具后，调写工具时对用户说的话（比如提交请假前先报余额）写在写工具的 `message_to_user` 参数里：模型调工具那回合几乎不写正文，prompt 怎么要求都一样，参数却每次都填。它只加在模型可见的 schema 上，`split_message` 在校验前取出，不进契约、确认卡和幂等记录；子图整段推给前端，记为 `AgentNote`：停在确认卡上时随 `PendingConfirmation.notes` 带出，历史接口补上、恢复命令写进会话；否则随 `DomainTaskResult.notes` 在归并时排在回答前面。两条路径只走一条，不然会话里会记两遍。`request_information` 的 `question` 原样发出。其余都是模板：确认卡、执行步骤、取消回复、错误提示。
+- 只有两类模型输出文字：Supervisor 的 `reply`（结构化输出，一次性给出，校验器强制不执行的轮次必须有 `reply`），和领域 Agent 的回答（执行过工具后 `decide` 的文字，打 `user-visible` 流出；`respond` 只兜底工具失败、没给文字）。执行过工具后，调写工具时对用户说的话（比如提交请假前先报余额）写在写工具的 `message_to_user` 参数里：模型调工具那回合几乎不写正文，prompt 怎么要求都一样，参数却每次都填。它只加在模型可见的 schema 上，`split_message` 在校验前取出，不进契约、确认卡和幂等记录；子图整段推给前端，记为 `AgentNote`：停在确认卡上时随 `PendingConfirmation.notes` 带出，历史接口补上、恢复命令写进会话；否则随 `DomainTaskResult.notes` 在归并时排在回答前面。两条路径只走一条，不然会话里会记两遍。`request_information` 的 `question` 原样发出。其余都是模板：确认卡、执行步骤、取消回复、错误提示；确认卡上点取消不回复。
 - 领域 Agent 读最近 `DOMAIN_CONTEXT_MESSAGES` 条会话原文，而不是只读改写：改写会丢信息。窗口刻意比 Supervisor 小，少给串字段的材料；串字段由 prompt 的字段来源原则和确认卡兜底。
 - 每条助手消息在 `additional_kwargs["tools_called"]` 记着那一轮调用过的工具（`reply_message` 写入），`_conversation()` 渲染成 `[未调用工具]` / `[调用了：…]` 交给模型，界面只取正文。没有它，Supervisor 分不清哪条回复查过，会谎称调用了系统接口。
-- 人工确认的决定用 `SystemMessage` 追加进 `messages`：进得了界面历史，进不了模型上下文（`_conversation()` 只挑 human/ai），否则会被当成用户输入。
+- 人工确认的决定用 `SystemMessage`（`decision_message`）追加进 `messages`，不用 `HumanMessage`，否则会被当成用户输入。界面历史显示正文；`_conversation()` 把它渲染成助手一侧的 `[用户在确认卡上选择了…]` 标注交给模型。取消不生成回答（`DomainTaskResult.answer` 为空），这条标注是模型知道"用户取消、没有执行"的唯一依据。
 
 ### 结构化输出
 

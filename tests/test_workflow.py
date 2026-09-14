@@ -3,7 +3,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
@@ -26,6 +26,7 @@ from enterprise_ai_assistant.graph.workflow import (
     DIGEST_HEADER,
     Workflow,
     build_graph,
+    decision_message,
     reply_message,
 )
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
@@ -515,7 +516,8 @@ async def test_rejecting_write_cancels_dependent_task() -> None:
     await graph.ainvoke(initial_state(), config)
     pause = await graph.aget_state(config)
     confirmation = PendingConfirmation.model_validate(pause.interrupts[0].value)
-    final = await graph.ainvoke(
+    announced: list[dict[str, Any]] = []
+    async for mode, chunk in graph.astream(
         Command(
             resume={
                 "confirmation_id": str(confirmation.confirmation_id),
@@ -523,10 +525,20 @@ async def test_rejecting_write_cancels_dependent_task() -> None:
             }
         ),
         config,
-    )
+        stream_mode=["custom", "values"],
+    ):
+        if mode == "custom" and "task_done" in chunk:
+            announced.append(chunk)
+        elif mode == "values":
+            final = chunk
 
     assert [task.status.value for task in final["tasks"]] == ["rejected", "rejected"]
+    # 取消的任务照样宣布办完（前端靠它收尾），但不带步骤。
+    assert announced == [{"task_done": "task-1", "tool_results": []}]
     assert actions.records == {}
+    # 取消不回答：界面上已有决定那一条，模型经 _conversation() 读得到它。
+    assert not [message for message in final["messages"] if message.type == "ai"]
+    assert final["last_answer"] == ""
 
 
 class LeavePlanningService:
@@ -1021,6 +1033,28 @@ def test_assistant_turns_tell_the_model_whether_a_tool_was_called() -> None:
         "[调用了：查询差旅申请]\n查到一张差旅申请。",
     ]
     assert conversation[-1]["content"] == "旧回答"
+
+
+def test_confirmation_decisions_reach_the_model_as_assistant_side_notes() -> None:
+    """取消没有回答，模型只能从这条标注知道是用户自己取消的，否则会说成没办成或系统拒绝。"""
+    workflow = Workflow(SupervisorAgent(RecordingPlanningService()))
+    messages: list[BaseMessage] = [
+        HumanMessage(content="请假明天一天，年假"),
+        decision_message(False, "提交请假申请"),
+        HumanMessage(content="发生了啥"),
+        decision_message(True, "提交差旅申请"),
+        # 标注上线前的旧决定分不清确认还是取消，不交给模型。
+        SystemMessage(content="你取消了：撤销请假申请", additional_kwargs={"kind": "decision"}),
+    ]
+
+    conversation = workflow._conversation(_context_state(messages, []))
+
+    assert conversation == [
+        {"role": "user", "content": "请假明天一天，年假"},
+        {"role": "assistant", "content": "[用户在确认卡上选择了取消，没有执行：提交请假申请]"},
+        {"role": "user", "content": "发生了啥"},
+        {"role": "assistant", "content": "[用户在确认卡上选择了确认执行：提交差旅申请]"},
+    ]
 
 
 def test_long_history_is_windowed_with_digest_of_dropped_turns() -> None:

@@ -2,7 +2,7 @@
 
 卡片一关，对话里就必须留下"确认了"还是"取消了"，否则回头看只剩一句没头没尾的
 回答。这条记录随恢复命令一起写进检查点，因此要盯两件事：它不能破坏人工确认的恢复
-链路，也不能溜进模型上下文——它不是用户说的话。
+链路，也不能被当成用户说的话。
 """
 
 from collections.abc import AsyncIterator
@@ -25,6 +25,7 @@ from enterprise_ai_assistant.api.schemas import ConfirmationRequest
 from enterprise_ai_assistant.core.config import Settings
 from enterprise_ai_assistant.core.models import AgentNote, PendingConfirmation
 from enterprise_ai_assistant.core.security import create_access_token
+from enterprise_ai_assistant.graph.workflow import decision_message
 from enterprise_ai_assistant.main import create_app
 
 CONVERSATION_ID = UUID("00000000-0000-0000-0000-000000000011")
@@ -139,14 +140,11 @@ async def test_history_shows_what_was_said_before_a_pending_card(
 
 
 def test_the_decision_is_not_a_user_turn() -> None:
-    """SystemMessage 才进不了 prompt：`_conversation()` 只挑 human/ai。
-
-    用 HumanMessage 记这条会让下一轮的 Context Supervisor 把它当成用户的新输入。
-    """
-    message = routes._decision_message(True, "提交差旅申请")
+    """用 HumanMessage 记这条会让下一轮的 Context Supervisor 把它当成用户的新输入。"""
+    message = decision_message(True, "提交差旅申请")
 
     assert message.type == "system"
-    assert message.additional_kwargs == {"kind": "decision"}
+    assert message.additional_kwargs == {"kind": "decision", "approved": True, "title": "提交差旅申请"}
 
 
 @pytest.mark.asyncio
@@ -220,7 +218,7 @@ async def test_resuming_with_an_update_still_resumes_the_interrupt() -> None:
 
     command: Command[Any] = Command(
         resume={"approved": True},
-        update={"messages": [routes._decision_message(True, "提交差旅申请")]},
+        update={"messages": [decision_message(True, "提交差旅申请")]},
     )
     async for _ in graph.astream(command, config, subgraphs=True):
         pass

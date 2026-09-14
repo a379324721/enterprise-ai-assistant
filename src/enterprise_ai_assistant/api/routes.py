@@ -7,7 +7,7 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response, StreamingResponse
@@ -56,7 +56,7 @@ from enterprise_ai_assistant.core.security import (
     Identity,
     create_access_token,
 )
-from enterprise_ai_assistant.graph.workflow import reply_message
+from enterprise_ai_assistant.graph.workflow import decision_message, reply_message
 from enterprise_ai_assistant.repositories.users import (
     DemoUser,
     DemoUserRepository,
@@ -76,7 +76,7 @@ _NODE_PROGRESS = {
     "decide": "专业 Agent 正在分析字段并选择工具",
     "confirm_tool": "工具调用需要人工确认",
     "execute_tool": "正在调用企业工具",
-    # 只有拒绝确认、工具失败等兜底路径才会进这个节点；常规回答在 decide 里直接写出。
+    # 只有工具失败等兜底路径才会进这个节点；常规回答在 decide 里直接写出。
     "respond": "专业 Agent 正在生成回答",
     "apply_domain_result": "正在归并专业 Agent 的处理结果",
     "remember": "正在整理本轮值得记住的信息",
@@ -241,6 +241,10 @@ def _message_text_delta(content: Any) -> str:
 
 def _steps(tool_results: list[ToolResult], tasks: list[PlannedTask]) -> list[TurnStep]:
     titles = {task.id: task.title for task in tasks}
+    # 用户在确认卡上取消的任务不展示步骤。步骤要等任务归并才下发，取消又没有回答，
+    # 卡片之前查过的余额之类会孤零零挂在"你取消了"下面，看着像取消之后又做了什么。
+    # 查到的内容卡片上方那句话已经说过了。
+    rejected = {task.id for task in tasks if task.status == TaskStatus.REJECTED}
     return [
         TurnStep(
             id=f"{item.task_id}:{item.tool}:{item.created_at.isoformat()}",
@@ -249,6 +253,7 @@ def _steps(tool_results: list[ToolResult], tasks: list[PlannedTask]) -> list[Tur
             success=item.success,
         )
         for item in tool_results
+        if item.task_id not in rejected
     ]
 
 
@@ -756,14 +761,6 @@ async def chat_stream(
     return _stream_response(request, run, apply_on_disconnect=True)
 
 
-#: 确认决定在会话历史里的留痕。用 SystemMessage 而不是 HumanMessage：它不是用户
-#: 说的话，`_conversation()` 只挑 human/ai，因此这条记录进得了历史、进不了模型上下文。
-#: 决定本身对下一轮的指代消解并非必需——领域回答里已经写明操作是否执行。
-def _decision_message(approved: bool, title: str) -> SystemMessage:
-    content = f"你确认了：{title}" if approved else f"你取消了：{title}"
-    return SystemMessage(content=content, additional_kwargs={"kind": "decision"})
-
-
 def _resume_command(
     payload: ConfirmationRequest, interrupt: Any, pending: PendingConfirmation
 ) -> Command[Any]:
@@ -782,7 +779,7 @@ def _resume_command(
         update={
             "messages": [
                 *(reply_message(note.text, note.tools) for note in pending.notes),
-                _decision_message(payload.approved, pending.title),
+                decision_message(payload.approved, pending.title),
             ]
         },
     )

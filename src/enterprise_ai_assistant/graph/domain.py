@@ -326,8 +326,10 @@ class DomainTaskWorkflow:
             "domain_rejected": True,
         }
 
-    def after_confirm(self, state: DomainTaskState) -> Literal["execute_tool", "respond"]:
-        return "execute_tool" if state.get("confirmation_approved") else "respond"
+    def after_confirm(self, state: DomainTaskState) -> Literal["execute_tool", "finish"]:
+        # 取消不回答：界面上已经有"你取消了：…"那条决定，模型经 `_conversation()` 也读得到它。
+        # 再让模型写一句既要多等一次推理，又会把"用户取消"转述成"系统拒绝执行"。
+        return "execute_tool" if state.get("confirmation_approved") else "finish"
 
     async def execute_tool(self, state: DomainTaskState) -> dict[str, Any]:
         call = state.get("pending_tool_call")
@@ -428,6 +430,8 @@ class DomainTaskWorkflow:
                 )
             }
         answer = str(state.get("domain_answer", ""))
+        if state.get("domain_rejected"):
+            return {"domain_result": self._result(state, "")}
         if not answer:
             raise RuntimeError("domain task finished without an answer")
         if state.get("domain_waiting_input"):

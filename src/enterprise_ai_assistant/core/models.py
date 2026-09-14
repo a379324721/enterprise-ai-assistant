@@ -408,7 +408,8 @@ class DomainTaskResult(BaseModel):
 
     task_id: str
     status: TaskStatus
-    # 转交时为空：分错的任务不对用户说话，接手的领域 Agent 会回答。
+    # 转交和用户取消时为空：分错的任务不对用户说话，接手的领域 Agent 会回答；
+    # 取消的决定本身已经记在会话里。
     answer: str = ""
     artifact: dict[str, Any] | None = None
     tool_results: list[ToolResult] = Field(default_factory=list)
@@ -424,8 +425,8 @@ class DomainTaskResult(BaseModel):
         if self.status == TaskStatus.HANDED_OFF:
             if self.handoff_to is None:
                 raise ValueError("a handed-off result must name the target domain")
-        elif not self.answer.strip():
-            raise ValueError("answer is required unless the task is handed off")
+        elif self.status != TaskStatus.REJECTED and not self.answer.strip():
+            raise ValueError("answer is required unless the task is handed off or rejected")
         return self
 
 

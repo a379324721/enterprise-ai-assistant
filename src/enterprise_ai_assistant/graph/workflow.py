@@ -4,7 +4,7 @@ from typing import Any, Literal, cast
 from uuid import uuid4
 
 import structlog
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
@@ -49,6 +49,21 @@ def reply_message(text: str, tools: list[str]) -> AIMessage:
     return AIMessage(content=text, additional_kwargs={TOOLS_CALLED_KEY: list(dict.fromkeys(tools))})
 
 
+def decision_message(approved: bool, title: str) -> SystemMessage:
+    """用户在确认卡上做的决定，界面历史里显示正文。
+
+    用 SystemMessage 而不是 HumanMessage：它不是用户说的话，记成用户输入会被 Supervisor
+    当成新请求重新理解。交给模型时由 `_render_turn` 渲染成标注。取消没有回答，这条标注是
+    模型知道"用户自己取消、没有执行"的唯一依据；缺了它，追问时模型只能从上下文猜，会把
+    没提交说成没办成，甚至说成系统拒绝。
+    """
+    content = f"你确认了：{title}" if approved else f"你取消了：{title}"
+    return SystemMessage(
+        content=content,
+        additional_kwargs={"kind": "decision", "approved": approved, "title": title},
+    )
+
+
 def render_reply(content: str, tools: list[str] | None) -> str:
     """给模型看的助手消息：正文前标出这条回复有没有调用工具。
 
@@ -63,6 +78,25 @@ def render_reply(content: str, tools: list[str] | None) -> str:
         return f"[未调用工具]\n{content}"
     labels = "、".join(TOOL_LABELS.get(name, name) for name in tools)
     return f"[调用了：{labels}]\n{content}"
+
+
+def _render_turn(message: BaseMessage) -> dict[str, str] | None:
+    if message.type == "human":
+        return {"role": "user", "content": str(message.content)}
+    if message.type == "ai":
+        return {
+            "role": "assistant",
+            "content": render_reply(
+                str(message.content), message.additional_kwargs.get(TOOLS_CALLED_KEY)
+            ),
+        }
+    extra = message.additional_kwargs
+    # 早先记下的决定没有 approved，确认还是取消只能从正文猜，不交给模型。
+    if extra.get("kind") == "decision" and isinstance(extra.get("approved"), bool):
+        outcome = "确认执行" if extra["approved"] else "取消，没有执行"
+        # 放在助手一侧：放在用户一侧会被当成用户这一轮说的话，记忆抽取也会把它当成用户发言。
+        return {"role": "assistant", "content": f"[用户在确认卡上选择了{outcome}：{extra.get('title')}]"}
+    return None
 
 
 @dataclass
@@ -83,6 +117,9 @@ class _Merge:
         ]
 
     def say(self, answer: str, tools: list[str]) -> None:
+        # 用户取消的任务没有回答，决定已经记在会话里。
+        if not answer.strip():
+            return
         self.answers.append(answer)
         self.new_answers.append(reply_message(answer, tools))
 
@@ -120,18 +157,7 @@ class Workflow:
         Supervisor 成本随会话长度线性上涨。这里只保留最近若干条原文，更早的轮次
         用 understand 阶段已经产出的 standalone_request 降级成摘要。
         """
-        turns = [
-            {"role": "user", "content": str(message.content)}
-            if message.type == "human"
-            else {
-                "role": "assistant",
-                "content": render_reply(
-                    str(message.content), message.additional_kwargs.get(TOOLS_CALLED_KEY)
-                ),
-            }
-            for message in state["messages"]
-            if message.type in {"human", "ai"}
-        ]
+        turns = [turn for message in state["messages"] if (turn := _render_turn(message))]
         if self._history_window <= 0 or len(turns) <= self._history_window:
             return turns
 
@@ -586,9 +612,11 @@ class Workflow:
             write(
                 {
                     "task_done": result.task_id,
-                    "tool_results": [
-                        item.model_dump(mode="json") for item in result.tool_results
-                    ],
+                    # 用户取消的任务不展示步骤：取消没有回答，卡片之前查过的余额之类会孤零零
+                    # 挂在"你取消了"下面。事件本身照推，前端靠它知道这个任务已经画完。
+                    "tool_results": []
+                    if result.status == TaskStatus.REJECTED
+                    else [item.model_dump(mode="json") for item in result.tool_results],
                 }
             )
         return {
