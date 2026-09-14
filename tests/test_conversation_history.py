@@ -137,6 +137,43 @@ async def test_tool_and_empty_messages_are_not_exposed(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
+async def test_answers_bring_back_their_task_title_and_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """实时画出来的标题和步骤，刷新后要照原样回来；早先没记下的消息不带。"""
+    values = {
+        "user_id": "owner-user",
+        "messages": [
+            HumanMessage(content="请假明天一天，年假"),
+            AIMessage(
+                content="请假申请已提交。",
+                additional_kwargs={
+                    "tools_called": ["get_leave_balance", "submit_leave_request"],
+                    "task": {"id": "task-1", "title": "提交明天年假申请"},
+                    "steps": [
+                        {"tool": "get_leave_balance", "success": True},
+                        {"tool": "submit_leave_request", "success": False},
+                    ],
+                },
+            ),
+            AIMessage(content="旧回答", additional_kwargs={"tools_called": []}),
+        ],
+    }
+
+    async with _client(values, monkeypatch) as client:
+        body = (await client.get(_url(), headers=_auth())).json()
+
+    user, answer, old = body["messages"]
+    assert (user["task_id"], user["title"], user["steps"]) == (None, None, [])
+    assert (answer["task_id"], answer["title"]) == ("task-1", "提交明天年假申请")
+    assert [(step["label"], step["success"]) for step in answer["steps"]] == [
+        ("查询假期余额", True),
+        ("提交请假申请", False),
+    ]
+    assert (old["task_id"], old["title"], old["steps"]) == (None, None, [])
+
+
+@pytest.mark.asyncio
 async def test_a_fresh_conversation_returns_an_empty_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

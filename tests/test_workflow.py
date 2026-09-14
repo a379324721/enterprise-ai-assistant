@@ -653,6 +653,7 @@ async def test_what_the_agent_says_before_a_confirmation_lands_in_the_conversati
         ConfirmationRequest(confirmation_id=pending.confirmation_id, approved=True),
         interrupt,
         pending,
+        snapshot.values["tasks"][0],
     )
     final = await graph.ainvoke(command, config)
 
@@ -664,6 +665,23 @@ async def test_what_the_agent_says_before_a_confirmation_lands_in_the_conversati
         ("ai", "你的年假还剩 8 天。", ["get_leave_balance"]),
         ("system", "你确认了：提交请假申请", None),
         ("ai", "请假申请已提交。", ["get_leave_balance", "submit_leave_request"]),
+    ]
+    # 刷新后要照原样画回任务标题和步骤：两句话都记着所属任务，步骤只挂在最终回答上，
+    # 和实时 task_done 推的是同一份。
+    task = {"id": "task-1", "title": final["tasks"][0].title}
+    assert [
+        (message.additional_kwargs.get("task"), message.additional_kwargs.get("steps"))
+        for message in final["messages"][1:]
+    ] == [
+        (task, None),
+        (None, None),
+        (
+            task,
+            [
+                {"tool": "get_leave_balance", "success": True},
+                {"tool": "submit_leave_request", "success": True},
+            ],
+        ),
     ]
     # 写回答时，说过的话在那次调用的正文里：只留在参数里，模型不当作说过，会再报一遍余额。
     assert any(

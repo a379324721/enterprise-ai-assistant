@@ -56,7 +56,12 @@ from enterprise_ai_assistant.core.security import (
     Identity,
     create_access_token,
 )
-from enterprise_ai_assistant.graph.workflow import decision_message, reply_message
+from enterprise_ai_assistant.graph.workflow import (
+    STEPS_KEY,
+    TASK_KEY,
+    decision_message,
+    reply_message,
+)
 from enterprise_ai_assistant.repositories.users import (
     DemoUser,
     DemoUserRepository,
@@ -761,8 +766,43 @@ async def chat_stream(
     return _stream_response(request, run, apply_on_disconnect=True)
 
 
+def _history_message(
+    index: int, role: Literal["user", "assistant", "decision"], text: str, extra: dict[str, Any]
+) -> ConversationMessage:
+    """历史里的一条消息，助手回答带上实时画出来时的任务标题和执行步骤。
+
+    这两样实时是从本轮计划和 task_done 里拿的，刷新后计划可能已经换了，只能用写回答时
+    记在消息上的那份（`reply_message`）。早先的消息没记，就不带。
+    """
+    task = extra.get(TASK_KEY) if role == "assistant" else None
+    if not isinstance(task, dict):
+        return ConversationMessage(index=index, role=role, text=text)
+    task_id = str(task.get("id", ""))
+    steps = [
+        TurnStep(
+            id=f"history:{index}:{position}",
+            task_id=task_id,
+            label=TOOL_LABELS.get(str(step.get("tool")), str(step.get("tool"))),
+            success=bool(step.get("success")),
+        )
+        for position, step in enumerate(extra.get(STEPS_KEY) or [])
+        if isinstance(step, dict)
+    ]
+    return ConversationMessage(
+        index=index,
+        role=role,
+        text=text,
+        task_id=task_id,
+        title=str(task.get("title", "")) or None,
+        steps=steps,
+    )
+
+
 def _resume_command(
-    payload: ConfirmationRequest, interrupt: Any, pending: PendingConfirmation
+    payload: ConfirmationRequest,
+    interrupt: Any,
+    pending: PendingConfirmation,
+    task: PlannedTask | None = None,
 ) -> Command[Any]:
     decision = {
         "confirmation_id": str(payload.confirmation_id),
@@ -778,7 +818,7 @@ def _resume_command(
         resume={interrupt_id: decision} if interrupt_id else decision,
         update={
             "messages": [
-                *(reply_message(note.text, note.tools) for note in pending.notes),
+                *(reply_message(note.text, note.tools, task=task) for note in pending.notes),
                 decision_message(payload.approved, pending.title),
             ]
         },
@@ -797,7 +837,10 @@ async def _validate_confirmation(
     interrupt, pending = found
     if pending.confirmation_id != payload.confirmation_id:
         raise HTTPException(status_code=409, detail="确认请求已过期，请刷新后重试")
-    return _resume_command(payload, interrupt, pending)
+    task = next(
+        (item for item in snapshot.values.get("tasks", []) if item.id == pending.task_id), None
+    )
+    return _resume_command(payload, interrupt, pending, task)
 
 
 @router.post("/conversations/{conversation_id}/confirm", response_model=AssistantResponse)
@@ -895,12 +938,22 @@ async def list_conversation_messages(
         text = _message_text_delta(message.content).strip()
         if not text:
             continue
-        turns.append(ConversationMessage(index=len(turns), role=role, text=text))
+        turns.append(_history_message(len(turns), role, text, message.additional_kwargs))
     # 停在确认卡上时，卡片之前说过的话还在中断里，确认后才进会话。不补上的话，
     # 刷新页面只剩一张卡，用户看不到据以决定的内容（比如余额）。
     pending = _pending_confirmation(snapshot)
-    for note in pending.notes if pending else []:
-        turns.append(ConversationMessage(index=len(turns), role="assistant", text=note.text))
+    if pending:
+        titles = {task.id: task.title for task in values.get("tasks", [])}
+        for note in pending.notes:
+            turns.append(
+                ConversationMessage(
+                    index=len(turns),
+                    role="assistant",
+                    text=note.text,
+                    task_id=pending.task_id,
+                    title=titles.get(pending.task_id),
+                )
+            )
 
     end = len(turns) if before is None else min(before, len(turns))
     start = max(0, end - limit)

@@ -149,6 +149,11 @@ class ConversationMessage(BaseModel):
     index: int
     role: Literal["user", "assistant", "decision"]
     text: str
+    # 领域任务的回答才有：所属任务、写回答时的任务标题、回答前展示过的执行步骤。
+    # 实时画的时候有这些，刷新后要照原样画回来。
+    task_id: str | None = None
+    title: str | None = None
+    steps: list[TurnStep] = Field(default_factory=list)
 
 
 class ConversationHistoryResponse(BaseModel):

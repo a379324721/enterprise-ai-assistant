@@ -20,6 +20,7 @@ from enterprise_ai_assistant.core.models import (
     ShelvedPlan,
     TaskDraft,
     TaskStatus,
+    ToolResult,
     TurnRelation,
     recover_interrupted,
 )
@@ -41,12 +42,28 @@ HANDOFF_EXHAUSTED_REPLY = "这件事我没能判断该交给哪项业务办理�
 #: 助手消息上记录"这条回复之前调用过哪些工具"的键。只存在消息的 additional_kwargs 里，
 #: 拼给模型的会话才渲染出来，界面上的会话历史只取正文，不受影响。
 TOOLS_CALLED_KEY = "tools_called"
+#: 助手消息属于哪个任务（id 和当时的标题）、回答前展示过哪些执行步骤。只给界面历史用：
+#: 实时画出来的标题和步骤不进会话的话，刷新页面就没了。不交给模型。
+TASK_KEY = "task"
+STEPS_KEY = "steps"
 
 logger = structlog.get_logger()
 
 
-def reply_message(text: str, tools: list[str]) -> AIMessage:
-    return AIMessage(content=text, additional_kwargs={TOOLS_CALLED_KEY: list(dict.fromkeys(tools))})
+def reply_message(
+    text: str,
+    tools: list[str],
+    *,
+    task: PlannedTask | None = None,
+    steps: list[ToolResult] | None = None,
+) -> AIMessage:
+    extra: dict[str, Any] = {TOOLS_CALLED_KEY: list(dict.fromkeys(tools))}
+    if task is not None:
+        extra[TASK_KEY] = {"id": task.id, "title": task.title}
+    if steps:
+        # 只记工具名和成败。工具返回的 data 里有请假原因这类字段，不跟着进会话历史。
+        extra[STEPS_KEY] = [{"tool": item.tool, "success": item.success} for item in steps]
+    return AIMessage(content=text, additional_kwargs=extra)
 
 
 def decision_message(approved: bool, title: str) -> SystemMessage:
@@ -116,12 +133,20 @@ class _Merge:
             for item in self.tasks
         ]
 
-    def say(self, answer: str, tools: list[str]) -> None:
+    def say(
+        self,
+        answer: str,
+        tools: list[str],
+        *,
+        task_id: str | None = None,
+        steps: list[ToolResult] | None = None,
+    ) -> None:
         # 用户取消的任务没有回答，决定已经记在会话里。
         if not answer.strip():
             return
+        task = next((item for item in self.tasks if item.id == task_id), None)
         self.answers.append(answer)
-        self.new_answers.append(reply_message(answer, tools))
+        self.new_answers.append(reply_message(answer, tools, task=task, steps=steps))
 
 
 class Workflow:
@@ -600,7 +625,7 @@ class Workflow:
             merged.tool_results.extend(result.tool_results)
             # 回答之前已经流给用户的话排在回答前面，转交出去的任务说过的也照样记。
             for note in result.notes:
-                merged.say(note.text, note.tools)
+                merged.say(note.text, note.tools, task_id=result.task_id)
             if result.status == TaskStatus.HANDED_OFF:
                 self._reroute(merged, result)
                 continue
@@ -643,7 +668,13 @@ class Workflow:
             merged.drafts[result.task_id] = result.draft
         else:
             merged.drafts.pop(result.task_id, None)
-        merged.say(result.answer, [item.tool for item in result.tool_results])
+        # 步骤和 task_done 推给前端的是同一份，刷新前后回答上面的步骤才一样。
+        merged.say(
+            result.answer,
+            [item.tool for item in result.tool_results],
+            task_id=result.task_id,
+            steps=result.tool_results,
+        )
 
     MAX_HANDOFFS = 2
 

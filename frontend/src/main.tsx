@@ -23,17 +23,33 @@ type Result = {
 type ActionItem = {reference_id: string; action_type: string; summary: string; created_at: string; fields: Record<string, string>; revoked_at: string | null};
 //: decision 不是对话双方说的话，而是用户在确认卡片上做的选择。后端把它作为一条
 //: SystemMessage 追加到会话历史，所以刷新后仍在；本地这条只是为了立刻有反馈。
-//: steps 是这一轮执行过的工具调用，只在本地插入，不进会话历史——刷新后不再显示。
+//: steps 是执行过的工具调用。实时随 task_done 插入；历史接口把它挂在所属回答上，
+//: 加载时展开成回答前面的一条，刷新前后画出来的一样。
 type Message = {
   role: "user" | "assistant" | "decision" | "steps"; text: string; index?: number;
   steps?: TurnStep[];
   // 这段回答属于哪个任务。流式期间只有 answer_start 带来的领域名可用，本轮结束时
-  // 从这一轮的 result.tasks 里取到任务标题记在消息上。历史消息没有这几个字段。
+  // 从这一轮的 result.tasks 里取到任务标题记在消息上。历史消息由接口带回写回答时的标题，
+  // 早先没记下的历史消息没有。
   taskId?: string; agent?: string; title?: string;
 };
 //: 延迟渲染那一轮攒下的回答段落，一段对应一个任务。
 type AnswerSegment = {taskId?: string; agent?: string; text: string};
 type SseMessage = {event: string; data: unknown};
+//: 历史接口返回的一条消息。
+type HistoryMessage = {
+  index: number; role: "user" | "assistant" | "decision"; text: string;
+  task_id: string | null; title: string | null; steps: TurnStep[];
+};
+
+/** 把历史消息还原成实时画出来的样子：步骤排在所属回答前面，回答带任务标题。 */
+function fromHistory(items: HistoryMessage[]): Message[] {
+  return items.flatMap((item): Message[] => {
+    const message: Message = {role: item.role, text: item.text, index: item.index};
+    if (item.task_id) { message.taskId = item.task_id; message.title = item.title ?? undefined; }
+    return item.steps.length > 0 ? [{role: "steps", text: "", steps: item.steps}, message] : [message];
+  });
+}
 type Session = {token: string; userId: string; displayName: string; conversationId: string};
 
 const examples = ["申请后天去上海出差，顺便订个当天下午的会议室", "我还有多少年假？下周五请一天年假", "查询差旅住宿标准"];
@@ -295,9 +311,10 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
       {headers: authHeaders, signal},
     ));
     if (!response.ok) return 0;
-    const body = await response.json() as {messages: Required<Message>[]; has_more: boolean};
+    const body = await response.json() as {messages: HistoryMessage[]; has_more: boolean};
     setHasMore(body.has_more);
-    setMessages((old) => before === undefined ? body.messages : [...body.messages, ...old]);
+    const page = fromHistory(body.messages);
+    setMessages((old) => before === undefined ? page : [...page, ...old]);
     return body.messages.length;
   }, [authHeaders, guard, session.conversationId]);
 
@@ -368,7 +385,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
   /** 这一段回答属于哪个任务。
    *
    *  流式期间只有领域名（answer_start 带的 agent），本轮结束后换成记在消息上的任务标题。
-   *  历史消息没有 task_id，返回空串即不显示标题。
+   *  早先的历史消息没有 task_id，返回空串即不显示标题。
    */
   function sectionLabel(message: Message): string {
     if (!message.taskId && !message.agent) return "";
