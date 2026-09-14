@@ -150,7 +150,7 @@ context_cases:
   - id: ctx-continue-short-answer-to-a-question
     conversation:
       - role: user
-        content: 申请周三去上海出差，顺便订个当天上午的会议室
+        content: 申请后天去上海出差，顺便订个当天上午的会议室
       - role: assistant
         content: 提交这趟前往上海的差旅申请还需要一个信息：您的返程日期是哪天？
       - role: user
@@ -189,7 +189,7 @@ context_cases:
   - id: ctx-new-topic-while-a-task-waits
     conversation:
       - role: user
-        content: 申请周三去上海出差
+        content: 申请后天去上海出差
       - role: assistant
         content: 还需要补充出差结束日期和出差事由。
       - role: user
@@ -208,7 +208,7 @@ context_cases:
   - id: ctx-thanks-while-a-task-waits-is-not-a-supplement
     conversation:
       - role: user
-        content: 申请周三去上海出差
+        content: 申请后天去上海出差
       - role: assistant
         content: 还需要补充出差结束日期和出差事由。
       - role: user
@@ -226,7 +226,7 @@ context_cases:
   - id: ctx-cancel-the-current-task
     conversation:
       - role: user
-        content: 申请周三去上海出差
+        content: 申请后天去上海出差
       - role: assistant
         content: 还需要补充出差结束日期和出差事由。
       - role: user
@@ -245,7 +245,7 @@ context_cases:
   - id: ctx-resume-a-shelved-task-by-name
     conversation:
       - role: user
-        content: 申请周三去上海出差
+        content: 申请后天去上海出差
       - role: assistant
         content: 还需要补充出差结束日期和出差事由。
       - role: user
@@ -270,7 +270,7 @@ context_cases:
   - id: ctx-short-reply-does-not-revive-a-shelved-task
     conversation:
       - role: user
-        content: 申请周三去上海出差
+        content: 申请后天去上海出差
       - role: assistant
         content: 还需要补充出差结束日期和出差事由。
       - role: user
@@ -724,7 +724,7 @@ domain_answer_cases:
   - id: domain-answer-stays-on-its-own-task
     domain: travel
     objective: 根据用户请求创建差旅申请
-    user_goal: 申请周三去上海出差，顺便订个当天上午的会议室
+    user_goal: 申请后天去上海出差，顺便订个当天上午的会议室
     tool_results:
       - '{"tool":"create_travel_application","success":true,"status":"submitted","data":{"status":"recorded","destination":"上海","start_date":"2026-09-16","end_date":"2026-09-16","purpose":"培训"}}'
     forbid_phrases:

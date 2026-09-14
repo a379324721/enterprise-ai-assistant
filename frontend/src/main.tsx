@@ -36,7 +36,7 @@ type AnswerSegment = {taskId?: string; agent?: string; text: string};
 type SseMessage = {event: string; data: unknown};
 type Session = {token: string; userId: string; displayName: string; conversationId: string};
 
-const examples = ["申请周三去上海出差，顺便订个当天上午的会议室", "我还有多少年假？下周五请一天年假", "查询差旅住宿标准"];
+const examples = ["申请后天去上海出差，顺便订个当天上午的会议室", "我还有多少年假？下周五请一天年假", "查询差旅住宿标准"];
 //: 领域名的中文标签，用于多任务回答的分节标题。
 const DOMAIN_LABELS: Record<string, string> = {
   travel: "差旅",
