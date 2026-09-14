@@ -21,6 +21,7 @@ from enterprise_ai_assistant.core.observability import MetricsMiddleware
 from enterprise_ai_assistant.core.runs import MemoryStreamBridge, RunManager
 from enterprise_ai_assistant.db.postgres import create_pool
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow
+from enterprise_ai_assistant.graph.serde import checkpoint_serializer
 from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
 from enterprise_ai_assistant.repositories.actions import PostgresActionRepository
 from enterprise_ai_assistant.repositories.memories import PostgresMemoryRepository
@@ -90,7 +91,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         await checkpoint_pool.open(wait=True)
         stack.push_async_callback(checkpoint_pool.close)
-        checkpointer = AsyncPostgresSaver(checkpoint_pool)
+        checkpointer = AsyncPostgresSaver(checkpoint_pool, serde=checkpoint_serializer())
         await checkpointer.setup()
 
         app.state.graph = build_graph(workflow, domain_workflow, checkpointer)

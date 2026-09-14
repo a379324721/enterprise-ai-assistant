@@ -119,7 +119,7 @@ async def test_policy_bootstrap_failure_does_not_block_startup(
 
     monkeypatch.setattr(main, "bootstrap_policy_collection", exploding_bootstrap)
     monkeypatch.setattr(main, "AsyncConnectionPool", lambda *a, **k: checkpoint_pool)
-    monkeypatch.setattr(main, "AsyncPostgresSaver", lambda conn: SimpleNamespace(setup=_setup))
+    monkeypatch.setattr(main, "AsyncPostgresSaver", lambda conn, **_: SimpleNamespace(setup=_setup))
     monkeypatch.setattr(main, "build_graph", lambda *args: object())
 
     app = FastAPI()
@@ -137,7 +137,7 @@ async def test_normal_shutdown_releases_all_resources(
     checkpoint_pool = FakeCheckpointPool()
 
     class FakeCheckpointer:
-        def __init__(self, conn: Any) -> None:
+        def __init__(self, conn: Any, **kwargs: Any) -> None:
             self.conn = conn
 
         async def setup(self) -> None:

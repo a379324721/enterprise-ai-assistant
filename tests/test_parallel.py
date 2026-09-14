@@ -17,11 +17,13 @@ from enterprise_ai_assistant.core.models import (
     ContextResolution,
     MemoryExtraction,
     OpenTask,
+    PlannedTask,
     TaskOutline,
     TaskPlan,
     TaskStatus,
 )
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow
+from enterprise_ai_assistant.graph.serde import checkpoint_serializer
 from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
@@ -192,3 +194,37 @@ async def test_independent_tasks_run_together_and_confirm_one_card_at_a_time() -
     assert final.values["turn_answers"] == ["travel 已提交", "expense 已提交"]
     # 每个分支一次选工具、一次作答。确认其中一张时另一个分支不会从头重跑、重复调模型。
     assert sorted(CALLS) == sorted([AgentName.TRAVEL, AgentName.EXPENSE] * 2)
+
+
+@pytest.mark.asyncio
+async def test_checkpoints_restore_with_an_explicit_type_allowlist(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """升级到拦截未登记类型的 LangGraph 后，停在确认卡上的会话要能照常恢复。
+
+    显式传允许清单就等于严格模式：清单外的类型会被拦截，而不是只打警告。
+    """
+    CALLS.clear()
+    graph = build_graph(
+        Workflow(SupervisorAgent(TwoTasks())),
+        DomainTaskWorkflow(RendezvousFactory()),
+        InMemorySaver(serde=checkpoint_serializer()),
+    )
+
+    await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="申请上海出差，另外报销打车费 58 元")],
+            "user_id": "u-1",
+            "conversation_id": CONVERSATION_ID,
+            "request_id": uuid4(),
+        },
+        CONFIG,
+    )
+    await _confirm(graph)
+    await _confirm(graph)
+
+    final = await graph.aget_state(CONFIG)
+    assert all(isinstance(task, PlannedTask) for task in final.values["tasks"])
+    assert [task.status for task in final.values["tasks"]] == [TaskStatus.COMPLETED] * 2
+    assert not [record for record in caplog.records if "unregistered" in record.getMessage()]
+    assert not [record for record in caplog.records if "blocked" in record.getMessage().lower()]
