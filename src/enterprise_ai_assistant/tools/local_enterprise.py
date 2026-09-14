@@ -103,13 +103,14 @@ class LocalEnterpriseToolProvider:
         actions: ActionRepository,
         policies: PolicyRepository,
         *,
-        annual_leave_balance: float = 8,
+        leave_balance: float = 8,
         rooms: tuple[MeetingRoom, ...] = DEFAULT_MEETING_ROOMS,
         bookings: tuple[RoomBooking, ...] = DEFAULT_ROOM_BOOKINGS,
     ) -> None:
         self._actions = actions
         self._policies = policies
-        self._annual_leave_balance = annual_leave_balance
+        # 替身不区分假期类型，每种都给同一个余额，查事假、病假时不会是 0。
+        self._leave_balance = leave_balance
         self._rooms = rooms
         self._preset = bookings
         # 本次进程里新订的房间用绝对日期记录，后续查询能看到它们已被占用。按单号索引，
@@ -268,22 +269,32 @@ class LocalEnterpriseToolProvider:
         self, context: ToolContext, payload: LeaveBalanceInput
     ) -> BusinessToolOutcome:
         del context
-        balance = self._annual_leave_balance if payload.leave_type == "annual" else 0
         return BusinessToolOutcome(
             tool="get_leave_balance",
             success=True,
             status="completed",
-            data={"leave_type": payload.leave_type, "balance_days": balance},
+            data={"leave_type": payload.leave_type, "balance_days": self._leave_balance},
         )
 
     async def submit_leave_request(
         self, context: ToolContext, payload: LeaveRequestInput
     ) -> BusinessToolOutcome:
-        return await self._record_write(
+        outcome = await self._record_write(
             tool="submit_leave_request",
             action_type="leave_request",
             context=context,
             payload=payload.model_dump(mode="json"),
+        )
+        # 替身不维护余额，提交后再查还是原值。不提示的话，模型会把提交前查到的余额
+        # 当成现在的余额报给用户。
+        return outcome.model_copy(
+            update={
+                "data": {
+                    **outcome.data,
+                    "balance_note": "提交前查到的假期余额需要减去本次请假天数"
+                    "没查请忽略",
+                }
+            }
         )
 
     async def query_submissions(

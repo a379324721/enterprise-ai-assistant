@@ -61,13 +61,27 @@ async def test_local_write_is_idempotent() -> None:
 @pytest.mark.asyncio
 async def test_local_leave_balance_uses_configured_backend_value() -> None:
     provider = LocalEnterpriseToolProvider(
-        InMemoryActionRepository(), InMemoryPolicyRepository(), annual_leave_balance=6.5
+        InMemoryActionRepository(), InMemoryPolicyRepository(), leave_balance=6.5
     )
 
-    result = await provider.get_leave_balance(context(), LeaveBalanceInput())
+    for leave_type in ("annual", "sick"):
+        result = await provider.get_leave_balance(context(), LeaveBalanceInput(leave_type=leave_type))
 
-    assert result.status == "completed"
-    assert result.data["balance_days"] == 6.5
+        assert result.status == "completed"
+        assert result.data["balance_days"] == 6.5
+
+
+@pytest.mark.asyncio
+async def test_leave_submissions_remind_that_the_balance_is_not_deducted() -> None:
+    provider = LocalEnterpriseToolProvider(InMemoryActionRepository(), InMemoryPolicyRepository())
+    day = date(2026, 9, 25)
+
+    for leave_type in ("annual", "sick"):
+        submitted = await provider.submit_leave_request(
+            context(uuid4()), LeaveRequestInput(leave_type=leave_type, start_date=day, end_date=day)
+        )
+
+        assert "减去本次请假天数" in submitted.data["balance_note"]
 
 
 @pytest.mark.asyncio
