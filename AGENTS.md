@@ -117,6 +117,10 @@ cd frontend && npm run build  # tsc -b && vite build
 
 Supervisor 只拿记忆的 key（理由见"长期记忆"），所以直接回复不做基于档案的个性化；它拿单据清单（`RecentAction.render()`）和称呼，用于指认"第一条"是哪张单、称呼用户。
 
+会话里每条助手消息都记着那一轮调用过的工具（`additional_kwargs["tools_called"]`，由 `reply_message` 写入），`_conversation()` 渲染成正文前的 `[未调用工具]` / `[调用了：查询差旅申请]` 交给模型，界面历史只取正文。Supervisor 从不调用工具，说到之前做过什么只能依据这个标注——没有它，Supervisor 分不清哪条是自己凭单据清单直接答的，被问"你真实查了吗"时会谎称调用了系统接口。
+
+Supervisor 的 prompt 按原则写，不按 badcase 逐条加规则：它手里没有业务数据（清单只用于指认），回答需要业务数据就交给执行；说到做过什么只依据标注。出现新的越界说法，先看能不能归到这两条，而不是再补一条禁止句。
+
 人工确认的决定会随恢复命令追加进 `messages`（`_decision_message`），刻意用 `SystemMessage`：
 `_conversation()` 只挑 human/ai，于是这条记录进得了会话历史和界面（`ConversationMessage.role`
 的第三种取值 `decision`），进不了模型上下文。改成 `HumanMessage` 会让下一轮的 Context
@@ -134,7 +138,7 @@ Supervisor 把它当成用户的新输入。
 
 查询工具返回单据的**全部**字段，不走 `_ACTION_SUMMARY_FIELDS` 白名单：白名单防的是每轮被动注入（用户没问，请假原因也跟着档案进上下文），查询是本人对自己单据的主动请求，修改前也必须拿到原值。修改工具（`update_*`）是 WRITE，照常逐个确认；它只传要改的字段，合并后按新建时的同一份契约重新校验，原单据行原地更新，另记一行 `<action_type>_update` 做幂等和审计。撤销工具（`revoke_*`，WRITE）只给原单据打 `revoked_at` 标记不删行，另记 `<action_type>_revoke`；撤销是终态，撤销后不能再修改，"我的单据"标为已撤销，会议室撤销后时段让出。系统没有代审批的工具。
 
-查询、修改、撤销单据的请求由 Context Supervisor 归入单据所属领域（规则在 `_DOMAIN_ROUTING`）。Supervisor 直接回复时手里没有查询结果，不得断言状态，也不得许诺"帮你查一下"——不执行任务的轮次下一步什么也不会发生。
+查询、修改、撤销单据的请求由 Context Supervisor 归入单据所属领域（规则在 `_DOMAIN_ROUTING`）。列出、核实、"再查一次"单据也要执行：没说是哪类单据时，用户提交过的每类单据各拆一个任务。Supervisor 直接回复时手里没有查询结果，不得断言状态，也不得许诺"帮你查一下"——不执行任务的轮次下一步什么也不会发生。
 
 ### 执行与 SSE 连接解耦
 

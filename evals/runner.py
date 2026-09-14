@@ -126,9 +126,9 @@ class EvalHarness:
     # -- context ---------------------------------------------------------
 
     async def run_context_case(self, case: ContextCase) -> CaseResult:
-        conversation = [turn.model_dump() for turn in case.conversation]
+        conversation = [turn.rendered() for turn in case.conversation]
         resolution = await self._planning.resolve_context(
-            conversation, open_tasks=case.open_tasks
+            conversation, open_tasks=case.open_tasks, recent_actions=case.recent_actions
         )
         problems: list[str] = []
         if resolution.requires_task_planning != case.expect_task_planning:
@@ -232,7 +232,7 @@ class EvalHarness:
         if memories:
             payload["user_memory"] = list(memories)
         if recent_messages:
-            payload["recent_messages"] = [turn.model_dump() for turn in recent_messages]
+            payload["recent_messages"] = [turn.rendered() for turn in recent_messages]
         runtime = self._runtime(domain, case_id)
         response = await runtime.decide(
             objective,
@@ -317,7 +317,7 @@ class EvalHarness:
 
     async def run_small_talk_case(self, case: SmallTalkCase) -> CaseResult:
         resolution = await self._planning.resolve_context(
-            [turn.model_dump() for turn in case.conversation],
+            [turn.rendered() for turn in case.conversation],
             recent_actions=case.recent_actions,
             user_name=case.user_name,
         )

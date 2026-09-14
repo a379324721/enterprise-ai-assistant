@@ -603,4 +603,4 @@ def test_revoked_action_is_marked_in_the_model_context() -> None:
         revoked_at=datetime(2026, 9, 13, 1, tzinfo=UTC),
     )
 
-    assert action.render() == "leave_request LVE-1（2026-09-13）（已撤销）：leave_type=annual"
+    assert action.render() == "[hr] leave_request LVE-1（2026-09-13）（已撤销）：leave_type=annual"

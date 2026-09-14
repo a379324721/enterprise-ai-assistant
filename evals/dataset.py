@@ -11,6 +11,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from enterprise_ai_assistant.core.models import AgentName, OpenTask, TurnRelation
+from enterprise_ai_assistant.graph.workflow import render_reply
 
 DATASET_PATH = Path(__file__).with_name("cases.yaml")
 
@@ -18,6 +19,15 @@ DATASET_PATH = Path(__file__).with_name("cases.yaml")
 class ConversationTurn(BaseModel):
     role: str = Field(pattern="^(user|assistant)$")
     content: str = Field(min_length=1)
+    # 助手消息那一轮调用过的工具名，空列表表示没调用。线上消息都带这个标注，不写时按标注
+    # 上线前的旧消息处理（不标注）。
+    tools: list[str] | None = None
+
+    def rendered(self) -> dict[str, str]:
+        """渲染成模型看到的样子，和线上 Workflow._conversation 走同一个函数。"""
+        if self.role == "user":
+            return {"role": "user", "content": self.content}
+        return {"role": "assistant", "content": render_reply(self.content, self.tools)}
 
 
 class ContextCase(BaseModel):
@@ -33,6 +43,7 @@ class ContextCase(BaseModel):
     expect_any_keywords: list[str] = Field(default_factory=list)
     # 上一轮停在待补充的任务。补充信息的短回复只有放在它们下面才能认出来。
     open_tasks: list[OpenTask] = Field(default_factory=list)
+    recent_actions: list[str] = Field(default_factory=list)
     # 留空表示不断言。
     expect_turn_relation: TurnRelation | None = None
     expect_target_plan_id: str | None = None

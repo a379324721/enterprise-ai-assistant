@@ -310,6 +310,16 @@ class MemoryRecord(BaseModel):
         return f"{self.key}={self.value}"
 
 
+#: 单据类型所属的领域。清单渲染时直接标出来：Supervisor 拆"我提交过哪些单子"时要按领域拆，
+#: 让它自己把 meeting_booking 对到 meeting，实测会只拆出差旅、或者四个领域全拆。
+_ACTION_DOMAINS = {
+    "travel_application": AgentName.TRAVEL,
+    "expense_claim": AgentName.EXPENSE,
+    "leave_request": AgentName.HR,
+    "meeting_booking": AgentName.MEETING,
+}
+
+
 class RecentAction(BaseModel):
     """从 workflow_actions 派生的近期业务事实；单号的真相来源始终是那张表。"""
 
@@ -327,7 +337,9 @@ class RecentAction(BaseModel):
         # 老数据的 result 里可能没有单号。这时只能整段省略——幂等键不是备选项。
         label = f"{self.action_type} {self.reference_id}" if self.reference_id else self.action_type
         revoked = "（已撤销）" if self.revoked_at else ""
-        return f"{label}（{day}）{revoked}：{self.summary}"
+        domain = _ACTION_DOMAINS.get(self.action_type)
+        prefix = f"[{domain.value}] " if domain else ""
+        return f"{prefix}{label}（{day}）{revoked}：{self.summary}"
 
 
 class ConfirmationField(BaseModel):

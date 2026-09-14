@@ -26,6 +26,7 @@ from enterprise_ai_assistant.core.models import (
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow, build_domain_graph
 from enterprise_ai_assistant.graph.state import AssistantState, DomainTaskInput
 from enterprise_ai_assistant.repositories.memories import MemoryRepository
+from enterprise_ai_assistant.tools.registry import TOOL_LABELS
 
 #: 超出消息窗口的历史以摘要形式回灌，需要显式标注来源，避免被当成用户当前发言。
 DIGEST_HEADER = "【早先会话摘要，仅供指代消解参考，不是用户当前发言】"
@@ -37,7 +38,31 @@ NOTHING_TO_CANCEL_REPLY = "现在没有尚未办完的事项可以放弃。已�
 #: 让其中哪一个来措辞都可能说成"办不到"，而实际是没听懂该找谁。
 HANDOFF_EXHAUSTED_REPLY = "这件事我没能判断该交给哪项业务办理，能换个说法，或者说明是差旅、报销、请假还是会议室方面的事吗？"
 
+#: 助手消息上记录"这条回复之前调用过哪些工具"的键。只存在消息的 additional_kwargs 里，
+#: 拼给模型的会话才渲染出来，界面上的会话历史只取正文，不受影响。
+TOOLS_CALLED_KEY = "tools_called"
+
 logger = structlog.get_logger()
+
+
+def reply_message(text: str, tools: list[str]) -> AIMessage:
+    return AIMessage(content=text, additional_kwargs={TOOLS_CALLED_KEY: list(dict.fromkeys(tools))})
+
+
+def render_reply(content: str, tools: list[str] | None) -> str:
+    """给模型看的助手消息：正文前标出这条回复有没有调用工具。
+
+    Supervisor 从不调用工具，但会话里的助手消息只有文字，它分不清哪条是自己凭单据清单直接
+    答的、哪条是领域 Agent 查过才写的。实测用户问"你真实查了吗"，它顺着"助手查过"的口径
+    说"确实调用了系统接口实时查询"。标注是它如实回答做过什么的唯一依据。
+    tools 为 None 是标注上线前的旧消息，来源未知，不标。
+    """
+    if tools is None:
+        return content
+    if not tools:
+        return f"[未调用工具]\n{content}"
+    labels = "、".join(TOOL_LABELS.get(name, name) for name in tools)
+    return f"[调用了：{labels}]\n{content}"
 
 
 @dataclass
@@ -49,7 +74,7 @@ class _Merge:
     drafts: dict[str, TaskDraft]
     tool_results: list[Any]
     answers: list[str]
-    new_answers: list[str] = field(default_factory=list)
+    new_answers: list[AIMessage] = field(default_factory=list)
 
     def set_status(self, task_id: str, status: TaskStatus) -> None:
         self.tasks = [
@@ -57,9 +82,9 @@ class _Merge:
             for item in self.tasks
         ]
 
-    def say(self, answer: str) -> None:
+    def say(self, answer: str, tools: list[str]) -> None:
         self.answers.append(answer)
-        self.new_answers.append(answer)
+        self.new_answers.append(reply_message(answer, tools))
 
 
 class Workflow:
@@ -96,9 +121,13 @@ class Workflow:
         用 understand 阶段已经产出的 standalone_request 降级成摘要。
         """
         turns = [
-            {
-                "role": "user" if message.type == "human" else "assistant",
-                "content": str(message.content),
+            {"role": "user", "content": str(message.content)}
+            if message.type == "human"
+            else {
+                "role": "assistant",
+                "content": render_reply(
+                    str(message.content), message.additional_kwargs.get(TOOLS_CALLED_KEY)
+                ),
             }
             for message in state["messages"]
             if message.type in {"human", "ai"}
@@ -420,7 +449,8 @@ class Workflow:
             **update,
             "last_answer": answer,
             "turn_answers": [answer],
-            "messages": [AIMessage(content=answer)],
+            # 直接回复和取消事项的固定文案都没有调用工具。
+            "messages": [reply_message(answer, [])],
         }
 
     @staticmethod
@@ -565,7 +595,7 @@ class Workflow:
             "tool_results": merged.tool_results,
             "last_answer": "\n\n".join(merged.answers),
             "turn_answers": merged.answers,
-            "messages": [AIMessage(content=answer) for answer in merged.new_answers],
+            "messages": merged.new_answers,
             "active_task_id": None,
             "current_agent": None,
             "domain_batch": [],
@@ -582,7 +612,7 @@ class Workflow:
             merged.drafts[result.task_id] = result.draft
         else:
             merged.drafts.pop(result.task_id, None)
-        merged.say(result.answer)
+        merged.say(result.answer, [item.tool for item in result.tool_results])
 
     MAX_HANDOFFS = 2
 
@@ -609,7 +639,7 @@ class Workflow:
             )
             merged.set_status(task.id, TaskStatus.FAILED)
             merged.tasks = self._reject_blocked_tasks(merged.tasks)
-            merged.say(HANDOFF_EXHAUSTED_REPLY)
+            merged.say(HANDOFF_EXHAUSTED_REPLY, [])
             return
         logger.info(
             "task_handed_off", task_id=task.id, source=task.domain.value, target=target.value

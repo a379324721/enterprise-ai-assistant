@@ -20,7 +20,12 @@ from enterprise_ai_assistant.core.models import (
 )
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow, build_domain_graph
 from enterprise_ai_assistant.graph.state import DomainTaskState
-from enterprise_ai_assistant.graph.workflow import DIGEST_HEADER, Workflow, build_graph
+from enterprise_ai_assistant.graph.workflow import (
+    DIGEST_HEADER,
+    Workflow,
+    build_graph,
+    reply_message,
+)
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
 from enterprise_ai_assistant.tools import LocalEnterpriseToolProvider, ToolContext
@@ -720,6 +725,27 @@ def test_short_history_is_sent_verbatim() -> None:
         "问题1", "回答1", "问题2", "回答2", "问题3", "回答3",
     ]
     assert not any(DIGEST_HEADER in turn["content"] for turn in conversation)
+
+
+def test_assistant_turns_tell_the_model_whether_a_tool_was_called() -> None:
+    """Supervisor 分不清哪条回复查过、哪条是凭清单直接答的，被追问时就会谎称查过。"""
+    workflow = Workflow(SupervisorAgent(RecordingPlanningService()))
+    messages: list[BaseMessage] = [
+        HumanMessage(content="我提交过哪些单子"),
+        reply_message("您最近提交过差旅申请。", []),
+        HumanMessage(content="你再查一下"),
+        reply_message("查到一张差旅申请。", ["query_travel_applications"]),
+        # 标注上线前写进检查点的旧消息，来源未知，不能冒充成"没调用工具"。
+        AIMessage(content="旧回答"),
+    ]
+
+    conversation = workflow._conversation(_context_state(messages, []))
+
+    assert [turn["content"] for turn in conversation[1::2]] == [
+        "[未调用工具]\n您最近提交过差旅申请。",
+        "[调用了：查询差旅申请]\n查到一张差旅申请。",
+    ]
+    assert conversation[-1]["content"] == "旧回答"
 
 
 def test_long_history_is_windowed_with_digest_of_dropped_turns() -> None:

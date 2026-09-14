@@ -224,6 +224,8 @@ async def test_context_case_passes_open_tasks_and_checks_turn_relation() -> None
             conversation: list[dict[str, str]],
             memory_keys: Sequence[str] = (),
             open_tasks: Sequence[OpenTask] = (),
+            recent_actions: Sequence[str] = (),
+            user_name: str = "",
         ) -> ContextResolution:
             self.seen = list(open_tasks)
             return await super().resolve_context(conversation, memory_keys, open_tasks)
