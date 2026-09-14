@@ -198,10 +198,31 @@ class DomainTaskWorkflow:
             else:
                 pending = {"name": name, "args": arguments, "id": str(raw_call["id"])}
 
+        notes = list(state.get("domain_notes", []))
+        tools_so_far = [item.tool for item in state.get("domain_tool_results", [])]
+        recorded = response
+        # 看过工具结果后，调工具时对用户说的话要进会话，否则刷新就没了，后面的轮次也不知道
+        # 说过。第一次决策手里还没有任何工具结果，说什么都不是查来的，不对外。
+        if executed and response.tool_calls:
+            # 正文已经随 messages 流逐字流出去了；参数里的话要等工具调用生成完才拿得到，
+            # 在这里整段推给前端。两处都写了的话多半是同一个意思，只认已经流出去的正文，
+            # 否则用户会看到两遍。参数不合法时不推，模型更正后会重新说。
+            text = self._text(response)
+            if not text and pending is not None and said:
+                text = said
+                get_stream_writer()(
+                    {"answer": said, "agent": request.task.domain.value, "task_id": request.task.id}
+                )
+                # 推出去的话写回这次调用的正文，本任务后面写回答时模型才知道已经说过。
+                # 只留在参数里时，实测它不当作说过的话，回答里又把余额报一遍。
+                recorded = response.model_copy(update={"content": said})
+            if text:
+                notes.append(AgentNote(text=text, tools=tools_so_far))
+
         retry_required = bool(validation_messages) or (pending is None and not executed)
         domain_messages = [
             *state.get("domain_messages", []),
-            response,
+            recorded,
             *validation_messages,
         ]
         if retry_required:
@@ -214,24 +235,6 @@ class DomainTaskWorkflow:
                 )
             )
 
-        notes = list(state.get("domain_notes", []))
-        tools_so_far = [item.tool for item in state.get("domain_tool_results", [])]
-        # 看过工具结果后，调工具时对用户说的话要进会话，否则刷新就没了，后面的轮次也不知道
-        # 说过。这回合的原始消息（连同 message_to_user）留在 domain_messages 里，所以本任务
-        # 后面写回答时模型也知道自己说过什么。第一次决策手里还没有任何工具结果，说什么都
-        # 不是查来的，不对外。
-        if executed and response.tool_calls:
-            # 正文已经随 messages 流逐字流出去了；参数里的话要等工具调用生成完才拿得到，
-            # 在这里整段推给前端。两处都写了的话多半是同一个意思，只认已经流出去的正文，
-            # 否则用户会看到两遍。参数不合法时不推，模型更正后会重新说。
-            text = self._text(response)
-            if not text and pending is not None and said:
-                text = said
-                get_stream_writer()(
-                    {"answer": said, "agent": request.task.domain.value, "task_id": request.task.id}
-                )
-            if text:
-                notes.append(AgentNote(text=text, tools=tools_so_far))
         confirmation = None
         if pending:
             if registered is None:

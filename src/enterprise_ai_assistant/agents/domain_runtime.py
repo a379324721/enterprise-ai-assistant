@@ -123,15 +123,8 @@ class DomainAgentRuntime:
             [item.tool for item in self.tools],
             parallel_tool_calls=False,
         )
-        # 紧挨着输出的位置提一句作答时最容易忘的范围原则：实测差旅 Agent 在回答里补过
-        # "会议室不归我管"，那本来是下一个任务。
-        reminder = (
-            [SystemMessage(content="工具结果已返回。目标达成就直接作答，只说当前任务。")]
-            if answering
-            else []
-        )
         result = await runnable.ainvoke(
-            [system, *messages, *reminder],
+            [system, *messages],
             config={
                 "tags": ["user-visible" if answering else "domain-internal"],
                 "metadata": {"agent": self.name.value, "task_id": task_id},

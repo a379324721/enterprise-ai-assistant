@@ -653,13 +653,11 @@ async def test_what_the_agent_says_before_a_confirmation_lands_in_the_conversati
         ("system", "你确认了：提交请假申请", None),
         ("ai", "请假申请已提交。", ["get_leave_balance", "submit_leave_request"]),
     ]
-    # 写回答时模型看得到自己那次调用里说过的话，不会再报一遍余额。
+    # 写回答时，说过的话在那次调用的正文里：只留在参数里，模型不当作说过，会再报一遍余额。
     assert any(
         isinstance(message, AIMessage)
-        and any(
-            call["args"].get("message_to_user") == "你的年假还剩 8 天。"
-            for call in message.tool_calls
-        )
+        and message.content == "你的年假还剩 8 天。"
+        and [call["name"] for call in message.tool_calls] == ["submit_leave_request"]
         for message in NarratingLeaveRuntime.answering_context
     )
 
