@@ -1,11 +1,15 @@
 import json
 from collections.abc import Sequence
 from datetime import date
-from typing import Protocol
+from typing import Any, Protocol
 
+import structlog
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langsmith import traceable
+from openai.lib._parsing._completions import type_to_response_format_param
+from pydantic import BaseModel, ValidationError
 
 from enterprise_ai_assistant.core.models import (
     ContextResolution,
@@ -14,6 +18,8 @@ from enterprise_ai_assistant.core.models import (
     TaskPlan,
 )
 from enterprise_ai_assistant.tools.registry import CAPABILITY_SUMMARY
+
+logger = structlog.get_logger()
 
 #: 渲染好的能力清单，Supervisor 与 Planner 共用，prompt 里只此一份能力边界。
 _CAPABILITIES = "\n".join(f"- {summary}" for summary in CAPABILITY_SUMMARY.values())
@@ -32,6 +38,67 @@ policy 只接跨领域或前四类都归不进去的通用制度，例如考勤�
 
 def _bullets(items: Sequence[str]) -> str:
     return "\n".join(f"- {item}" for item in items) or "（暂无）"
+
+
+#: 一个结构化阶段最多调用模型的次数，含首次调用。
+_STRUCTURED_ATTEMPTS = 3
+
+class _StructuredStage[T: BaseModel]:
+    """结构化输出，校验不通过时把错误说明交还模型修正。
+
+    原先是 with_structured_output(...).with_retry()：重试拿同样的输入原样再调一次，
+    模型不知道错在哪，温度 0 下输出一字不差，重试形同虚设。实测"1 嗯"这一轮两次都给出
+    非法的 depends_on，整轮失败。现在把模型的原输出和校验错误追加进对话，就像工具调用
+    失败时把错误结果交还给它一样，让它照着错误说明改。
+
+    response_format 用 OpenAI SDK 从同一个 pydantic 类生成的那份，发出去的请求和原先
+    完全一致；但不把类本身交给 SDK——那样 SDK 在请求内部就校验并抛异常，拿不到原输出，
+    也就无从反馈。校验器的报错会原样进 prompt，所以要写成模型能照着改的说明。
+    """
+
+    def __init__(self, model: ChatOpenAI, schema: type[T], prompt: ChatPromptTemplate) -> None:
+        self._schema = schema
+        self._prompt = prompt
+        # 网络和服务端错误的重试沿用原来的 with_retry；校验错误在 ainvoke 里带着说明重试。
+        response_format = type_to_response_format_param(schema)
+        self._model = model.bind(response_format=response_format).with_retry(stop_after_attempt=2)
+
+    async def ainvoke(self, variables: dict[str, Any]) -> T:
+        messages = await self._prompt.aformat_messages(**variables)
+        for attempt in range(1, _STRUCTURED_ATTEMPTS + 1):
+            reply = await self._model.ainvoke(messages)
+            output = str(reply.text) if isinstance(reply, BaseMessage) else str(reply)
+            try:
+                return self._schema.model_validate_json(output)
+            except ValidationError as error:
+                if attempt == _STRUCTURED_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "structured_output_invalid",
+                    schema=self._schema.__name__,
+                    attempt=attempt,
+                    errors=_validation_feedback(error),
+                )
+                messages = [
+                    *messages,
+                    AIMessage(content=output),
+                    HumanMessage(
+                        content="你上面的输出没有通过校验：\n"
+                        f"{_validation_feedback(error)}\n"
+                        "请只修正这些问题，其余判断保持不变，重新输出完整的 JSON。"
+                    ),
+                ]
+        raise AssertionError("unreachable")
+
+
+def _validation_feedback(error: ValidationError) -> str:
+    lines = []
+    for item in error.errors(include_url=False):
+        location = ".".join(str(part) for part in item["loc"]) or "整体"
+        # 自定义校验器的 msg 带着 pydantic 加的 "Value error, " 前缀，对模型没有信息量。
+        message = str(item["msg"]).removeprefix("Value error, ")
+        lines.append(f"- {location}：{message}")
+    return "\n".join(lines)
 
 
 class PlanningService(Protocol):
@@ -61,9 +128,7 @@ class LLMPlanningService:
         # 对话直接失败。图执行本身是流式的，模型调用会跟着走 astream，所以必须在这里
         # 显式关掉。代价是闲聊回复随理解结果一次性给出，不再逐字流出。
         structured = model.model_copy(update={"disable_streaming": True})
-        # with_retry 是兜底：真正跑偏时重试一次通常就能过，不重试的代价是用户
-        # 丢掉一整轮对话（前端只会显示"执行失败，请稍后重试"）。
-        self._context_resolver = ChatPromptTemplate.from_messages(
+        context_prompt = ChatPromptTemplate.from_messages(
             [
                 (
                     "system",
@@ -103,6 +168,8 @@ cancel 时 tasks 留空。领域归类规则如下：
 - 后一步需要前一步的产物时，按先后顺序排列，在后一步的 depends_on 里写前一步的 domain：
   “出差期间订个会议室”拆成 travel 和 depends_on 为 ["travel"] 的 meeting，因为会议室的
   地点和日期来自差旅任务的产物。互不相干的任务 depends_on 为空数组。
+  depends_on 只能写**本次 tasks 里排在它前面**的任务的 domain，否则输出无效。前置事项已经办完、
+  不在本次 tasks 里时（例如差旅已提交，本轮只剩会议室），写空数组。
 - title 是给用户看的简短事项名（如“上海出差申请”）；
   objective 说明这个任务要达成什么，不得抽取或补写字段，不选工具，不判断风险。
 - 不得增加用户没有要求的写操作，不得把能力清单之外的事写成任务。
@@ -151,14 +218,11 @@ cancel 时 tasks 留空。领域归类规则如下：
             ]
         ).partial(
             capabilities=_CAPABILITIES, domain_routing=_DOMAIN_ROUTING
-        ) | structured.with_structured_output(
-            ContextResolution
-        ).with_retry(
-            stop_after_attempt=2
         )
+        self._context_resolver = _StructuredStage(structured, ContextResolution, context_prompt)
         # 任务通常由 Context Supervisor 在理解结果里直接给出，这条链只是兜底：理解结果
         # 需要执行、模型却漏写了任务时才会调用。
-        self._planner = ChatPromptTemplate.from_messages(
+        planner_prompt = ChatPromptTemplate.from_messages(
             [
                 (
                     "system",
@@ -181,12 +245,9 @@ cancel 时 tasks 留空。领域归类规则如下：
             ]
         ).partial(
             capabilities=_CAPABILITIES, domain_routing=_DOMAIN_ROUTING
-        ) | structured.with_structured_output(
-            TaskPlan
-        ).with_retry(
-            stop_after_attempt=2
         )
-        self._memory_extractor = ChatPromptTemplate.from_messages(
+        self._planner = _StructuredStage(structured, TaskPlan, planner_prompt)
+        memory_prompt = ChatPromptTemplate.from_messages(
             [
                 (
                     "system",
@@ -217,9 +278,8 @@ value 用简短中文陈述，不超过 200 字。
                     "已知记忆：\n{known}\n\n本轮会话（JSON）：\n{conversation}",
                 ),
             ]
-        ) | structured.with_structured_output(MemoryExtraction).with_retry(
-            stop_after_attempt=2
         )
+        self._memory_extractor = _StructuredStage(structured, MemoryExtraction, memory_prompt)
 
     @traceable(name="context-supervisor", run_type="chain")
     async def resolve_context(

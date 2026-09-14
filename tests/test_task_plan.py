@@ -22,7 +22,7 @@ def task(task_id: str, dependencies: list[str]) -> PlannedTask:
 
 
 def test_task_plan_rejects_dependency_cycles() -> None:
-    with pytest.raises(ValidationError, match="acyclic"):
+    with pytest.raises(ValidationError, match="形成了环"):
         TaskPlan(
             user_goal="循环计划",
             tasks=[task("task-1", ["task-2"]), task("task-2", ["task-1"])],
@@ -70,7 +70,7 @@ def test_supervisor_tasks_become_the_plan_with_runtime_ids() -> None:
 
 def test_dependency_on_a_later_or_missing_task_fails_validation_so_the_output_is_retried() -> None:
     # 在理解阶段抛错才会触发结构化输出的重试；拖到规划节点再发现，整轮只能失败。
-    with pytest.raises(ValidationError, match="not an earlier task"):
+    with pytest.raises(ValidationError, match="排在它前面的任务没有这些领域"):
         _resolution(
             [
                 TaskOutline(

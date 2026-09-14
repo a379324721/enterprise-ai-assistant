@@ -45,7 +45,7 @@ class PlannedTask(BaseModel):
     @model_validator(mode="after")
     def reject_supervisor_domain(self) -> "PlannedTask":
         if self.domain == AgentName.SUPERVISOR:
-            raise ValueError("supervisor cannot execute a domain task")
+            raise ValueError("domain 不能是 supervisor，只能是 travel、expense、hr、meeting、policy")
         return self
 
 
@@ -57,10 +57,13 @@ class TaskPlan(BaseModel):
     def validate_dependencies(self) -> "TaskPlan":
         ids = {task.id for task in self.tasks}
         if len(ids) != len(self.tasks):
-            raise ValueError("task ids must be unique")
+            raise ValueError("tasks 里的 id 不能重复")
         for task in self.tasks:
             if task.id in task.depends_on or not set(task.depends_on) <= ids:
-                raise ValueError(f"invalid dependencies for task {task.id}")
+                raise ValueError(
+                    f"任务 {task.id} 的 depends_on 只能写 tasks 里其他任务的 id，"
+                    "不能写自己，也不能写不存在的 id"
+                )
         dependencies = {task.id: set(task.depends_on) for task in self.tasks}
         ready = [task_id for task_id, required in dependencies.items() if not required]
         visited: set[str] = set()
@@ -73,7 +76,7 @@ class TaskPlan(BaseModel):
                 if task_id not in visited and required <= visited:
                     ready.append(task_id)
         if visited != ids:
-            raise ValueError("task dependencies must form an acyclic graph")
+            raise ValueError("任务之间的 depends_on 形成了环，前置任务必须能排出先后顺序")
         return self
 
 
@@ -103,9 +106,12 @@ def plan_from_outlines(user_goal: str, outlines: list[TaskOutline]) -> TaskPlan:
     for position, outline in enumerate(outlines, start=1):
         missing = [domain for domain in outline.depends_on if domain not in earlier]
         if missing:
+            # 这句话会原样反馈给模型让它修正输出，所以写成它能照着改的说明，而不是给人看的断言。
             raise ValueError(
-                f"task {position} depends on {[item.value for item in missing]}, "
-                "which is not an earlier task"
+                f"tasks 第 {position} 个任务（{outline.domain.value}）的 depends_on 写了 "
+                f"{[item.value for item in missing]}，但本次 tasks 里排在它前面的任务没有这些领域。"
+                "depends_on 只能写本次 tasks 里排在它前面的任务的 domain；"
+                "前置事项已经办完、不在本次 tasks 里时，depends_on 写空数组"
             )
         task_id = f"task-{position}"
         tasks.append(
@@ -226,7 +232,8 @@ class ContextResolution(BaseModel):
 
     @model_validator(mode="after")
     def validate_tasks(self) -> "ContextResolution":
-        # 依赖非法在这里抛错，交给结构化输出的重试；放到规划节点才发现的话，整轮只能失败。
+        # 依赖非法在这里抛错，错误说明会反馈给模型修正（services/planning.py 的
+        # _StructuredStage）；放到规划节点才发现的话，模型已经没有机会改，整轮只能失败。
         self.plan()
         return self
 
@@ -239,7 +246,10 @@ class ContextResolution(BaseModel):
             and self.turn_relation != TurnRelation.CANCEL
             and not self.reply.strip()
         ):
-            raise ValueError("reply is required when no task runs and nothing is cancelled")
+            raise ValueError(
+                "requires_task_planning 为 false 且 turn_relation 不是 cancel 时必须写 reply："
+                "这一轮没有别的环节会回复用户"
+            )
         return self
 
 

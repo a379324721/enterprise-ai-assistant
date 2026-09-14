@@ -55,7 +55,7 @@ async def test_supervisor_receives_complete_conversation() -> None:
 
 def test_a_turn_that_runs_nothing_must_carry_a_reply() -> None:
     """不执行任务、也不取消事项的轮次没有别的节点会开口，缺回复必须当成输出无效。"""
-    with pytest.raises(ValidationError, match="reply is required"):
+    with pytest.raises(ValidationError, match="必须写 reply"):
         ContextResolution(
             standalone_request="你好", intent_summary="问候", requires_task_planning=False
         )
