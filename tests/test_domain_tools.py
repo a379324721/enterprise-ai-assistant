@@ -59,6 +59,25 @@ async def test_request_information_is_a_terminal_control_tool() -> None:
     assert result["status"] == "needs_user_input"
 
 
+@pytest.mark.asyncio
+async def test_request_information_restores_newlines_the_model_escaped_twice() -> None:
+    """追问原样发给用户，字面的 \\n 会让候选列表挤成一行。"""
+    information = next(
+        item
+        for item in registry().for_agent(AgentName.MEETING, context())
+        if item.tool.name == "request_information"
+    )
+
+    result = await information.tool.ainvoke(
+        {
+            "missing_fields": ["会议室"],
+            "question": "请问您想预订哪一间？\\n1. SH-301\\n2. SH-302",
+        }
+    )
+
+    assert result["data"]["question"] == "请问您想预订哪一间？\n1. SH-301\n2. SH-302"
+
+
 def _write_tools() -> list[RegisteredTool]:
     return [
         item

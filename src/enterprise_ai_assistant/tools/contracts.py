@@ -56,6 +56,16 @@ class InformationRequestInput(StrictToolInput):
     # 已经谈定或有建议值的字段。任务停在待补充时存为草稿，下一轮续跑时交还给领域 Agent。
     known_fields: list[DraftField] = Field(default_factory=list, max_length=20)
 
+    @field_validator("question", mode="before")
+    @classmethod
+    def unescape_newlines(cls, value: Any) -> Any:
+        # 实测模型在工具参数的 JSON 里把换行多转义一层，解析出来是字面的反斜杠加 n。
+        # 追问不经模型改写、原样发给用户，界面上的候选列表就挤成一行带着一串 \n，
+        # 还会原样进会话历史给下一轮的模型读。追问是给人看的中文，不会真的需要字面 \n。
+        if isinstance(value, str):
+            return value.replace("\\r\\n", "\n").replace("\\n", "\n")
+        return value
+
 
 class HandoffInput(StrictToolInput):
     # 用字面量而不是 AgentName：supervisor 不是能接任务的领域，不该出现在模型可选的值里。
