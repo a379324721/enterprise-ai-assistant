@@ -1,6 +1,7 @@
 """领域 Agent 发现任务分错时交还，父图改派给它指出的领域。"""
 
 from collections.abc import Sequence
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -9,6 +10,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langgraph.checkpoint.memory import InMemorySaver
 
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
+from enterprise_ai_assistant.api.routes import _execute_run
 from enterprise_ai_assistant.core.models import (
     AgentName,
     ContextResolution,
@@ -21,6 +23,7 @@ from enterprise_ai_assistant.core.models import (
     TaskStatus,
     ToolResult,
 )
+from enterprise_ai_assistant.core.runs import MemoryStreamBridge, Run, RunManager
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow
 from enterprise_ai_assistant.graph.state import DomainTaskState
 from enterprise_ai_assistant.graph.workflow import HANDOFF_EXHAUSTED_REPLY, Workflow, build_graph
@@ -270,3 +273,65 @@ async def test_each_merged_task_announces_its_steps_but_a_handed_off_one_does_no
         ("task-1", ["search_expense_policy"]),
         ("task-2", ["search_meeting_policy"]),
     ]
+
+
+@pytest.mark.asyncio
+async def test_side_panel_never_goes_blank_between_dependent_tasks() -> None:
+    """真实图上跑一遍：右栏跟着根图检查点走，转交和两个任务交接之间卡片都不能消失。"""
+    graph = build_graph(
+        Workflow(
+            SupervisorAgent(
+                OnePlan(
+                    [
+                        TaskOutline(title="报销打车费", domain=AgentName.TRAVEL, objective="报销"),
+                        TaskOutline(
+                            title="查会议室制度",
+                            domain=AgentName.MEETING,
+                            objective="查制度",
+                            depends_on=[AgentName.TRAVEL],
+                        ),
+                    ]
+                )
+            )
+        ),
+        DomainTaskWorkflow(HandoffRuntimeFactory({AgentName.TRAVEL: "expense"})),
+        InMemorySaver(),
+    )
+    published: list[tuple[str, Any]] = []
+
+    async def publish(event: str, data: Any) -> None:
+        published.append((event, data))
+
+    run = Run(run_id="r-1", conversation_id=CONVERSATION_ID, user_id="u-1")
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            graph=graph,
+            logger=SimpleNamespace(info=print, warning=print, exception=print),
+            runs=RunManager(MemoryStreamBridge(), SimpleNamespace()),
+        )
+    )
+    await _execute_run(
+        app,
+        run,
+        publish,
+        {
+            "messages": [HumanMessage(content="报销打车费，再查下会议室制度")],
+            "user_id": "u-1",
+            "conversation_id": CONVERSATION_ID,
+            "request_id": uuid4(),
+        },
+        CONVERSATION_ID,
+        "u-1",
+    )
+
+    cards = [
+        [item["task_id"] for item in data["matters"]] for event, data in published if event == "matters"
+    ]
+    # 第一份是计划还没建出来时的空右栏；从计划出现到全部办完，中间每一份都有卡片。
+    assert cards[0] == []
+    assert cards[-1] == []
+    working = cards[1:-1]
+    assert working and all(working)
+    assert working[0] == ["task-1"] and working[-1] == ["task-2"]
+    done = next(data for event, data in published if event == "done")
+    assert done["matters"] == []

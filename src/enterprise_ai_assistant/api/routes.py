@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from langgraph.types import Command
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response, StreamingResponse
 
+from enterprise_ai_assistant.api.matters import project_matters
 from enterprise_ai_assistant.api.schemas import (
     ActionListResponse,
     AssistantResponse,
@@ -23,7 +25,6 @@ from enterprise_ai_assistant.api.schemas import (
     DevTokenRequest,
     HealthResponse,
     Matter,
-    MatterTask,
     MemoryListResponse,
     TokenResponse,
     TurnStep,
@@ -32,11 +33,8 @@ from enterprise_ai_assistant.core.config import Settings, get_settings
 from enterprise_ai_assistant.core.metrics import BUDGET_REJECTIONS, REGISTRY
 from enterprise_ai_assistant.core.models import (
     DomainTaskResult,
-    DraftField,
     PendingConfirmation,
     PlannedTask,
-    ShelvedPlan,
-    TaskDraft,
     TaskStatus,
     ToolResult,
 )
@@ -240,81 +238,6 @@ def _message_text_delta(content: Any) -> str:
     return "".join(parts)
 
 
-def _matter(
-    plan_id: str,
-    tasks: list[PlannedTask],
-    drafts: dict[str, TaskDraft],
-    *,
-    shelved: bool,
-    pending: PendingConfirmation | None = None,
-) -> Matter | None:
-    """把一个计划投影成事项卡；没有卡在待补充或待确认上的计划不是事项。"""
-    focus = next(
-        (
-            task
-            for task in tasks
-            if task.status in {TaskStatus.WAITING_INPUT, TaskStatus.WAITING_CONFIRMATION}
-        ),
-        None,
-    )
-    if focus is None:
-        return None
-    if pending is not None and pending.task_id == focus.id:
-        # 草稿只在追问时写入、归并时才清掉。用户补完字段后任务直接停到确认卡上，草稿还是
-        # 追问那一刻的，卡片会在"待确认"下面列出一排早已补齐的"待补充"。待确认时字段
-        # 以确认卡上即将提交的参数为准。
-        draft = TaskDraft(
-            known_fields=[
-                # 确认卡的字段没有长度约束，事由这类自由文本可能超出草稿字段的上限。
-                DraftField(name=item.name[:64], label=item.label[:64], value=item.value[:500])
-                for item in pending.fields
-                if item.value.strip()
-            ]
-        )
-    else:
-        draft = TaskDraft.model_validate(drafts[focus.id]) if focus.id in drafts else TaskDraft()
-    status: Literal["waiting_input", "waiting_confirmation", "shelved"] = (
-        "shelved"
-        if shelved
-        else "waiting_confirmation"
-        if focus.status == TaskStatus.WAITING_CONFIRMATION
-        else "waiting_input"
-    )
-    return Matter(
-        plan_id=plan_id,
-        status=status,
-        task_id=focus.id,
-        title=focus.title,
-        known_fields=draft.known_fields,
-        missing_fields=draft.missing_fields,
-        tasks=[
-            MatterTask(id=task.id, title=task.title, domain=task.domain, status=task.status)
-            for task in tasks
-        ],
-    )
-
-
-def _matters(
-    values: dict[str, Any],
-    tasks: list[PlannedTask],
-    pending: PendingConfirmation | None = None,
-) -> list[Matter]:
-    current = _matter(
-        str(values.get("plan_id", "")),
-        tasks,
-        values.get("drafts", {}),
-        shelved=False,
-        pending=pending,
-    )
-    shelved: list[ShelvedPlan] = values.get("shelved_plans", [])
-    # 最近搁置的排在前面：用户最可能想接着办的是刚放下的那件。
-    parked = [
-        _matter(plan.plan_id, plan.tasks, plan.drafts, shelved=True)
-        for plan in reversed(shelved)
-    ]
-    return [item for item in (current, *parked) if item is not None]
-
-
 def _steps(tool_results: list[ToolResult], tasks: list[PlannedTask]) -> list[TurnStep]:
     titles = {task.id: task.title for task in tasks}
     return [
@@ -345,7 +268,16 @@ def _settled_results(snapshot: Any) -> list[DomainTaskResult]:
     return results
 
 
-async def _response(app: Any, conversation_id: UUID, user_id: str) -> AssistantResponse:
+async def _response(
+    app: Any, conversation_id: UUID, user_id: str, *, running: bool | None = None
+) -> AssistantResponse:
+    """会话当前状态的完整快照。
+
+    running 默认问运行管理器；执行体在图跑完、发 done 之前调用时，运行在管理器里仍标记为
+    执行中，要显式传 False。
+    """
+    if running is None:
+        running = _runs(app).active(conversation_id) is not None
     snapshot = await app.state.graph.aget_state(_config(conversation_id, user_id))
     values = snapshot.values
     if not values or values.get("user_id") != user_id:
@@ -392,7 +324,7 @@ async def _response(app: Any, conversation_id: UUID, user_id: str) -> AssistantR
         artifacts=values.get("artifacts", {}),
         tool_results=tool_results,
         pending_confirmation=pending,
-        matters=_matters(values, tasks, pending),
+        matters=project_matters(values, running=running, tasks=tasks, pending=pending),
         steps=_steps(tool_results, tasks),
     )
 
@@ -548,6 +480,24 @@ class _AnswerRelay:
         await self._publish(event, data)
 
 
+class _MattersRelay:
+    """把事项投影推给前端，内容没变就不推。
+
+    根图每个超步都会落检查点，大多数超步不改计划，原样重复推送只是噪音。
+    """
+
+    def __init__(self, publish: Publisher) -> None:
+        self._publish = publish
+        self._last: list[dict[str, Any]] | None = None
+
+    async def publish(self, matters: list[Matter]) -> None:
+        payload = [item.model_dump(mode="json") for item in matters]
+        if payload == self._last:
+            return
+        self._last = payload
+        await self._publish("matters", {"matters": payload})
+
+
 async def _publish_task_done(
     publish: Publisher, relay: "_AnswerRelay", data: dict[str, Any]
 ) -> None:
@@ -557,22 +507,11 @@ async def _publish_task_done(
     """
     await relay.flush()
     tool_results = [ToolResult.model_validate(item) for item in data.get("tool_results") or []]
-    # 只投影当前计划。搁置计划在执行中途不会变，前端保留原有的那几张。
-    matter = _matter(
-        str(data.get("plan_id", "")),
-        [PlannedTask.model_validate(item) for item in data.get("tasks") or []],
-        {
-            task_id: TaskDraft.model_validate(draft)
-            for task_id, draft in (data.get("drafts") or {}).items()
-        },
-        shelved=False,
-    )
     await publish(
         "task_done",
         {
             "task_id": data["task_done"],
             "steps": [step.model_dump(mode="json") for step in _steps(tool_results, [])],
-            "matter": matter.model_dump(mode="json") if matter else None,
         },
     )
 
@@ -598,6 +537,7 @@ async def _execute_run(
     await publish(
         "metadata", {"conversation_id": str(conversation_id), "run_id": run.run_id}
     )
+    matters = _MattersRelay(publish)
     try:
         relay = _AnswerRelay(publish)
         async for part in app.state.graph.astream(
@@ -607,7 +547,8 @@ async def _execute_run(
             # "正在生成回复"就意味着回答早已流完才显示这句话。tasks 会在任务开始
             # 时先发一次，进度文案才对得上正在发生的事。
             # custom 承载不经模型的回答（领域 Agent 的追问），messages 流里没有它们。
-            stream_mode=["messages", "tasks", "custom"],
+            # checkpoints 驱动右栏：根图每落一次检查点就按同一个投影函数重算事项。
+            stream_mode=["messages", "tasks", "custom", "checkpoints"],
             subgraphs=True,
             version="v2",
         ):
@@ -621,6 +562,11 @@ async def _execute_run(
                     await relay.whole(data["answer"], data)
                 elif isinstance(data, dict) and isinstance(data.get("task_done"), str):
                     await _publish_task_done(publish, relay, data)
+            elif part["type"] == "checkpoints":
+                # 子图的检查点只有领域 Agent 的私有状态，计划和事项都在根图上。
+                if not part["ns"]:
+                    values = part["data"]["values"]
+                    await matters.publish(project_matters(values, running=True))
             elif part["type"] == "tasks":
                 task = part["data"]
                 # 同一个任务开始和结束各发一次，结束那次带 result/error。只认开始。
@@ -632,7 +578,8 @@ async def _execute_run(
                     await publish("progress", {"node": node_name, "message": message})
 
         await relay.flush()
-        response = await _response(app, conversation_id, user_id)
+        # 图已经跑完，但运行在管理器里要等这个函数返回才结束，这里的快照不算执行中。
+        response = await _response(app, conversation_id, user_id, running=False)
         await publish("done", response.model_dump(mode="json"))
         return _run_status(response)
     except asyncio.CancelledError:
@@ -645,6 +592,11 @@ async def _execute_run(
             "graph_stream_failed", run_id=run.run_id, conversation_id=str(conversation_id)
         )
         run.error_message = _failure_message(error)
+        # 最后一次推给前端的事项还是"处理中"。失败后没有 done，不补一份快照的话，右栏会一直
+        # 挂着一件不会再有进展的事。快照本身也可能读不出来（失败的正是数据库），那就不补。
+        with contextlib.suppress(Exception):
+            snapshot = await _response(app, conversation_id, user_id, running=False)
+            await matters.publish(snapshot.matters)
         await publish("error", {"message": run.error_message})
         return RunStatus.failed
     finally:

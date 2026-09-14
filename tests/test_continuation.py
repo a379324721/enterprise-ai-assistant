@@ -19,6 +19,7 @@ from enterprise_ai_assistant.core.models import (
     TaskPlan,
     TaskStatus,
     TurnRelation,
+    recover_interrupted,
 )
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow
 from enterprise_ai_assistant.graph.workflow import NOTHING_TO_CANCEL_REPLY, Workflow, build_graph
@@ -526,6 +527,6 @@ async def test_first_attempt_crash_leaves_the_task_pending_not_waiting() -> None
         )
     ]
 
-    [recovered] = Workflow._recover_interrupted(tasks, {})
+    [recovered] = recover_interrupted(tasks, {})
 
     assert recovered.status == TaskStatus.PENDING

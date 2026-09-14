@@ -100,7 +100,7 @@ cd frontend && npm run build  # tsc -b && vite build
 
 指向规则（`Workflow._target`）：`target_plan_id` 命中搁置计划就用它；否则当前计划有待补充任务就是当前计划；否则搁置计划只有一件时就是它；都不满足则忽略 `continue` / `cancel`，按常规路径处理。多件搁置时不猜，宁可重新规划也不把补充信息塞给错的事项。
 
-界面右栏的"进行中"就是这些计划的投影：`routes.py` 的 `_matters` 把卡在待补充 / 待确认上的当前计划和全部搁置计划转成 `AssistantResponse.matters`，字段来自 `drafts`，所以 `request_information` 的 `missing_fields` 要求中文字段名。办完的计划不成为事项。对话流里的执行步骤是 `AssistantResponse.steps`，由本轮 `tool_results` 加 `tools/registry.py` 的 `TOOL_LABELS` 生成；新增工具要同步起中文名，有测试检查。
+界面右栏的"进行中"就是这些计划的投影，没有自己的存储。规则只在 `api/matters.py` 的 `project_matters` 一处：卡在待补充 / 待确认上的计划是事项（待确认时字段取确认卡上的参数，否则取 `drafts`，所以 `request_information` 的 `missing_fields` 要求中文字段名）；运行在执行时，当前计划还有任务排队或在跑也是事项，显示为处理中；办完的计划不成为事项。"是否在执行"由调用方从 `RunManager` 得知，不从任务状态猜——没有运行时停在 RUNNING 的任务是失败残留，按 `recover_interrupted` 解读，和下一轮续跑的解读一致。两个调用方：`_execute_run` 订阅根图的 `checkpoints` 流，每落一次检查点投影一次，内容变了才推 `matters` 事件（失败时补推一份快照再发 `error`）；`_response`（`done`、页面加载）从 `get_state` 快照投影，额外叠加中断和未归并分支。前端只整体替换，不合并。不要再为某个时机另写投影路径或往 `task_done` 里塞计划数据——原先快照和执行中途各算一套，卡片在任务之间消失、换话题时搁置事项不见、失败后一直显示处理中，都出在两套的差异上。对话流里的执行步骤是 `AssistantResponse.steps`，由本轮 `tool_results` 加 `tools/registry.py` 的 `TOOL_LABELS` 生成；新增工具要同步起中文名，有测试检查。
 
 不要改回"每轮清空再规划"：重新拆出来的任务 id、标题、粒度都可能变，前置任务的产物也跟着丢，实测会议室任务就是这样在差旅追问之后消失的。也不要给 `OpenTask` 加字段值——Supervisor 拿到值就有了补写领域字段的材料。
 

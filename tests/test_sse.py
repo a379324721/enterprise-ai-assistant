@@ -16,7 +16,14 @@ from enterprise_ai_assistant.api.routes import (
     _pending_confirmation,
     _subscribe_sse,
 )
-from enterprise_ai_assistant.core.models import ConfirmationField, PendingConfirmation
+from enterprise_ai_assistant.core.models import (
+    AgentName,
+    ConfirmationField,
+    PendingConfirmation,
+    PlannedTask,
+    TaskDraft,
+    TaskStatus,
+)
 from enterprise_ai_assistant.core.runs import (
     END_SENTINEL,
     HEARTBEAT_SENTINEL,
@@ -511,25 +518,6 @@ class TaskDoneGraph(FakeGraph):
                         "created_at": "2026-09-13T10:00:00+00:00",
                     }
                 ],
-                "plan_id": "p-1",
-                "tasks": [
-                    {
-                        "id": "task-1",
-                        "title": "上海出差申请",
-                        "domain": "travel",
-                        "objective": "提交差旅申请",
-                        "status": "completed",
-                    },
-                    {
-                        "id": "task-2",
-                        "title": "预订上海会议室",
-                        "domain": "meeting",
-                        "objective": "预订会议室",
-                        "depends_on": ["task-1"],
-                        "status": "waiting_input",
-                    },
-                ],
-                "drafts": {"task-2": {"known_fields": [], "missing_fields": ["会议主题"]}},
             },
         }
 
@@ -551,9 +539,115 @@ async def test_task_done_carries_labelled_steps_after_the_tasks_answer() -> None
     done = next(data for event, data in events if event == "task_done")
     assert done["task_id"] == "task-1"
     assert [step["label"] for step in done["steps"]] == ["提交差旅申请"]
-    # 右栏不等整轮结束：差旅办完的这一刻，事项卡已经换成卡在待补充上的会议室。
-    assert (done["matter"]["task_id"], done["matter"]["status"]) == ("task-2", "waiting_input")
-    assert done["matter"]["missing_fields"] == ["会议主题"]
+    # 右栏不跟这个事件走，它只管步骤和回答。
+    assert "matter" not in done
+
+
+def _task_values(*statuses: str) -> dict[str, Any]:
+    titles = ["上海出差申请", "预订上海会议室"]
+    domains = ["travel", "meeting"]
+    return {
+        "plan_id": "p-1",
+        "tasks": [
+            PlannedTask(
+                id=f"task-{index + 1}",
+                title=titles[index],
+                domain=AgentName(domains[index]),
+                objective=titles[index],
+                status=TaskStatus(status),
+            )
+            for index, status in enumerate(statuses)
+        ],
+    }
+
+
+class CheckpointGraph(FakeGraph):
+    """差旅确认后的那一轮：差旅归并完、会议室还在跑，最后停在会议室的追问上。"""
+
+    async def astream(self, *args: Any, **kwargs: Any) -> Any:
+        del args
+        self.stream_kwargs = kwargs
+        for values in (
+            _task_values("running", "pending"),
+            # 同一份计划的检查点重复落盘，事项没变，不该重复推。
+            _task_values("running", "pending"),
+            _task_values("completed", "pending"),
+        ):
+            yield {"type": "checkpoints", "ns": (), "data": {"values": values}}
+        # 子图的检查点只有领域 Agent 的私有状态，不能拿来投影。
+        yield {"type": "checkpoints", "ns": ("domain_task:1",), "data": {"values": {}}}
+
+    async def aget_state(self, config: dict[str, Any]) -> Any:
+        del config
+        values = {
+            **_task_values("completed", "waiting_input"),
+            "user_id": "u-1",
+            "last_answer": "请问要订哪一间？",
+            "drafts": {"task-2": TaskDraft(missing_fields=["会议室"])},
+        }
+        return SimpleNamespace(values=values, next=(), interrupts=(), tasks=())
+
+
+@pytest.mark.asyncio
+async def test_matters_follow_root_checkpoints_and_done_carries_the_final_projection() -> None:
+    manager = _manager()
+    graph = CheckpointGraph()
+    app = _app(manager, graph)
+
+    run = await _run_to_completion(manager, app)
+    events = [
+        decode_event(frame)
+        async for frame in _subscribe_sse(FakeRequest(app), run, apply_on_disconnect=False)  # type: ignore[arg-type]
+    ]
+
+    assert "checkpoints" in graph.stream_kwargs["stream_mode"]
+    pushed = [
+        [(item["task_id"], item["status"]) for item in data["matters"]]
+        for event, data in events
+        if event == "matters"
+    ]
+    # 差旅归并完、会议室还没开始追问：卡片换成会议室的处理中，而不是消失。
+    assert pushed == [[("task-1", "in_progress")], [("task-2", "in_progress")]]
+    done = next(data for event, data in events if event == "done")
+    # 图跑完之后的快照不算执行中，停在追问上就是待补充。
+    assert [(item["task_id"], item["status"]) for item in done["matters"]] == [
+        ("task-2", "waiting_input")
+    ]
+
+
+class FailingCheckpointGraph(CheckpointGraph):
+    async def astream(self, *args: Any, **kwargs: Any) -> Any:
+        del args
+        self.stream_kwargs = kwargs
+        yield {"type": "checkpoints", "ns": (), "data": {"values": _task_values("running", "pending")}}
+        raise RuntimeError("model service down")
+
+    async def aget_state(self, config: dict[str, Any]) -> Any:
+        del config
+        # 失败时差旅停在 RUNNING，没有草稿：第一次执行就失败了。
+        values = {**_task_values("running", "pending"), "user_id": "u-1"}
+        return SimpleNamespace(values=values, next=(), interrupts=(), tasks=())
+
+
+@pytest.mark.asyncio
+async def test_failed_run_replaces_the_in_progress_card_before_the_error() -> None:
+    """失败后没有 done。不补一份快照，右栏会一直挂着一件不会再有进展的"处理中"。"""
+    manager = _manager()
+    app = _app(manager, FailingCheckpointGraph())
+
+    run = await _run_to_completion(manager, app)
+    events = [
+        decode_event(frame)
+        async for frame in _subscribe_sse(FakeRequest(app), run, apply_on_disconnect=False)  # type: ignore[arg-type]
+    ]
+    names = [event for event, _ in events]
+
+    matters = [data["matters"] for event, data in events if event == "matters"]
+    assert [item["status"] for item in matters[0]] == ["in_progress"]
+    assert matters[-1] == []
+    # 补的快照排在 error 之前：前端收到 error 时右栏已经是失败后的样子。
+    last_matters = max(index for index, name in enumerate(names) if name == "matters")
+    assert last_matters < names.index("error")
 
 
 @pytest.mark.asyncio

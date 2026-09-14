@@ -21,6 +21,7 @@ from enterprise_ai_assistant.core.models import (
     TaskDraft,
     TaskStatus,
     TurnRelation,
+    recover_interrupted,
 )
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow, build_domain_graph
 from enterprise_ai_assistant.graph.state import AssistantState, DomainTaskInput
@@ -296,33 +297,8 @@ class Workflow:
             return shelved[0]
         return None
 
-    @staticmethod
-    def _recover_interrupted(
-        tasks: list[PlannedTask], drafts: dict[str, TaskDraft]
-    ) -> list[PlannedTask]:
-        """把上一轮中途失败、停在 RUNNING 的任务放回可续跑的状态。
-
-        同一会话同时只有一次执行，understand 开始时不可能有任务真的在跑。停在 RUNNING
-        说明上一轮在领域子图里抛了异常（例如模型服务 403），任务状态没来得及写回。
-        不恢复的话它既不算待补充也不会被调度：用户重发补充信息时 Supervisor 看不到
-        未办完的事项，只能重新规划，草稿随之丢失。有草稿说明它本来停在待补充上，
-        放回 WAITING_INPUT；没有草稿说明第一次执行就失败了，放回 PENDING。
-        """
-        return [
-            task.model_copy(
-                update={
-                    "status": TaskStatus.WAITING_INPUT
-                    if task.id in drafts
-                    else TaskStatus.PENDING
-                }
-            )
-            if task.status == TaskStatus.RUNNING
-            else task
-            for task in tasks
-        ]
-
     async def understand(self, state: AssistantState) -> dict[str, Any]:
-        recovered = self._recover_interrupted(state.get("tasks", []), state.get("drafts", {}))
+        recovered = recover_interrupted(state.get("tasks", []), state.get("drafts", {}))
         state = cast(AssistantState, {**state, "tasks": recovered})
         shelved = list(state.get("shelved_plans", []))
         plan_id = self._plan_id(state)
@@ -573,19 +549,13 @@ class Workflow:
             # 执行步骤原本只随整轮结束的 done 下发。确认之后还有后续任务时，前端要等后续任务
             # 也跑完才知道这个任务做了什么，只能把所有步骤和回答攒到最后一起画。这里每归并
             # 一个任务就推一次，界面可以按任务依次呈现。转交出去的任务没有回答，不推。
-            # 右栏的事项同理：不带归并后的计划，右栏要到整轮结束才从"待确认"翻过来。
+            # 右栏不靠这个事件：它跟着检查点走（api/matters.py），这里不带计划数据。
             write(
                 {
                     "task_done": result.task_id,
                     "tool_results": [
                         item.model_dump(mode="json") for item in result.tool_results
                     ],
-                    "plan_id": state.get("plan_id", ""),
-                    "tasks": [task.model_dump(mode="json") for task in merged.tasks],
-                    "drafts": {
-                        task_id: TaskDraft.model_validate(draft).model_dump(mode="json")
-                        for task_id, draft in merged.drafts.items()
-                    },
                 }
             )
         return {

@@ -37,16 +37,21 @@ class MatterTask(BaseModel):
     status: TaskStatus
 
 
+#: in_progress 只在运行执行期间出现：当前计划没有卡住的任务，但还有任务排队或在跑。
+#: 规则见 api/matters.py 的 project_matters。
+MatterStatus = Literal["waiting_input", "waiting_confirmation", "in_progress", "shelved"]
+
+
 class Matter(BaseModel):
     """右栏的一张事项卡：一件还没办完的事。
 
-    只有卡在待补充、待确认上的计划才会成为事项。办完的计划不出现在这里——提交过的
-    单据已经在"我的单据"里，纯查询也没有需要跟进的状态。
+    卡在待补充、待确认上的计划，以及执行中途还有任务排队或在跑的当前计划，才会成为事项。
+    办完的计划不出现在这里——提交过的单据已经在"我的单据"里，纯查询也没有需要跟进的状态。
     """
 
     plan_id: str
-    status: Literal["waiting_input", "waiting_confirmation", "shelved"]
-    # 卡住的那个任务；卡片标题和字段都来自它，同一计划里的其他任务作为子项列出。
+    status: MatterStatus
+    # 卡住或正在处理的那个任务；卡片标题和字段都来自它，同一计划里的其他任务作为子项列出。
     task_id: str
     title: str
     known_fields: list[DraftField] = Field(default_factory=list)

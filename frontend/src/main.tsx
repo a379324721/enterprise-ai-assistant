@@ -8,9 +8,9 @@ import "./streaming.css";
 type Task = {id: string; title: string; domain: string; objective: string; status: string};
 type Confirmation = {confirmation_id: string; title: string; action: string; fields: {name: string; label: string; value: string}[]; payload: Record<string, unknown>};
 type DraftField = {name: string; label: string; value: string; source: "user" | "memory" | "dependency"};
-//: 一件还没办完的事。只有卡在待补充、待确认上的计划才会成为事项，由后端投影。
+//: 一件还没办完的事，由后端 api/matters.py 从检查点投影。前端只展示，不自己推算。
 type Matter = {
-  plan_id: string; status: "waiting_input" | "waiting_confirmation" | "shelved";
+  plan_id: string; status: "waiting_input" | "waiting_confirmation" | "in_progress" | "shelved";
   task_id: string; title: string; known_fields: DraftField[]; missing_fields: string[];
   tasks: {id: string; title: string; domain: string; status: string}[];
 };
@@ -69,6 +69,8 @@ const TASK_STATUS_LABELS: Record<string, string> = {
 const MATTER_STATUS_LABELS: Record<Matter["status"], string> = {
   waiting_input: "待补充",
   waiting_confirmation: "待确认",
+  // 执行中途的过渡状态：前一个任务办完、后一个还在跑，卡片不消失。
+  in_progress: "处理中",
   shelved: "已搁置",
 };
 
@@ -207,6 +209,9 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<Result | null>(null);
+  // 右栏事项单独放一份状态：执行中途后端随检查点推 matters 事件，那时还没有本轮的 result
+  // （新会话的第一轮 result 是 null）。每次收到都是后端投影好的全量，只替换，不合并。
+  const [matters, setMatters] = useState<Matter[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [progress, setProgress] = useState("");
   const [hasMore, setHasMore] = useState(false);
@@ -315,6 +320,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
           // 快照里的步骤属于上一轮，而那一轮的消息来自历史，没有位置可以插回去。
           restored.steps.forEach((step) => shownSteps.current.add(step.id));
           setResult(restored);
+          setMatters(restored.matters);
         }
       }
     } catch (issue) {
@@ -343,7 +349,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
         method: "DELETE", headers: authHeaders,
       }));
       if (!response.ok) throw new Error(await readError(response, "清空失败"));
-      setMessages([]); setResult(null); setHasMore(false); setLoadError("");
+      setMessages([]); setResult(null); setMatters([]); setHasMore(false); setLoadError("");
       shownSteps.current.clear();
     } catch (issue) {
       setLoadError(describeFailure(issue, "清空失败"));
@@ -431,8 +437,9 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
       if (completed.status === "waiting_confirmation") return old.slice(0, -1);
       return old.map((message, index) => index === old.length - 1 ? {...message, text: "未生成有效回复，请重试。"} : message);
     });
-    // 事项由后端从检查点投影，每一轮都是权威的全量，闲聊轮也照样覆盖。
     setResult(completed);
+    // 事项由后端从检查点投影，每一轮都是权威的全量，闲聊轮也照样覆盖。
+    setMatters(completed.matters);
     // 没有调用过工具的轮次不可能新增单据，不必再拉一次。
     if (actionList) setActions(actionList);
     else if (completed.steps.length > 0) void fetchActions().then((list) => list && setActions(list));
@@ -477,20 +484,9 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
     } else if (event === "task_done") {
       // 一个任务办完了。确认之后常常还有依赖它的任务要跑十几秒，不能让这个任务的步骤和
       // 回答陪着等到整轮结束：步骤连同回答按任务依次呈现。
-      const finished = data as {task_id: string; steps: TurnStep[]; matter?: Matter | null};
+      const finished = data as {task_id: string; steps: TurnStep[]};
       const fresh = finished.steps.filter((step) => !shownSteps.current.has(step.id));
       fresh.forEach((step) => shownSteps.current.add(step.id));
-      // 右栏跟着任务走：差旅提交完、会议室还在跑的那十几秒里，卡片不能还挂着"待确认"。
-      // 后端只投影当前计划，搁置的几张原样保留；整轮的权威全量仍由 done 覆盖。
-      if (finished.matter !== undefined) {
-        const current = finished.matter;
-        setResult((old) => old ? {
-          ...old,
-          // 本轮刚从搁置换回来的计划，旧快照里还是一张搁置卡，按 plan_id 去重。
-          matters: [...(current ? [current] : []), ...old.matters.filter((item) =>
-            item.status === "shelved" && item.plan_id !== current?.plan_id)],
-        } : old);
-      }
       if (deferStream.current) {
         const own = deferredSegments.current.filter((segment) => segment.taskId === finished.task_id && segment.text.trim());
         deferredSegments.current = deferredSegments.current.filter((segment) => segment.taskId !== finished.task_id);
@@ -505,6 +501,9 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
         return;
       }
       if (fresh.length > 0) setMessages((old) => insertSteps(old, fresh, finished.task_id));
+    } else if (event === "matters") {
+      // 延迟渲染那一轮也立即更新：右栏展示的是事情办到哪了，不是回答，不必和回答同一帧。
+      setMatters((data as {matters: Matter[]}).matters);
     } else if (event === "done") {
       const completed = data as Result;
       // 延迟模式下这一轮什么都还没画出来，交给 confirm 连同单据一次性提交。
@@ -577,8 +576,6 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
       deferStream.current = false; deferredResult.current = null; deferredSegments.current = [];
     }
   }
-
-  const matters = result?.matters ?? [];
 
   return <main>
     <header><div className="brandMark">E</div><div><h1>Enterprise AI Assistant</h1><p>企业事务，一个对话完成</p></div>

@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any, Literal
@@ -172,6 +173,27 @@ class TaskDraft(BaseModel):
 
     known_fields: list[DraftField] = Field(default_factory=list)
     missing_fields: list[str] = Field(default_factory=list)
+
+
+def recover_interrupted(tasks: list[PlannedTask], drafts: Mapping[str, Any]) -> list[PlannedTask]:
+    """把没有运行在跑、却停在 RUNNING 的任务解读成它真实所处的状态。
+
+    同一会话同时只有一次执行，没有运行时不可能有任务真的在跑。停在 RUNNING 说明那一轮
+    在领域子图里抛了异常（例如模型服务 403）、服务重启或运行被取消，任务状态没来得及写回。
+    有草稿说明它本来停在待补充上，放回 WAITING_INPUT；没有草稿说明第一次执行就失败了，
+    放回 PENDING。两处必须按同一条规则解读：下一轮 understand 据此续跑，右栏据此展示，
+    规则不一致时右栏会显示一件实际上不会被续跑的事。
+    """
+    return [
+        task.model_copy(
+            update={
+                "status": TaskStatus.WAITING_INPUT if task.id in drafts else TaskStatus.PENDING
+            }
+        )
+        if task.status == TaskStatus.RUNNING
+        else task
+        for task in tasks
+    ]
 
 
 class ShelvedPlan(BaseModel):
