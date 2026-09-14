@@ -14,8 +14,10 @@ def build_chat_model(role: Literal["supervisor", "domain"] = "domain") -> ChatOp
     settings = get_settings()
     if role == "supervisor":
         thinking, budget = settings.supervisor_enable_thinking, 0
+        temperature = settings.supervisor_temperature
     else:
         thinking, budget = settings.domain_enable_thinking, settings.domain_thinking_budget
+        temperature = settings.domain_temperature
     extra_body: dict[str, object] | None = None
     if thinking is not None:
         extra_body = {"enable_thinking": thinking}
@@ -26,7 +28,7 @@ def build_chat_model(role: Literal["supervisor", "domain"] = "domain") -> ChatOp
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
         model=settings.openai_model,
-        temperature=0,
+        temperature=temperature,
         max_retries=3,
         timeout=60,
         extra_body=extra_body,

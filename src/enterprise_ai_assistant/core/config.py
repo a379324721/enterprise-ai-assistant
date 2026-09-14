@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     ] = True
     # 领域 Agent 推理 token 的上限，0 表示不限。
     domain_thinking_budget: int = Field(default=500, ge=0)
+    # 采样温度同样分角色配。原先全局写死 0，但 Qwen3 的模型说明不建议思考模式用贪心解码
+    # （温度 0），容易在推理里陷入重复；实测不限预算时领域 Agent 一次决策推理了 81,920
+    # token、622 秒才停。Supervisor 关思考、只做结构化输出，保持 0 让理解结果稳定。
+    supervisor_temperature: float = Field(default=0.0, ge=0, le=2)
+    domain_temperature: float = Field(default=0.0, ge=0, le=2)
     langsmith_tracing: bool = True
     langsmith_api_key: SecretStr | None = None
     langsmith_endpoint: str = "https://api.smith.langchain.com"
