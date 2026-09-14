@@ -77,7 +77,7 @@ FastAPI + LangGraph 的多 Agent 系统。`graph/workflow.py` 是调度父图，
 
 ### 结构化输出
 
-理解、兜底规划、记忆抽取共用 `_StructuredStage`：关流式（DashScope 流式 JSON 跑偏会整段中断）；校验失败时把原输出和错误说明交还模型修正，最多三次。校验器的报错会进 prompt，要写成模型能照着改的中文。
+理解、兜底规划、记忆抽取共用 `_StructuredStage`：schema 以强制调用的工具下发，**不要改回 `response_format`**（DashScope 上的 DeepSeek 不按它生成，字段全靠猜）；下发的 schema 去掉 `maxLength`/`minLength`（强制调用时 DeepSeek 会一直不返回），长度由 pydantic 本地校验；关流式；校验失败时把原输出和错误说明交还模型修正，最多三次。校验器的报错会进 prompt，要写成模型能照着改的中文。
 
 ### 可信上下文与工具风险
 

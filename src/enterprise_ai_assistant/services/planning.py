@@ -6,9 +6,9 @@ from typing import Any, Protocol
 import structlog
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain_openai import ChatOpenAI
 from langsmith import traceable
-from openai.lib._parsing._completions import type_to_response_format_param
 from pydantic import BaseModel, ValidationError
 
 from enterprise_ai_assistant.core.models import (
@@ -51,23 +51,30 @@ class _StructuredStage[T: BaseModel]:
     非法的 depends_on，整轮失败。现在把模型的原输出和校验错误追加进对话，就像工具调用
     失败时把错误结果交还给它一样，让它照着错误说明改。
 
-    response_format 用 OpenAI SDK 从同一个 pydantic 类生成的那份，发出去的请求和原先
-    完全一致；但不把类本身交给 SDK——那样 SDK 在请求内部就校验并抛异常，拿不到原输出，
-    也就无从反馈。校验器的报错会原样进 prompt，所以要写成模型能照着改的说明。
+    schema 以强制调用的工具下发，而不是 response_format：DashScope 上的
+    deepseek-v4-flash 对 response_format 只保证输出 JSON，schema 根本不交给模型，
+    字段名全靠读 prompt 猜（实测把 turn_relation 写成嵌套对象、漏掉必填字段）；
+    工具参数它是按 schema 生成的，领域 Agent 也一直走工具。结果自己校验，不交给 SDK，
+    才拿得到原输出去反馈。校验器的报错会原样进 prompt，所以要写成模型能照着改的说明。
     """
 
     def __init__(self, model: ChatOpenAI, schema: type[T], prompt: ChatPromptTemplate) -> None:
         self._schema = schema
         self._prompt = prompt
-        # 网络和服务端错误的重试沿用原来的 with_retry；校验错误在 ainvoke 里带着说明重试。
-        response_format = type_to_response_format_param(schema)
-        self._model = model.bind(response_format=response_format).with_retry(stop_after_attempt=2)
+        tool = convert_to_openai_tool(schema)
+        tool["function"]["parameters"] = _tool_parameters(tool["function"]["parameters"])
+        # 网络和服务端错误的重试沿用 with_retry；校验错误在 ainvoke 里带着说明重试。
+        self._model = model.bind(
+            tools=[tool],
+            tool_choice={"type": "function", "function": {"name": tool["function"]["name"]}},
+            parallel_tool_calls=False,
+        ).with_retry(stop_after_attempt=2)
 
     async def ainvoke(self, variables: dict[str, Any]) -> T:
         messages = await self._prompt.aformat_messages(**variables)
         for attempt in range(1, _STRUCTURED_ATTEMPTS + 1):
             reply = await self._model.ainvoke(messages)
-            output = str(reply.text) if isinstance(reply, BaseMessage) else str(reply)
+            output = _tool_output(reply)
             try:
                 return self._schema.model_validate_json(output)
             except ValidationError as error:
@@ -89,6 +96,48 @@ class _StructuredStage[T: BaseModel]:
                     ),
                 ]
         raise AssertionError("unreachable")
+
+
+#: 不下发给模型的 schema 关键字。强制调用工具时，参数 schema 里只要有字符串长度限制，
+#: DashScope 上的 deepseek-v4-flash 就一直不返回（实测 40 秒以上超时，去掉即 1～8 秒，
+#: maxItems 不受影响）。限制仍由 pydantic 在本地校验，超长照样带着说明交还模型修正。
+_UNSENT_KEYWORDS = frozenset({"maxLength", "minLength"})
+
+
+def _tool_parameters(node: Any) -> Any:
+    """整理下发给模型的参数 schema：去掉 _UNSENT_KEYWORDS，所有字段标为必填。
+
+    pydantic 只把没有默认值的字段列进 required，deepseek-v4-flash 对不在 required 里的
+    字段一律不写：不执行的轮次漏掉 reply、续跑漏掉 target_plan_id，校验反馈三次也改不
+    过来，整轮失败。原先 response_format 走 SDK 的严格模式，本来就全部必填。
+    """
+    if isinstance(node, list):
+        return [_tool_parameters(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    result = {
+        # properties 下的键是字段名，不是关键字，不能按关键字删。
+        key: (
+            {name: _tool_parameters(sub) for name, sub in value.items()}
+            if key == "properties"
+            else _tool_parameters(value)
+        )
+        for key, value in node.items()
+        if key not in _UNSENT_KEYWORDS
+    }
+    if isinstance(result.get("properties"), dict):
+        result["required"] = list(result["properties"])
+    return result
+
+
+def _tool_output(reply: Any) -> str:
+    """取出模型交回的 JSON 原文；没调工具时退回正文，交给校验报错再让它改。"""
+    if isinstance(reply, AIMessage):
+        if reply.tool_calls:
+            return json.dumps(reply.tool_calls[0]["args"], ensure_ascii=False)
+        if reply.invalid_tool_calls:
+            return str(reply.invalid_tool_calls[0].get("args") or "")
+    return str(reply.text) if isinstance(reply, BaseMessage) else str(reply)
 
 
 def _validation_feedback(error: ValidationError) -> str:
@@ -122,11 +171,11 @@ class LLMPlanningService:
     """通过两阶段 LLM 推理，避免路由退化为关键词意图匹配。"""
 
     def __init__(self, model: ChatOpenAI) -> None:
-        # 结构化输出一律不走流式。DashScope 在 response_format 下边流边生成 JSON，
-        # 模型一跑偏就整段中断（InternalError.Algo.InvalidParameter："partial output
-        # may be incomplete or invalid JSON"），400 不在 SDK 的重试范围内，于是整轮
-        # 对话直接失败。图执行本身是流式的，模型调用会跟着走 astream，所以必须在这里
-        # 显式关掉。代价是闲聊回复随理解结果一次性给出，不再逐字流出。
+        # 结构化输出一律不走流式。原先走 response_format 时，DashScope 边流边生成 JSON，
+        # 模型一跑偏就整段中断（InternalError.Algo.InvalidParameter），400 不在 SDK 的
+        # 重试范围内，整轮对话直接失败；改走工具后这三个节点的输出仍不面向用户，流式
+        # 没有收益，只多一种半截失败。图执行本身是流式的，模型调用会跟着走 astream，
+        # 所以必须在这里显式关掉。代价是闲聊回复随理解结果一次性给出，不再逐字流出。
         structured = model.model_copy(update={"disable_streaming": True})
         context_prompt = ChatPromptTemplate.from_messages(
             [
