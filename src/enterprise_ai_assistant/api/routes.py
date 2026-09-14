@@ -56,6 +56,7 @@ from enterprise_ai_assistant.core.security import (
     Identity,
     create_access_token,
 )
+from enterprise_ai_assistant.graph.workflow import reply_message
 from enterprise_ai_assistant.repositories.users import (
     DemoUser,
     DemoUserRepository,
@@ -381,9 +382,10 @@ class _AnswerRelay:
 
     两件事要在这里处理：
 
-    - 回答来自决策调用：模型开口前不知道它这次是调工具还是作答，前一种的输出绝不能流给
-      用户。工具调用的增量一出现就把整条消息压掉；文字开头先攒着，攒够 `HOLD_CHARS`
-      或这次模型调用结束才放行——前端不会用 done 覆盖已经画出去的文字。
+    - 回答来自决策调用：看过工具结果之后，模型可能先写几句再调下一个工具（提交请假前先
+      报出余额），这些话照常流出，由子图记进会话。工具调用的增量一出现，这段话就到此为止，
+      后面的增量不再转发。文字开头先攒着，攒够 `HOLD_CHARS` 或这次模型调用结束才放行，
+      排在后面的回答不会被一段还没开口的话挡住太久。
     - 没有依赖的任务并行执行，几个领域 Agent 会同时写回答。前端把增量追加到最后一个
       气泡，交错转发会把两段话搅在一起。所以同一时刻只转发一段：先开口的先流，其余的
       攒着，前一段结束再依次放出。执行仍是并行的，只有展示排队。
@@ -401,6 +403,8 @@ class _AnswerRelay:
         self._queue: list[str] = []
         self._suppressed: set[str] = set()
         self._active: str | None = None
+        # 同一个任务可能先后有好几段整段推来的话（确认卡前说的、追问的问题），键不能重复。
+        self._wholes = 0
 
     async def chunk(self, chunk: Any, metadata: dict[str, Any]) -> None:
         key = str(
@@ -410,8 +414,10 @@ class _AnswerRelay:
             return
         if getattr(chunk, "tool_call_chunks", None):
             self._suppressed.add(key)
-            self._drop(key)
-            await self._advance()
+            answer = self._answers.get(key)
+            if answer is not None:
+                answer.finished = True
+                await self._advance()
             return
         answer = self._answers.get(key)
         content = _message_text_delta(chunk.content)
@@ -426,7 +432,8 @@ class _AnswerRelay:
         await self._advance()
 
     async def whole(self, text: str, metadata: dict[str, Any]) -> None:
-        key = f"answer:{metadata.get('task_id') or 'task'}"
+        self._wholes += 1
+        key = f"answer:{metadata.get('task_id') or 'task'}:{self._wholes}"
         self._answers[key] = _Answer(metadata, text=text, finished=True)
         self._queue.append(key)
         await self._advance()
@@ -436,13 +443,6 @@ class _AnswerRelay:
         for answer in self._answers.values():
             answer.finished = True
         await self._advance()
-
-    def _drop(self, key: str) -> None:
-        self._answers.pop(key, None)
-        if key in self._queue:
-            self._queue.remove(key)
-        if self._active == key:
-            self._active = None
 
     async def _advance(self) -> None:
         while self._queue:
@@ -776,9 +776,15 @@ def _resume_command(
     interrupt_id = getattr(interrupt, "id", None)
     # update 和 resume 一起发：卡片一关，对话里必须留下这个决定，否则回头看只剩
     # 一句没头没尾的回答。追加发生在子图恢复之前，所以它排在本轮回答的前面。
+    # 确认卡之前领域 Agent 说过的话（比如查到的余额）也在这时落进会话，排在决定前面。
     return Command(
         resume={interrupt_id: decision} if interrupt_id else decision,
-        update={"messages": [_decision_message(payload.approved, pending.title)]},
+        update={
+            "messages": [
+                *(reply_message(note.text, note.tools) for note in pending.notes),
+                _decision_message(payload.approved, pending.title),
+            ]
+        },
     )
 
 
@@ -893,6 +899,11 @@ async def list_conversation_messages(
         if not text:
             continue
         turns.append(ConversationMessage(index=len(turns), role=role, text=text))
+    # 停在确认卡上时，卡片之前说过的话还在中断里，确认后才进会话。不补上的话，
+    # 刷新页面只剩一张卡，用户看不到据以决定的内容（比如余额）。
+    pending = _pending_confirmation(snapshot)
+    for note in pending.notes if pending else []:
+        turns.append(ConversationMessage(index=len(turns), role="assistant", text=note.text))
 
     end = len(turns) if before is None else min(before, len(turns))
     start = max(0, end - limit)

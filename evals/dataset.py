@@ -115,6 +115,11 @@ class DomainAnswerCase(BaseModel):
     user_goal: str = Field(min_length=1)
     tool_results: list[str] = Field(default_factory=list)
     forbid_phrases: list[str] = Field(default_factory=list)
+    # 看完工具结果后下一步该调的写工具。设了就要求真的调它（确认交给确认卡，不在文字里征求
+    # 同意），只检查调它时顺带写的话——写工具还没执行，这时说的话最容易编造结果。
+    expect_next_tool: str = ""
+    # 回答里必须出现的内容，比较时忽略空白（"8 天"和"8天"都算）。
+    expect_phrases: list[str] = Field(default_factory=list)
     note: str = ""
 
 

@@ -755,3 +755,26 @@ domain_answer_cases:
       会议室是同一轮里的另一个任务，由 meeting 领域处理，系统完全做得到。
       实测差旅 Agent 会补一句"预订会议室不在差旅申请范围内，我无法为您办理"，
       用户以为这件事被拒，下一轮就不再提——回答里出现"会议室"就是越界。
+
+  - id: domain-answer-balance-before-leave-confirmation
+    domain: hr
+    objective: 查询用户的剩余年假天数，并为用户提交 2026-09-18 一天的年假申请
+    user_goal: 我还有多少年假？下周五（2026-09-18）请一天年假
+    tool_results:
+      - '{"tool":"get_leave_balance","success":true,"status":"completed","data":{"leave_type":"annual","balance_days":8}}'
+    expect_next_tool: submit_leave_request
+    expect_phrases:
+      - 8天
+    forbid_phrases:
+      - 已提交
+      - 已为你提交
+      - 已为您提交
+      - 单号
+      - 另行通知
+    note: |
+      查完余额，下一步是提交请假，要等用户点确认才执行。这时先报余额是对的，
+      但请假还没提交，不能说已提交、报单号，也不能许诺审批结果会通知（系统没有通知能力）。
+      实测模型会不调写工具、改在文字里问"确认的话回复一声我就提交"，任务就此结束，
+      确认卡不出、单据也没提交，所以要求真的调了 submit_leave_request。
+      调工具那回合模型几乎不写正文，余额要写在 message_to_user 里；没说出余额，用户就是
+      没看到余额就确认了请假。

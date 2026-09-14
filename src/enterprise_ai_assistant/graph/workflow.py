@@ -572,6 +572,9 @@ class Workflow:
         write = get_stream_writer()
         for result in results:
             merged.tool_results.extend(result.tool_results)
+            # 回答之前已经流给用户的话排在回答前面，转交出去的任务说过的也照样记。
+            for note in result.notes:
+                merged.say(note.text, note.tools)
             if result.status == TaskStatus.HANDED_OFF:
                 self._reroute(merged, result)
                 continue

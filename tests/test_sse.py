@@ -370,12 +370,31 @@ def _recording_relay() -> tuple[_AnswerRelay, list[tuple[str, dict[str, Any]]]]:
 
 
 @pytest.mark.asyncio
-async def test_relay_never_leaks_text_from_a_tool_calling_decision() -> None:
+async def test_relay_shows_what_a_decision_says_before_calling_a_tool() -> None:
+    relay, published = _recording_relay()
+    metadata = {"tags": ["user-visible"], "agent": "hr", "task_id": "task-1"}
+
+    # 提交请假前先报出余额：这句话用户确认前就该看到，工具调用一出现它就说完了，
+    # 不必等到这次调用结束才放出，之后的增量也不再转发。
+    await relay.chunk(AIMessageChunk(content="年假还剩 8 天", id="m-1"), metadata)
+    await relay.chunk(
+        AIMessageChunk(
+            content="",
+            id="m-1",
+            tool_call_chunks=[{"name": "submit_leave_request", "args": "{}", "id": "c-1", "index": 0}],
+        ),
+        metadata,
+    )
+    await relay.chunk(AIMessageChunk(content="还有", id="m-1"), metadata)
+
+    assert _shown(published) == [("task-1", "年假还剩 8 天")]
+
+
+@pytest.mark.asyncio
+async def test_relay_publishes_nothing_for_a_silent_tool_call() -> None:
     relay, published = _recording_relay()
     metadata = {"tags": ["user-visible"], "agent": "travel", "task_id": "task-1"}
 
-    # 决策调用先吐了几个字，随后才出现工具调用：这几个字不是回答。
-    await relay.chunk(AIMessageChunk(content="我先查一下", id="m-1"), metadata)
     await relay.chunk(
         AIMessageChunk(
             content="",
@@ -384,7 +403,6 @@ async def test_relay_never_leaks_text_from_a_tool_calling_decision() -> None:
         ),
         metadata,
     )
-    await relay.chunk(AIMessageChunk(content="还有", id="m-1"), metadata)
     await relay.flush()
 
     assert published == []
@@ -413,7 +431,7 @@ async def test_relay_publishes_answers_that_bypassed_the_model() -> None:
 
     assert published[0] == (
         "answer_start",
-        {"message_id": "answer:task-2", "agent": "travel", "task_id": "task-2"},
+        {"message_id": "answer:task-2:1", "agent": "travel", "task_id": "task-2"},
     )
     assert published[1][1]["content"] == "预计哪天返回？"
 
@@ -474,10 +492,10 @@ async def test_a_queued_branch_that_turns_into_a_tool_call_does_not_block_the_ne
     travel, meeting, hr = _branch("travel"), _branch("meeting"), _branch("hr")
 
     await relay.chunk(AIMessageChunk(content="会议室查到了两间空闲的，", id="m"), meeting)
-    await relay.chunk(AIMessageChunk(content="我先", id="t"), travel)
+    await relay.chunk(AIMessageChunk(content="标准是每晚 500 元", id="t"), travel)
     await relay.chunk(AIMessageChunk(content="年假余额还有五天，请假前请确认。", id="h"), hr)
     await relay.chunk(AIMessageChunk(content="", id="m2", chunk_position="last"), meeting)
-    # 排在第二的差旅分支原来是在调工具，它攒着的"我先"不能放出去，也不能挡住后面的。
+    # 排在第二的差旅分支说完这句就去调工具：这句照常放出，调工具时也不能再挡着后面的。
     await relay.chunk(
         AIMessageChunk(
             content="",
@@ -490,6 +508,7 @@ async def test_a_queued_branch_that_turns_into_a_tool_call_does_not_block_the_ne
 
     assert _shown(published) == [
         ("meeting", "会议室查到了两间空闲的，"),
+        ("travel", "标准是每晚 500 元"),
         ("hr", "年假余额还有五天，请假前请确认。"),
     ]
 

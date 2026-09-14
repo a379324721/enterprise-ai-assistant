@@ -8,6 +8,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
+from enterprise_ai_assistant.api import routes
+from enterprise_ai_assistant.api.schemas import ConfirmationRequest
 from enterprise_ai_assistant.core.models import (
     AgentName,
     ContextResolution,
@@ -525,6 +527,281 @@ async def test_rejecting_write_cancels_dependent_task() -> None:
 
     assert [task.status.value for task in final["tasks"]] == ["rejected", "rejected"]
     assert actions.records == {}
+
+
+class LeavePlanningService:
+    async def resolve_context(
+        self,
+        conversation: list[dict[str, str]],
+        memory_keys: Sequence[str] = (),
+        open_tasks: Sequence[OpenTask] = (),
+        recent_actions: Sequence[str] = (),
+        user_name: str = "",
+    ) -> ContextResolution:
+        return ContextResolution(
+            standalone_request="查询剩余年假，并请 2026-09-18 一天年假",
+            intent_summary="查年假余额并请假",
+            requires_task_planning=True,
+            tasks=[
+                {"title": "查询年假余额并提交请假申请", "domain": "hr", "objective": "查余额并请假"}
+            ],
+        )
+
+    async def plan(self, context: ContextResolution) -> TaskPlan:
+        raise AssertionError("Supervisor 已经给出任务")
+
+
+class NarratingLeaveRuntime(ScriptedRuntime):
+    """查完余额后在写工具的 message_to_user 里报出余额，确认提交后只说提交结果。"""
+
+    #: 写回答那次决策看到的消息，用来确认它知道自己报过余额。
+    answering_context: list[BaseMessage] = []
+
+    async def decide(
+        self,
+        task_objective: str,
+        messages: list[BaseMessage],
+        *,
+        task_id: str,
+        answering: bool = False,
+    ) -> AIMessage:
+        del task_objective, answering
+        called = [message.name for message in messages if isinstance(message, ToolMessage)]
+        if not called:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "get_leave_balance",
+                        "args": {"leave_type": "annual"},
+                        "id": f"{task_id}-balance",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        if called == ["get_leave_balance"]:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "submit_leave_request",
+                        "args": {
+                            "message_to_user": "你的年假还剩 8 天。",
+                            "leave_type": "annual",
+                            "start_date": "2026-09-18",
+                            "end_date": "2026-09-18",
+                        },
+                        "id": f"{task_id}-submit",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        type(self).answering_context = list(messages)
+        return AIMessage(content="请假申请已提交。")
+
+
+class NarratingLeaveRuntimeFactory(ScriptedRuntimeFactory):
+    def create(self, agent: AgentName, context: ToolContext) -> NarratingLeaveRuntime:
+        return NarratingLeaveRuntime(agent, self.registry.for_agent(agent, context))
+
+
+@pytest.mark.asyncio
+async def test_what_the_agent_says_before_a_confirmation_lands_in_the_conversation() -> None:
+    provider = LocalEnterpriseToolProvider(InMemoryActionRepository(), InMemoryPolicyRepository())
+    graph = build_graph(
+        Workflow(SupervisorAgent(LeavePlanningService())),
+        DomainTaskWorkflow(NarratingLeaveRuntimeFactory(DomainToolRegistry(provider))),
+        InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "thread-leave"}}
+    state = initial_state()
+    state["messages"] = [HumanMessage(content="我还有多少年假？下周五请一天年假")]
+
+    custom = [
+        data
+        async for _, mode, data in graph.astream(
+            state, config, stream_mode=["custom"], subgraphs=True
+        )
+        if mode == "custom"
+    ]
+    # 参数里的话不在 messages 流里，要整段推给前端，排在确认卡之前出现在聊天气泡里。
+    assert {"answer": "你的年假还剩 8 天。", "agent": "hr", "task_id": "task-1"} in custom
+    snapshot = await graph.aget_state(config)
+    found = routes._pending_interrupt(snapshot)
+    assert found is not None
+    interrupt, pending = found
+    # 停在卡上时这句话只能随中断带出来；确认卡和业务参数里都没有它。
+    assert [(note.text, note.tools) for note in pending.notes] == [
+        ("你的年假还剩 8 天。", ["get_leave_balance"])
+    ]
+    assert "message_to_user" not in pending.payload
+    assert "message_to_user" not in [field.name for field in pending.fields]
+
+    command = routes._resume_command(
+        ConfirmationRequest(confirmation_id=pending.confirmation_id, approved=True),
+        interrupt,
+        pending,
+    )
+    final = await graph.ainvoke(command, config)
+
+    # 顺序和用户看到的一致：余额、确认决定、提交结果；余额只记一次。
+    assert [
+        (message.type, message.content, message.additional_kwargs.get("tools_called"))
+        for message in final["messages"][1:]
+    ] == [
+        ("ai", "你的年假还剩 8 天。", ["get_leave_balance"]),
+        ("system", "你确认了：提交请假申请", None),
+        ("ai", "请假申请已提交。", ["get_leave_balance", "submit_leave_request"]),
+    ]
+    # 写回答时模型看得到自己那次调用里说过的话，不会再报一遍余额。
+    assert any(
+        isinstance(message, AIMessage)
+        and any(
+            call["args"].get("message_to_user") == "你的年假还剩 8 天。"
+            for call in message.tool_calls
+        )
+        for message in NarratingLeaveRuntime.answering_context
+    )
+
+
+class NarratingPolicyRuntime(ScriptedRuntime):
+    """查了一次没查到，先说一句再换个关键词查，最后作答。"""
+
+    async def decide(
+        self,
+        task_objective: str,
+        messages: list[BaseMessage],
+        *,
+        task_id: str,
+        answering: bool = False,
+    ) -> AIMessage:
+        del task_objective, answering
+        searched = sum(isinstance(message, ToolMessage) for message in messages)
+        if searched == 2:
+            return AIMessage(content="差旅制度里也没有，建议咨询行政部。")
+        return AIMessage(
+            content="通用制度里没查到，再查一下差旅制度。" if searched else "",
+            tool_calls=[
+                {
+                    "name": "search_general_policy",
+                    "args": {"query": "差旅" if searched else "出差", "limit": 1},
+                    "id": f"{task_id}-search-{searched}",
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+
+class NarratingPolicyRuntimeFactory(ScriptedRuntimeFactory):
+    def create(self, agent: AgentName, context: ToolContext) -> NarratingPolicyRuntime:
+        return NarratingPolicyRuntime(agent, self.registry.for_agent(agent, context))
+
+
+class ScriptedLeaveRuntime(ScriptedRuntime):
+    """按类属性给出的两次决策依次返回，确认后作答。"""
+
+    decisions: list[AIMessage] = []
+
+    async def decide(
+        self,
+        task_objective: str,
+        messages: list[BaseMessage],
+        *,
+        task_id: str,
+        answering: bool = False,
+    ) -> AIMessage:
+        del task_objective, task_id, answering
+        called = sum(isinstance(message, ToolMessage) for message in messages)
+        decisions = type(self).decisions
+        return decisions[called] if called < len(decisions) else AIMessage(content="已提交。")
+
+
+class ScriptedLeaveRuntimeFactory(ScriptedRuntimeFactory):
+    def create(self, agent: AgentName, context: ToolContext) -> ScriptedLeaveRuntime:
+        return ScriptedLeaveRuntime(agent, self.registry.for_agent(agent, context))
+
+
+def _call(name: str, **args: Any) -> AIMessage:
+    return AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": name, "type": "tool_call"}])
+
+
+_LEAVE = {"leave_type": "annual", "start_date": "2026-09-18", "end_date": "2026-09-18"}
+
+
+async def _pause_on_leave_card(
+    decisions: list[AIMessage],
+) -> tuple[PendingConfirmation, list[Any]]:
+    ScriptedLeaveRuntime.decisions = decisions
+    provider = LocalEnterpriseToolProvider(InMemoryActionRepository(), InMemoryPolicyRepository())
+    graph = build_graph(
+        Workflow(SupervisorAgent(LeavePlanningService())),
+        DomainTaskWorkflow(ScriptedLeaveRuntimeFactory(DomainToolRegistry(provider))),
+        InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "thread-scripted-leave"}}
+    state = initial_state()
+    state["messages"] = [HumanMessage(content="下周五请一天年假")]
+    custom = [
+        data
+        async for _, mode, data in graph.astream(
+            state, config, stream_mode=["custom"], subgraphs=True
+        )
+        if mode == "custom"
+    ]
+    found = routes._pending_interrupt(await graph.aget_state(config))
+    assert found is not None
+    return found[1], custom
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_said_when_submitting_without_looking_anything_up() -> None:
+    # 直接提交时模型手里没有任何查询结果，参数里就算写了话也不是查来的，不对外。
+    pending, custom = await _pause_on_leave_card(
+        [_call("submit_leave_request", message_to_user="好的，这就帮你提交。", **_LEAVE)]
+    )
+
+    assert pending.notes == []
+    assert custom == []
+
+
+@pytest.mark.asyncio
+async def test_what_was_already_said_in_the_text_is_not_repeated_from_the_arguments() -> None:
+    submit = _call("submit_leave_request", message_to_user="你的年假还剩 8 天。", **_LEAVE)
+    # 正文已经逐字流出去了，参数里同样意思的话不再推一遍、也不再记一遍。
+    submit.content = "年假余额 8 天。"
+    pending, custom = await _pause_on_leave_card(
+        [_call("get_leave_balance", leave_type="annual"), submit]
+    )
+
+    assert [note.text for note in pending.notes] == ["年假余额 8 天。"]
+    assert not any("answer" in item for item in custom)
+
+
+@pytest.mark.asyncio
+async def test_an_empty_message_to_user_says_nothing() -> None:
+    pending, custom = await _pause_on_leave_card(
+        [
+            _call("get_leave_balance", leave_type="annual"),
+            _call("submit_leave_request", message_to_user="", **_LEAVE),
+        ]
+    )
+
+    assert pending.notes == []
+    assert not any("answer" in item for item in custom)
+
+
+@pytest.mark.asyncio
+async def test_what_the_agent_says_between_read_tools_goes_back_with_the_result() -> None:
+    provider = LocalEnterpriseToolProvider(InMemoryActionRepository(), InMemoryPolicyRepository())
+    workflow = DomainTaskWorkflow(NarratingPolicyRuntimeFactory(DomainToolRegistry(provider)))
+
+    final = await build_domain_graph(workflow).ainvoke(_policy_request())
+
+    result = final["domain_result"]
+    assert [(note.text, note.tools) for note in result.notes] == [
+        ("通用制度里没查到，再查一下差旅制度。", ["search_general_policy"])
+    ]
+    assert result.answer == "差旅制度里也没有，建议咨询行政部。"
 
 
 def test_blocked_tasks_are_rejected_transitively() -> None:

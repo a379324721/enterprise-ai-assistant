@@ -338,6 +338,17 @@ class ConfirmationField(BaseModel):
     value: str
 
 
+class AgentNote(BaseModel):
+    """领域 Agent 调工具时顺带对用户说的话，例如提交请假前先报出查到的余额。
+
+    它在工具执行前就已经流给用户，所以要作为独立的助手消息进会话；tools 是说这句话
+    之前本任务调用过的工具，渲染成来源标注。
+    """
+
+    text: str
+    tools: list[str] = Field(default_factory=list)
+
+
 class PendingConfirmation(BaseModel):
     confirmation_id: UUID = Field(default_factory=uuid4)
     task_id: str
@@ -349,6 +360,9 @@ class PendingConfirmation(BaseModel):
     fields: list[ConfirmationField] = Field(default_factory=list)
     payload: dict[str, Any]
     requested_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # 确认卡之前领域 Agent 已经对用户说过的话。停在确认卡上时子图的结果还没回到父图，
+    # 这些话只能随中断带出来：历史接口据此补上，恢复时和确认决定一起写进会话。
+    notes: list[AgentNote] = Field(default_factory=list)
 
 
 class ToolResult(BaseModel):
@@ -402,6 +416,8 @@ class DomainTaskResult(BaseModel):
     draft: TaskDraft | None = None
     # 只在 HANDED_OFF 时有值：领域 Agent 认为该接手的领域。
     handoff_to: AgentName | None = None
+    # 回答之前已经流给用户、但还没进会话的话。停在确认卡之前说的随 PendingConfirmation 走了，不在这里。
+    notes: list[AgentNote] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_shape(self) -> "DomainTaskResult":

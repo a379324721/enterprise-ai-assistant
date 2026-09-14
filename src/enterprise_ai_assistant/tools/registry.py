@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import BaseModel, ValidationError
 
 from enterprise_ai_assistant.core.models import AgentName, ConfirmationField
@@ -76,22 +77,38 @@ TOOL_LABELS: dict[str, str] = {
 }
 
 
+#: 写工具多给模型的一个参数：执行前先对用户说的话。
+#:
+#: 模型调工具的那一回合几乎从不写正文——实测把"先报出余额"写进 prompt，它在思考里
+#: 明明打算说，content 仍然是空的；而工具参数每次都填得完整。所以给它在调用里留一个
+#: 说话的位置。它不属于业务契约：运行时校验参数前取出来，发给用户后丢掉，不进确认卡、
+#: 业务参数和幂等记录。
+MESSAGE_ARG = "message_to_user"
+_MESSAGE_DESCRIPTION = (
+    "执行前先对用户说的话，会在确认卡之前发给用户。用户问过、本任务已经查到的结果"
+    "（例如假期余额）写在这里；这时还没有执行，不说已提交、不报单号。没有要说的就不填。"
+)
+
+
 @dataclass(frozen=True)
 class RegisteredTool:
     tool: BaseTool
     risk: ToolRisk
+    #: 业务入参契约。写工具给模型看的 schema 比它多一个 MESSAGE_ARG，校验和确认卡都以它为准。
+    schema: type[BaseModel]
     terminal: bool = False
 
     @property
     def label(self) -> str:
         return TOOL_LABELS[self.tool.name]
 
-    @property
-    def schema(self) -> type[BaseModel]:
-        schema = self.tool.args_schema
-        if not (isinstance(schema, type) and issubclass(schema, BaseModel)):
-            raise TypeError(f"tool {self.tool.name!r} must declare a pydantic args_schema")
-        return schema
+    def split_message(self, arguments: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+        """把写工具参数里对用户说的话和业务参数分开。模型漏填或填了非字符串都当没说。"""
+        business = dict(arguments)
+        if self.risk != ToolRisk.WRITE:
+            return "", business
+        message = business.pop(MESSAGE_ARG, "")
+        return (message.strip() if isinstance(message, str) else ""), business
 
     def argument_error(self, arguments: Mapping[str, Any]) -> str | None:
         """按入参契约校验模型给出的参数；合法时返回 None，否则返回交给模型更正的说明。"""
@@ -142,21 +159,29 @@ class DomainToolRegistry:
         *,
         name: str,
         description: str,
-        args_schema: type[Any],
+        args_schema: type[BaseModel],
         coroutine: Callable[..., Awaitable[dict[str, Any]]],
         risk: ToolRisk,
         terminal: bool = False,
     ) -> RegisteredTool:
-        return RegisteredTool(
-            tool=StructuredTool.from_function(
-                coroutine=coroutine,
-                name=name,
-                description=description,
-                args_schema=args_schema,
-            ),
-            risk=risk,
-            terminal=terminal,
+        tool = StructuredTool.from_function(
+            coroutine=coroutine, name=name, description=description, args_schema=args_schema
         )
+        if risk == ToolRisk.WRITE:
+            # 换成 JSON schema 而不是派生模型：说的话要排在业务字段前面，模型先想好说什么再填
+            # 业务字段；派生模型只能把字段追加在末尾。不设必填：直接提交、没查过什么时本来就
+            # 没话说，实测可选和必填一样每次都会在查过之后说出结果。业务字段取 LangChain 原本发给模型的
+            # 那份，契约里给确认卡用的 value_labels 之类不会漏给模型。执行时传入的是已经取掉
+            # 它的参数，字典 schema 不做校验，业务参数由 coroutine 里的契约校验。
+            schema = convert_to_openai_tool(tool)["function"]["parameters"]
+            schema["properties"] = {
+                MESSAGE_ARG: {"type": "string", "description": _MESSAGE_DESCRIPTION},
+                **schema.get("properties", {}),
+            }
+            tool = StructuredTool.from_function(
+                coroutine=coroutine, name=name, description=description, args_schema=schema
+            )
+        return RegisteredTool(tool=tool, risk=risk, schema=args_schema, terminal=terminal)
 
     def for_agent(self, agent: AgentName, context: ToolContext) -> list[RegisteredTool]:
         async def request_information(**kwargs: Any) -> dict[str, Any]:

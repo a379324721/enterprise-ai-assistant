@@ -18,6 +18,7 @@ from enterprise_ai_assistant.core.metrics import (
 )
 from enterprise_ai_assistant.core.models import (
     AgentName,
+    AgentNote,
     DomainTaskRequest,
     DomainTaskResult,
     PendingConfirmation,
@@ -56,10 +57,12 @@ class DomainTaskWorkflow:
             ),
         )
 
+    @classmethod
+    def _answer_text(cls, message: AIMessage) -> str:
+        return "" if message.tool_calls else cls._text(message)
+
     @staticmethod
-    def _answer_text(message: AIMessage) -> str:
-        if message.tool_calls:
-            return ""
+    def _text(message: AIMessage) -> str:
         if isinstance(message.content, str):
             return message.content.strip()
         if not isinstance(message.content, list):
@@ -113,6 +116,7 @@ class DomainTaskWorkflow:
             "domain_retry_required": False,
             "domain_tool_executed": False,
             "domain_answer": "",
+            "domain_notes": [],
             "domain_handoff_to": None,
             "pending_confirmation": None,
             "pending_tool_call": None,
@@ -137,6 +141,7 @@ class DomainTaskWorkflow:
         pending: dict[str, Any] | None = None
         registered = None
         validation_messages: list[ToolMessage] = []
+        said = ""
         if len(response.tool_calls) > 1:
             for raw_call in response.tool_calls:
                 validation_messages.append(
@@ -158,6 +163,7 @@ class DomainTaskWorkflow:
             raw_arguments = raw_call.get("args")
             name = str(raw_call["name"])
             error = None
+            arguments: dict[str, Any] = {}
             if not isinstance(raw_arguments, Mapping):
                 error = "工具参数必须是对象"
             else:
@@ -166,10 +172,11 @@ class DomainTaskWorkflow:
                 except (KeyError, ValueError):
                     error = f"工具 {name} 不在当前领域白名单中"
                 else:
+                    said, arguments = registered.split_message(raw_arguments)
                     # 参数在决策阶段就按契约校验。放到执行时才校验的话，写操作会带着
                     # 非法参数先弹确认卡，用户点了确认才失败；这里失败则交给模型自行更正。
-                    error = registered.argument_error(raw_arguments) or (
-                        self._handoff_error(state, raw_arguments)
+                    error = registered.argument_error(arguments) or (
+                        self._handoff_error(state, arguments)
                         if name == HANDOFF_TOOL
                         else None
                     )
@@ -189,11 +196,7 @@ class DomainTaskWorkflow:
                     )
                 )
             else:
-                pending = {
-                    "name": name,
-                    "args": dict(raw_arguments),
-                    "id": str(raw_call["id"]),
-                }
+                pending = {"name": name, "args": arguments, "id": str(raw_call["id"])}
 
         retry_required = bool(validation_messages) or (pending is None and not executed)
         domain_messages = [
@@ -211,6 +214,24 @@ class DomainTaskWorkflow:
                 )
             )
 
+        notes = list(state.get("domain_notes", []))
+        tools_so_far = [item.tool for item in state.get("domain_tool_results", [])]
+        # 看过工具结果后，调工具时对用户说的话要进会话，否则刷新就没了，后面的轮次也不知道
+        # 说过。这回合的原始消息（连同 message_to_user）留在 domain_messages 里，所以本任务
+        # 后面写回答时模型也知道自己说过什么。第一次决策手里还没有任何工具结果，说什么都
+        # 不是查来的，不对外。
+        if executed and response.tool_calls:
+            # 正文已经随 messages 流逐字流出去了；参数里的话要等工具调用生成完才拿得到，
+            # 在这里整段推给前端。两处都写了的话多半是同一个意思，只认已经流出去的正文，
+            # 否则用户会看到两遍。参数不合法时不推，模型更正后会重新说。
+            text = self._text(response)
+            if not text and pending is not None and said:
+                text = said
+                get_stream_writer()(
+                    {"answer": said, "agent": request.task.domain.value, "task_id": request.task.id}
+                )
+            if text:
+                notes.append(AgentNote(text=text, tools=tools_so_far))
         confirmation = None
         if pending:
             if registered is None:
@@ -223,8 +244,12 @@ class DomainTaskWorkflow:
                     title=registered.label,
                     fields=registered.confirmation_fields(pending["args"]),
                     payload=dict(pending["args"]),
+                    notes=notes,
                 )
+                # 交给确认卡带出去了，之后由恢复命令写进会话，结果里不再重复。
+                notes = []
         return {
+            "domain_notes": notes,
             "domain_messages": domain_messages,
             "domain_iterations": iterations,
             "pending_tool_call": pending,
@@ -396,6 +421,7 @@ class DomainTaskWorkflow:
                     status=TaskStatus.HANDED_OFF,
                     tool_results=list(state.get("domain_tool_results", [])),
                     handoff_to=AgentName(handoff_to),
+                    notes=list(state.get("domain_notes", [])),
                 )
             }
         answer = str(state.get("domain_answer", ""))
@@ -447,6 +473,7 @@ class DomainTaskWorkflow:
             artifact=state.get("artifact"),
             tool_results=list(state.get("domain_tool_results", [])),
             draft=state.get("domain_draft") if status == TaskStatus.WAITING_INPUT else None,
+            notes=list(state.get("domain_notes", [])),
         )
 
 

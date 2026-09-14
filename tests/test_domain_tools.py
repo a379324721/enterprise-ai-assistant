@@ -1,12 +1,13 @@
 from uuid import UUID
 
 import pytest
+from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from enterprise_ai_assistant.core.models import AgentName
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
 from enterprise_ai_assistant.tools import LocalEnterpriseToolProvider, ToolContext, ToolRisk
-from enterprise_ai_assistant.tools.registry import DomainToolRegistry, RegisteredTool
+from enterprise_ai_assistant.tools.registry import MESSAGE_ARG, DomainToolRegistry, RegisteredTool
 
 
 def registry() -> DomainToolRegistry:
@@ -86,6 +87,39 @@ def _write_tools() -> list[RegisteredTool]:
         for item in registry().for_agent(agent, context())
         if item.risk == ToolRisk.WRITE
     ]
+
+
+def test_write_tools_give_the_model_a_place_to_speak_outside_the_contract() -> None:
+    """模型调工具那回合几乎不写正文，要说的话只能放进参数。它排第一、可以不填，不属于契约。"""
+    for item in _write_tools():
+        parameters = convert_to_openai_tool(item.tool)["function"]["parameters"]
+        assert next(iter(parameters["properties"])) == MESSAGE_ARG, item.tool.name
+        assert MESSAGE_ARG not in parameters.get("required", []), item.tool.name
+        assert MESSAGE_ARG not in item.schema.model_fields, item.tool.name
+    # 契约里只给确认卡用的取值标签不能漏进模型看到的 schema。
+    travel = next(item for item in _write_tools() if item.tool.name == "create_travel_application")
+    assert "value_labels" not in str(convert_to_openai_tool(travel.tool))
+
+
+def test_split_message_leaves_business_arguments_for_the_contract() -> None:
+    leave = next(item for item in _write_tools() if item.tool.name == "submit_leave_request")
+    balance = next(
+        item
+        for item in registry().for_agent(AgentName.HR, context())
+        if item.tool.name == "get_leave_balance"
+    )
+    arguments = {MESSAGE_ARG: " 年假还剩 8 天。 ", "leave_type": "annual",
+                 "start_date": "2026-09-18", "end_date": "2026-09-18"}
+
+    said, business = leave.split_message(arguments)
+
+    assert said == "年假还剩 8 天。"
+    assert leave.argument_error(business) is None
+    # 模型漏填或乱填不算错，当它没说。
+    assert leave.split_message({**business, MESSAGE_ARG: 3}) == ("", business)
+    assert leave.split_message(business) == ("", business)
+    # 查询工具没有这个参数，原样交给契约校验。
+    assert balance.split_message({MESSAGE_ARG: "x"}) == ("", {MESSAGE_ARG: "x"})
 
 
 def test_every_write_argument_has_a_label_for_the_confirmation_card() -> None:

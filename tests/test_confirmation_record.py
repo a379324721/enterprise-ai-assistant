@@ -23,7 +23,7 @@ from langgraph.types import Command, interrupt
 from enterprise_ai_assistant.api import routes
 from enterprise_ai_assistant.api.schemas import ConfirmationRequest
 from enterprise_ai_assistant.core.config import Settings
-from enterprise_ai_assistant.core.models import PendingConfirmation
+from enterprise_ai_assistant.core.models import AgentNote, PendingConfirmation
 from enterprise_ai_assistant.core.security import create_access_token
 from enterprise_ai_assistant.main import create_app
 
@@ -40,12 +40,13 @@ SETTINGS = Settings(
 
 
 class StubGraph:
-    def __init__(self, values: dict[str, Any]) -> None:
+    def __init__(self, values: dict[str, Any], interrupts: tuple[Any, ...] = ()) -> None:
         self.values = values
+        self.interrupts = interrupts
 
     async def aget_state(self, config: dict[str, Any]) -> Any:
         del config
-        return SimpleNamespace(values=self.values, next=(), interrupts=())
+        return SimpleNamespace(values=self.values, next=(), interrupts=self.interrupts)
 
 
 @asynccontextmanager
@@ -54,11 +55,13 @@ async def _noop_lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-def _client(values: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> AsyncClient:
+def _client(
+    values: dict[str, Any], monkeypatch: pytest.MonkeyPatch, interrupts: tuple[Any, ...] = ()
+) -> AsyncClient:
     monkeypatch.setattr(routes, "get_settings", lambda: SETTINGS)
     monkeypatch.setattr("enterprise_ai_assistant.core.security.get_settings", lambda: SETTINGS)
     app = create_app(_noop_lifespan)
-    app.state.graph = StubGraph(values)
+    app.state.graph = StubGraph(values, interrupts)
     app.state.logger = SimpleNamespace(
         info=lambda *a, **k: None, warning=lambda *a, **k: None, exception=lambda *a, **k: None
     )
@@ -94,6 +97,45 @@ def test_resume_command_carries_the_decision(monkeypatch: pytest.MonkeyPatch) ->
     # 记录里写明是哪个操作：同一轮可能先后确认好几次，只写"确认了"回头看分不清。
     assert approved.update["messages"][0].content == "你确认了：提交差旅申请"  # type: ignore[index]
     assert rejected.update["messages"][0].content == "你取消了：提交差旅申请"  # type: ignore[index]
+
+
+def test_resume_command_records_what_was_said_before_the_card() -> None:
+    pending = _PENDING.model_copy(
+        update={"notes": [AgentNote(text="你的年假还剩 8 天。", tools=["get_leave_balance"])]}
+    )
+    command = routes._resume_command(
+        ConfirmationRequest(confirmation_id=CONVERSATION_ID, approved=False),
+        SimpleNamespace(id="interrupt-1"),
+        pending,
+    )
+
+    # 不论确认还是取消，用户都已经看到了这句话，排在决定前面。
+    messages = command.update["messages"]  # type: ignore[index]
+    assert [(m.type, m.content) for m in messages] == [
+        ("ai", "你的年假还剩 8 天。"),
+        ("system", "你取消了：提交差旅申请"),
+    ]
+    assert messages[0].additional_kwargs == {"tools_called": ["get_leave_balance"]}
+
+
+@pytest.mark.asyncio
+async def test_history_shows_what_was_said_before_a_pending_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {"user_id": "owner-user", "messages": [HumanMessage(content="下周五请一天年假")]}
+    pending = _PENDING.model_copy(update={"notes": [AgentNote(text="你的年假还剩 8 天。")]})
+    interrupts = (SimpleNamespace(id="i-1", value=pending.model_dump(mode="json")),)
+
+    async with _client(values, monkeypatch, interrupts) as client:
+        response = await client.get(
+            f"/api/v1/conversations/{CONVERSATION_ID}/messages", headers=_auth()
+        )
+
+    # 刷新页面时卡片还在，据以决定的那句话也得在。
+    assert [(item["role"], item["text"]) for item in response.json()["messages"]] == [
+        ("user", "下周五请一天年假"),
+        ("assistant", "你的年假还剩 8 天。"),
+    ]
 
 
 def test_the_decision_is_not_a_user_turn() -> None:

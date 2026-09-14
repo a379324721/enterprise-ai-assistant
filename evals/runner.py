@@ -308,12 +308,34 @@ class EvalHarness:
         response = await runtime.decide(
             case.objective, messages, task_id=case.id, answering=True
         )
-        if response.tool_calls or not str(response.content).strip():
-            response = await runtime.respond(case.objective, messages, task_id=case.id)
-        answer = str(response.content)
+        if case.expect_next_tool:
+            # 线上调了工具就不会走兜底回答，这里也不走：兜底调用手里没有写工具，
+            # 会顺着任务目标编一句"已为你提交"，那不是用户能看到的话。
+            call = next(
+                (item for item in response.tool_calls if item["name"] == case.expect_next_tool),
+                None,
+            )
+            if call is None:
+                called = [str(item["name"]) for item in response.tool_calls]
+                detail = f"没有调用 {case.expect_next_tool}，实际调用 {called or '无'}：{response.content}"
+                return CaseResult("domain_answer", case.id, False, detail)
+            # 用户看到的是正文加写工具参数里对用户说的话。
+            said, _ = runtime.tool(case.expect_next_tool).split_message(call["args"])
+            answer = "\n".join(text for text in (str(response.content).strip(), said) if text)
+        else:
+            if response.tool_calls or not str(response.content).strip():
+                response = await runtime.respond(case.objective, messages, task_id=case.id)
+            answer = str(response.content)
+        problems: list[str] = []
         leaked = [phrase for phrase in case.forbid_phrases if phrase in answer]
-        detail = f"回答越出真实能力 {leaked}：{answer}" if leaked else ""
-        return CaseResult("domain_answer", case.id, not leaked, detail)
+        if leaked:
+            problems.append(f"回答越出真实能力 {leaked}")
+        compact = "".join(answer.split())
+        missing = [phrase for phrase in case.expect_phrases if phrase not in compact]
+        if missing:
+            problems.append(f"没有说出 {missing}")
+        detail = f"{'；'.join(problems)}：{answer}" if problems else ""
+        return CaseResult("domain_answer", case.id, not problems, detail)
 
     async def run_small_talk_case(self, case: SmallTalkCase) -> CaseResult:
         resolution = await self._planning.resolve_context(

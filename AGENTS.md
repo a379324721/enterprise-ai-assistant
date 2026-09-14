@@ -70,7 +70,7 @@ FastAPI + LangGraph 的多 Agent 系统。`graph/workflow.py` 是调度父图，
 
 ### 谁对用户说话
 
-- 只有两类模型输出文字：Supervisor 的 `reply`（结构化输出，一次性给出，校验器强制不执行的轮次必须有 `reply`），和领域 Agent 的回答（执行过工具后 `decide` 不再调工具时的文字，打 `user-visible` 流出；`respond` 只兜底拒绝确认、工具失败、没给文字）。`request_information` 的 `question` 原样发出。其余都是模板：确认卡、执行步骤、取消回复、错误提示。
+- 只有两类模型输出文字：Supervisor 的 `reply`（结构化输出，一次性给出，校验器强制不执行的轮次必须有 `reply`），和领域 Agent 的回答（执行过工具后 `decide` 的文字，打 `user-visible` 流出；`respond` 只兜底拒绝确认、工具失败、没给文字）。执行过工具后，调写工具时对用户说的话（比如提交请假前先报余额）写在写工具的 `message_to_user` 参数里：模型调工具那回合几乎不写正文，prompt 怎么要求都一样，参数却每次都填。它只加在模型可见的 schema 上，`split_message` 在校验前取出，不进契约、确认卡和幂等记录；子图整段推给前端，记为 `AgentNote`：停在确认卡上时随 `PendingConfirmation.notes` 带出，历史接口补上、恢复命令写进会话；否则随 `DomainTaskResult.notes` 在归并时排在回答前面。两条路径只走一条，不然会话里会记两遍。`request_information` 的 `question` 原样发出。其余都是模板：确认卡、执行步骤、取消回复、错误提示。
 - 领域 Agent 读最近 `DOMAIN_CONTEXT_MESSAGES` 条会话原文，而不是只读改写：改写会丢信息。窗口刻意比 Supervisor 小，少给串字段的材料；串字段由 prompt 的字段来源原则和确认卡兜底。
 - 每条助手消息在 `additional_kwargs["tools_called"]` 记着那一轮调用过的工具（`reply_message` 写入），`_conversation()` 渲染成 `[未调用工具]` / `[调用了：…]` 交给模型，界面只取正文。没有它，Supervisor 分不清哪条回复查过，会谎称调用了系统接口。
 - 人工确认的决定用 `SystemMessage` 追加进 `messages`：进得了界面历史，进不了模型上下文（`_conversation()` 只挑 human/ai），否则会被当成用户输入。
@@ -90,7 +90,7 @@ FastAPI + LangGraph 的多 Agent 系统。`graph/workflow.py` 是调度父图，
 - 图执行跑在 `RunManager` 的后台任务里，SSE 只是订阅者；断开默认不中断（`RUN_ON_DISCONNECT=continue`），重连带 `Last-Event-ID` 补发。多副本需要跨进程的 `StreamBridge`。
 - 依赖都完成的任务由 `select_task` 一次挑出、`Send` 并行派发，`apply_domain_result` 等整批结束后按**计划顺序**归并，每归并一个推一条 `task_done`（带执行步骤）。领域子图包在函数里调用，并行分支写带归并规则的 `domain_results`。
 - 两个分支可能同时停在确认卡上，恢复必须按中断 id 指明（`_resume_command`）。
-- 执行并行、展示串行：`_AnswerRelay` 同一时刻只转发一段回答，按 `langgraph_checkpoint_ns` 区分、`chunk_position="last"` 判断结束，压住回答开头、见到工具调用增量整条丢弃（前端不会覆盖已画出的文字）。
+- 执行并行、展示串行：`_AnswerRelay` 同一时刻只转发一段回答，按 `langgraph_checkpoint_ns` 区分、`chunk_position="last"` 判断结束，压住回答开头，见到工具调用增量就当这段话结束、此后不再转发（前端不会覆盖已画出的文字）。
 - 检查点序列化器（`graph/serde.py`）自动登记 `core.models` 里的类型；进状态的新类型放在那个模块里。
 
 ### 长期记忆
