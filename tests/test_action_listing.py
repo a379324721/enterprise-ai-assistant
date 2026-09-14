@@ -150,4 +150,4 @@ def test_render_omits_a_missing_document_number() -> None:
         created_at=datetime(2026, 9, 13, tzinfo=UTC),
     ).render()
 
-    assert rendered == "[travel] travel_application（2026-09-13）：destination=上海"
+    assert rendered == "travel_application（2026-09-13）：destination=上海"

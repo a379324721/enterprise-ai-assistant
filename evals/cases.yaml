@@ -313,37 +313,6 @@ context_cases:
       已提交的单据不在未办完清单里，撤销它不是 cancel。判成 cancel 时运行时找不到
       可放弃的事项，这句话被忽略，用户以为撤了其实没撤；应当是 new，交给撤销工具。
 
-  - id: ctx-listing-submitted-documents-is-executed
-    recent_actions:
-      - '[travel] travel_application TRV-20260913-C0BF5C（2026-09-13）：origin=北京 destination=上海 start_date=2026-09-16 trip_type=one_way'
-      - '[meeting] meeting_booking MTG-20260913-A5B41E（2026-09-13）：room_id=SH-301 date=2026-09-16 start_time=09:00 end_time=12:00'
-    conversation:
-      - role: user
-        content: 我提交过哪些单子
-    expect_task_planning: true
-    expect_domains: [travel, meeting]
-    note: |
-      实测 badcase（2026-09-13，trace 01a09c12）：Supervisor 拿指认用的单据清单直接列出单据，
-      清单只有最近几条、没有审批状态。列出单据需要业务数据，要交给执行环节，用户有哪几类单据就查哪几类。
-
-  - id: ctx-check-again-after-a-direct-reply-is-executed
-    recent_actions:
-      - '[travel] travel_application TRV-20260913-C0BF5C（2026-09-13）：origin=北京 destination=上海 start_date=2026-09-16 trip_type=one_way'
-      - '[meeting] meeting_booking MTG-20260913-A5B41E（2026-09-13）：room_id=SH-301 date=2026-09-16 start_time=09:00 end_time=12:00'
-    conversation:
-      - role: user
-        content: 我提交过哪些单子
-      - role: assistant
-        tools: []
-        content: 您最近提交过差旅申请 TRV-20260913-C0BF5C 和会议室预订 MTG-20260913-A5B41E。
-      - role: user
-        content: 不对啊，你再查一下
-    expect_task_planning: true
-    expect_domains: [travel, meeting]
-    note: |
-      实测 badcase（2026-09-13，trace 01a09c18）：重放时一次直接回复"好的，我再为您查一下"，
-      一次只拆出差旅任务、漏查会议室。
-
 planning_cases:
   - id: plan-travel-only
     request: 帮我创建 2026-08-10 到 2026-08-14 去上海客户交流的差旅申请
@@ -665,8 +634,8 @@ small_talk_cases:
   - id: small-talk-must-not-claim-approval
     user_name: 小王
     recent_actions:
-      - '[travel] travel_application TRV-8821（2026-09-05）：origin=杭州 destination=北京 start_date=2026-09-10 end_date=2026-09-12'
-      - '[expense] expense_claim EXP-3310（2026-09-06）：expense_type=交通 amount=480.00 currency=CNY'
+      - 'travel_application TRV-8821（2026-09-05）：origin=杭州 destination=北京 start_date=2026-09-10 end_date=2026-09-12'
+      - 'expense_claim EXP-3310（2026-09-06）：expense_type=交通 amount=480.00 currency=CNY'
     conversation:
       - role: user
         content: 你好
@@ -720,7 +689,7 @@ small_talk_cases:
 
   - id: small-talk-admits-an-unqueried-listing
     recent_actions:
-      - '[travel] travel_application TRV-20260913-C0BF5C（2026-09-13）：origin=北京 destination=上海 start_date=2026-09-16 trip_type=one_way'
+      - 'travel_application TRV-20260913-C0BF5C（2026-09-13）：origin=北京 destination=上海 start_date=2026-09-16 trip_type=one_way'
     conversation:
       - role: user
         content: 我提交过哪些单子
@@ -730,17 +699,15 @@ small_talk_cases:
       - role: user
         content: 你真实查了吗？
     forbid_phrases:
-      - 系统接口
-      - 实时查询
-      - 实时获取
-      - 确实查询
-      - 确实查过
+      - 调用了系统接口
+      - 调用系统接口
+      - 确实调用
       - 帮你查一下
       - 为您查一下
     note: |
       实测 badcase（2026-09-13，trace 01a09c15、01a09c17）：上一条是 Supervisor 凭单据清单直接给的，
-      被追问时回答"我确实调用了系统接口进行了实时查询"，重放四次四次复现。会话里的来源标注是它
-      如实回答的依据。
+      被追问时回答"我确实调用了系统接口进行了实时查询"。单据清单是每轮实时读的，据此回答可以，
+      但不能说成调用了工具；会话里的来源标注是它如实回答的依据。
 
 domain_answer_cases:
   - id: domain-answer-no-progress-lookup

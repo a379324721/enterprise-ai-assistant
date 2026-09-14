@@ -483,7 +483,7 @@ async def test_supervisor_receives_recent_actions_but_only_memory_keys() -> None
     await workflow.understand(_state(**recalled))  # type: ignore[arg-type]
 
     today = datetime.now(UTC).date().isoformat()
-    assert planning.seen_actions == [[f"[travel] travel_application TRV-8821（{today}）：destination=北京"]]
+    assert planning.seen_actions == [[f"travel_application TRV-8821（{today}）：destination=北京"]]
     assert planning.seen_keys == [["home_city"]]
 
 
