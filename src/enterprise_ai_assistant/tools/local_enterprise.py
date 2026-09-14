@@ -291,8 +291,8 @@ class LocalEnterpriseToolProvider:
             update={
                 "data": {
                     **outcome.data,
-                    "balance_note": "提交前查到的假期余额需要减去本次请假天数"
-                    "没查请忽略",
+                    "balance_note": "提交前查到的假期余额需要减去本次请假天数；"
+                    "没查请忽略。",
                 }
             }
         )

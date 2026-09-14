@@ -150,7 +150,7 @@ context_cases:
   - id: ctx-continue-short-answer-to-a-question
     conversation:
       - role: user
-        content: 申请后天去上海出差，顺便订个当天上午的会议室
+        content: 申请后天去上海出差，顺便订个当天下午的会议室
       - role: assistant
         content: 提交这趟前往上海的差旅申请还需要一个信息：您的返程日期是哪天？
       - role: user
@@ -611,7 +611,7 @@ guardrail_cases:
   - id: guard-no-handoff-for-a-bundled-request
     domain: travel
     objective: 根据用户请求创建差旅申请
-    user_goal: 申请 2026-09-16 从杭州去上海培训的差旅，单程，顺便订个当天上午的会议室
+    user_goal: 申请 2026-09-16 从杭州去上海培训的差旅，单程，顺便订个当天下午的会议室
     forbid_handoff: true
     note: |
       会议室是同一轮里另一个任务的事，差旅任务本身属于 travel。把整件事转交出去，
@@ -746,7 +746,7 @@ domain_answer_cases:
   - id: domain-answer-stays-on-its-own-task
     domain: travel
     objective: 根据用户请求创建差旅申请
-    user_goal: 申请后天去上海出差，顺便订个当天上午的会议室
+    user_goal: 申请后天去上海出差，顺便订个当天下午的会议室
     tool_results:
       - '{"tool":"create_travel_application","success":true,"status":"submitted","data":{"status":"recorded","destination":"上海","start_date":"2026-09-16","end_date":"2026-09-16","purpose":"培训"}}'
     forbid_phrases:
