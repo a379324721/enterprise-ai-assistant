@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -49,7 +50,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         stack.push_async_callback(db_pool.close)
         redis = Redis.from_url(settings.redis_url, decode_responses=True)
         stack.push_async_callback(redis.aclose)
-        milvus = MilvusClient(uri=settings.milvus_uri)
+        if "://" not in settings.policy_vector_uri:
+            # 本地文件路径走 Milvus Lite，它不会自己建上级目录，目录不在就启动失败。
+            Path(settings.policy_vector_uri).parent.mkdir(parents=True, exist_ok=True)
+        milvus = MilvusClient(uri=settings.policy_vector_uri)
         stack.callback(milvus.close)
 
         embeddings = build_embeddings(settings)
@@ -58,7 +62,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception:
             # 语料初始化失败只影响制度检索，工具会返回明确的失败结果而不是编造内容；
             # 让进程继续启动，其余领域能力和健康检查仍然可用。
-            logger.exception("policy_bootstrap_failed", milvus_uri=settings.milvus_uri)
+            logger.exception("policy_bootstrap_failed", policy_vector_uri=settings.policy_vector_uri)
         policies = CachedMilvusPolicyRepository(milvus, redis, embeddings)
         actions = PostgresActionRepository(db_pool)
         supervisor = SupervisorAgent(LLMPlanningService(build_chat_model("supervisor")))

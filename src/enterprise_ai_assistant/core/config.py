@@ -48,7 +48,10 @@ class Settings(BaseSettings):
     langsmith_project: str = "enterprise-ai-assistant"
     postgres_dsn: str = "postgresql://enterprise:enterprise@localhost:5432/enterprise_ai"
     redis_url: str = "redis://localhost:6379/0"
-    milvus_uri: str = "http://localhost:19530"
+    # 本地文件路径走进程内的 Milvus Lite，制度语料只有几条，不值得起 Milvus、etcd、MinIO 三个容器。
+    # 同一个文件只能被一个进程打开；需要多进程或多副本时改成 Milvus 服务的 http 地址。
+    # 不叫 MILVUS_URI：pymilvus import 时会自己读这个环境变量（连同 .env），不是 http 地址就直接抛错。
+    policy_vector_uri: str = "./data/milvus.db"
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
 
     # 模型单价用于把 token 折算成成本指标；默认 0 表示不统计金额。

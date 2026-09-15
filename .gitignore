@@ -11,4 +11,6 @@ frontend/dist/
 *.tsbuildinfo
 .idea/
 eval-report*.json
+# Milvus Lite 数据文件
+data/
 .DS_Store

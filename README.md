@@ -1,6 +1,6 @@
 # Enterprise AI Assistant
 
-面向企业内部事务的生产级 Multi-Agent。后端使用 FastAPI + LangGraph，模型通过 OpenAI-compatible Chat Completions API 接入；PostgreSQL 保存工作流 checkpoint 与业务写操作，Redis 缓存制度查询，Milvus 存储制度向量，LangSmith 记录 Agent、规划器和工具调用 trace。前端提供任务进度与 Human-in-the-loop 确认界面。
+面向企业内部事务的生产级 Multi-Agent。后端使用 FastAPI + LangGraph，模型通过 OpenAI-compatible Chat Completions API 接入；PostgreSQL 保存工作流 checkpoint 与业务写操作，Redis 缓存制度查询，Milvus Lite（进程内，存成本地文件）存储制度向量，LangSmith 记录 Agent、规划器和工具调用 trace。前端提供任务进度与 Human-in-the-loop 确认界面。
 
 ## 架构
 
@@ -180,10 +180,10 @@ docker compose up --build
 
 本地开发时只在 Docker 中运行基础设施
 
-终端 1——启动 PostgreSQL、Redis、etcd、MinIO 和 Milvus：
+终端 1——启动 PostgreSQL 和 Redis（制度向量用 Milvus Lite，存在 `data/milvus.db`，不需要容器）：
 
 ```bash
-docker compose up -d postgres redis etcd minio milvus
+docker compose up -d postgres redis
 ```
 
 终端 2——启动 FastAPI 后端：

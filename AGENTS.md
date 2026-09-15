@@ -12,7 +12,7 @@ make dev         # uvicorn enterprise_ai_assistant.main:app --reload
 make test        # uv run pytest
 make lint        # uv run ruff check .
 make typecheck   # uv run mypy（strict，覆盖 enterprise_ai_assistant 和 evals）
-make compose-up  # docker compose up --build（Postgres + Redis + Milvus + api）
+make compose-up  # docker compose up --build（Postgres + Redis + api + 前端；Milvus 用进程内的 Lite）
 cd frontend && npm run dev    # vite；npm run build 是 tsc -b && vite build
 uv run pytest tests/test_memory.py::test_leave_summary_drops_the_reason_text -q
 ```
@@ -109,6 +109,7 @@ FastAPI + LangGraph 的多 Agent 系统。`graph/workflow.py` 是调度父图，
 - 所有配置经 `core/config.py` 的 `Settings` 校验，敏感项不设默认值，`.env.example` 是权威列表。生产必须配 `JWT_SECRET`（HS* 至少 32 字节）。
 - 模型按角色配思考和温度：Supervisor 关思考、温度 0（分类要稳定）；领域 Agent 开思考、预算 2000、温度 0.6（关思考或预算太小会缺字段直接提交，不限预算会长时间推理）。
 - 部署前先读 `docs/deployment.md`。
+- `POLICY_VECTOR_URI` 是本地文件路径时走 Milvus Lite，同一个文件只能被一个进程打开：别的进程要读制度向量时先停服务，多副本改用 Milvus 服务。
 - 本地 `.env` 里 `DEV_LOGIN_ENABLED=true` 时 `test_dev_token_endpoint_is_hidden_by_default` 会失败，是环境差异。
 
 ## 代码风格

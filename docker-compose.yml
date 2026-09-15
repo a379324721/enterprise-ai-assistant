@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DSN: postgresql://enterprise:enterprise@postgres:5432/enterprise_ai
       REDIS_URL: redis://redis:6379/0
-      MILVUS_URI: http://milvus:19530
+      POLICY_VECTOR_URI: /app/data/milvus.db
       # 演示编排默认沿用 .env 中的开发配置；生产部署必须注入独立的 JWT_SECRET。
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       DEV_LOGIN_ENABLED: ${DEV_LOGIN_ENABLED:-false}
@@ -13,7 +13,7 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-      milvus: {condition: service_healthy}
+    volumes: ["api_data:/app/data"]
 
   frontend:
     build: ./frontend
@@ -45,42 +45,7 @@ services:
       timeout: 3s
       retries: 20
 
-  etcd:
-    image: milvusdb/etcd:3.5.5-r2
-    environment:
-      ALLOW_NONE_AUTHENTICATION: "yes"
-      ETCD_AUTO_COMPACTION_MODE: revision
-      ETCD_AUTO_COMPACTION_RETENTION: "1000"
-      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
-      ETCD_SNAPSHOT_COUNT: "50000"
-    volumes: ["etcd_data:/etcd"]
-
-  minio:
-    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
-    environment:
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
-    command: minio server /minio_data
-    volumes: ["minio_data:/minio_data"]
-
-  milvus:
-    image: milvusdb/milvus:v2.4.6
-    command: ["milvus", "run", "standalone"]
-    environment:
-      ETCD_ENDPOINTS: etcd:2379
-      MINIO_ADDRESS: minio:9000
-    ports: ["19530:19530", "9091:9091"]
-    volumes: ["milvus_data:/var/lib/milvus"]
-    depends_on: [etcd, minio]
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-
 volumes:
   postgres_data:
   redis_data:
-  etcd_data:
-  minio_data:
-  milvus_data:
+  api_data:
