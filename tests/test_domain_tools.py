@@ -174,3 +174,24 @@ def test_invalid_arguments_are_reported_before_confirmation() -> None:
         {"origin": "杭州", "destination": "上海", "start_date": "2026-09-16",
          "trip_type": "one_way", "purpose": "培训"}
     ) is None
+
+
+def test_room_name_in_place_of_room_id_is_reported_before_confirmation() -> None:
+    """模型把草稿里"名称（编号）"的展示写法当 room_id 填进来时，要在确认卡之前拦下。"""
+    tools = {item.tool.name: item for item in _write_tools()}
+    arguments = {
+        "date": "2026-09-17",
+        "start_time": "09:00",
+        "end_time": "12:00",
+        "subject": "开会",
+    }
+
+    error = tools["book_meeting_room"].argument_error(
+        {**arguments, "room_id": "北京总部201大会议室（BJ-201）"}
+    )
+
+    assert error is not None and "BJ-201" in error
+    assert tools["book_meeting_room"].argument_error({**arguments, "room_id": "BJ-201"}) is None
+    assert tools["update_meeting_booking"].argument_error(
+        {"reference_id": "MTG-1", "room_id": "201 大会议室"}
+    ) is not None

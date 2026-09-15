@@ -1,5 +1,6 @@
 # 会议室入参有个字段就叫 date，会遮住同名类型，这些类里的注解统一走模块路径。
 import datetime as dt
+import re
 from datetime import date, time
 from decimal import Decimal
 from enum import StrEnum
@@ -148,12 +149,27 @@ class MeetingRoomSearchInput(StrictToolInput):
         return self
 
 
+_ROOM_ID_HINT = "空闲查询结果里 room_id 的原值，例如 BJ-201，不带会议室名称"
+
+
+def _check_room_id(value: str | None) -> str | None:
+    # 模型追问时会把"名称（编号）"这种给人看的写法记进草稿，续跑轮看不到上一轮的查询结果，
+    # 就把这串文字原样当 room_id 填进来。它在确认卡上看着完全正确，用户点确认后才由适配器
+    # 报"不存在"。在契约里拦下，decide 阶段就把报错交还模型改正。
+    # 只限定字符集、不绑定具体编号规则：真实会议室系统的编号格式不由这里决定。
+    if value is not None and not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise ValueError(f"会议室要填{_ROOM_ID_HINT}")
+    return value
+
+
 class MeetingRoomBookingInput(StrictToolInput):
-    room_id: str = Field(title="会议室", min_length=1, max_length=64)
+    room_id: str = Field(title="会议室", min_length=1, max_length=64, description=_ROOM_ID_HINT)
     date: dt.date = Field(title="日期")
     start_time: time = Field(title="开始时间")
     end_time: time = Field(title="结束时间")
     subject: str = Field(title="会议主题", min_length=1, max_length=200)
+
+    _room_id = field_validator("room_id")(_check_room_id)
 
     @model_validator(mode="after")
     def validate_window(self) -> "MeetingRoomBookingInput":
@@ -239,12 +255,14 @@ class MeetingBookingUpdateInput(SubmissionUpdateInput):
         title="会议室",
         min_length=1,
         max_length=64,
-        description="换房间时必须是空闲查询结果里的 room_id",
+        description=f"换房间时填{_ROOM_ID_HINT}",
     )
     date: dt.date | None = Field(default=None, title="日期")
     start_time: time | None = Field(default=None, title="开始时间")
     end_time: time | None = Field(default=None, title="结束时间")
     subject: str | None = Field(default=None, title="会议主题", min_length=1, max_length=200)
+
+    _room_id = field_validator("room_id")(_check_room_id)
 
 
 class BusinessToolOutcome(BaseModel):
