@@ -1,7 +1,6 @@
 name: Eval
 
-# 回归评测会真实调用模型服务，因此不在每次推送时运行：
-# 手动触发用于验证 prompt 改动，定时任务用于观察模型服务端的行为漂移。
+# 回归评测会真实调用模型服务、按 token 计费，只手动触发，不在推送或定时任务里跑。
 on:
   workflow_dispatch:
     inputs:
@@ -14,8 +13,6 @@ on:
         description: 整体准确率门槛（低于则失败）
         type: string
         default: "0.85"
-  schedule:
-    - cron: "0 18 * * 1"
 
 jobs:
   eval:
