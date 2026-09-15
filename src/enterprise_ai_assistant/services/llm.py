@@ -32,6 +32,9 @@ def build_chat_model(role: Literal["supervisor", "domain"] = "domain") -> ChatOp
         max_retries=3,
         timeout=60,
         extra_body=extra_body,
+        # 流式响应默认不带用量，领域 Agent 的调用在 LangSmith 和 LLMUsageTracker 里都记成 0，
+        # 会话 token 预算也就只算得到 Supervisor 那一小部分。
+        stream_usage=True,
     )
 
 
