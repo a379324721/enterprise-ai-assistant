@@ -386,6 +386,34 @@ async def test_disabled_memory_never_touches_the_repository() -> None:
     assert planning.seen == []
 
 
+@pytest.mark.asyncio
+async def test_disabled_memory_still_reads_recent_actions() -> None:
+    """关掉画像不能连带清空单据清单，否则 Supervisor 会对有单据的用户说没有。"""
+    repository = InMemoryMemoryRepository()
+    await repository.upsert(
+        "u-1",
+        [MemoryCandidate(kind=MemoryKind.PREFERENCE, key="preferred_transport", value="高铁")],
+    )
+    repository.actions["u-1"] = [
+        RecentAction(
+            reference_id="TRV-8821",
+            action_type="travel_application",
+            summary="destination=北京",
+            created_at=datetime.now(UTC),
+        )
+    ]
+    planning = MemoryPlanningService()
+    workflow = Workflow(SupervisorAgent(planning), memories=repository, memory_enabled=False)
+
+    recalled = await workflow.recall(_state())
+    assert recalled["memories"] == []
+    assert [item.reference_id for item in recalled["recent_actions"]] == ["TRV-8821"]
+
+    assert await workflow.remember(_state()) == {}
+    await workflow.drain_background()
+    assert planning.seen == []
+
+
 # --- 管理接口 -------------------------------------------------------------
 
 SETTINGS = Settings(

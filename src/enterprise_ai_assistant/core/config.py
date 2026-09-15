@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     domain_context_messages: int = Field(default=10, ge=0)
 
     # 跨会话长期记忆。默认关闭：记错一条画像会污染该用户后续所有会话，
-    # 需要先有删除入口和灰度范围再打开。
+    # 需要先有删除入口和灰度范围再打开。只管画像记忆，近期单据始终读取。
     memory_enabled: bool = False
     # 单轮注入领域子图的画像条数上限，防止记忆增长把每轮 prompt 撑大。
     memory_recall_limit: int = Field(default=20, ge=0)

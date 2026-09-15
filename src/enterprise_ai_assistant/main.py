@@ -69,9 +69,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             history_window=settings.context_window_messages,
             digest_turns=settings.context_digest_turns,
             domain_window=settings.domain_context_messages,
-            # 关闭开关时不把仓储交给图，recall/remember 直接短路，
-            # 既不查库也不产生额外的抽取调用。
-            memories=memories if settings.memory_enabled else None,
+            # 关闭开关时不读画像、不产生额外的抽取调用；近期单据照读。
+            memories=memories,
+            memory_enabled=settings.memory_enabled,
             recall_limit=settings.memory_recall_limit,
             recent_action_limit=settings.memory_recent_action_limit,
         )

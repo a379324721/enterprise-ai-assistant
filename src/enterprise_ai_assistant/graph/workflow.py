@@ -160,6 +160,7 @@ class Workflow:
         digest_turns: int = 20,
         domain_window: int = 10,
         memories: MemoryRepository | None = None,
+        memory_enabled: bool = True,
         recall_limit: int = 20,
         recent_action_limit: int = 5,
     ) -> None:
@@ -167,9 +168,11 @@ class Workflow:
         self._history_window = history_window
         self._digest_turns = digest_turns
         self._domain_window = domain_window
-        # memories 为 None 表示长期记忆未启用；此时 recall/remember 退化成空操作，
-        # 图结构保持不变，开关切换不需要重建检查点。
+        # memories 为 None 时 recall/remember 都是空操作。memory_enabled 只管画像记忆的
+        # 读取和抽取：近期单据从 workflow_actions 实时派生，不是记忆，关掉画像时照读。
+        # 两者都不改图结构，开关切换不需要重建检查点。
         self._memories = memories
+        self._memory_enabled = memory_enabled
         self._recall_limit = recall_limit
         self._recent_action_limit = recent_action_limit
         # 事件循环只持有任务的弱引用，不留强引用的话后台抽取可能跑到一半被回收。
@@ -229,12 +232,19 @@ class Workflow:
 
         记忆是锦上添花的输入，不是执行前提：仓储不可用时返回空结果继续本轮，
         表现退化成没有记忆的旧行为，而不是让整轮请求失败。
+
+        画像关闭时近期单据仍然要读。Supervisor 的 prompt 说单据清单是从系统记录读出的、
+        可以直接用，清单被开关连带清空后它看到"（暂无）"，就可能对有单据的用户说没有。
         """
         if self._memories is None:
             return {"memories": [], "recent_actions": []}
         user_id = state["user_id"]
         try:
-            memories = await self._memories.list_memories(user_id, self._recall_limit)
+            memories = (
+                await self._memories.list_memories(user_id, self._recall_limit)
+                if self._memory_enabled
+                else []
+            )
             recent_actions = await self._memories.recent_actions(
                 user_id, self._recent_action_limit
             )
@@ -254,7 +264,7 @@ class Workflow:
         等待用户补充输入的轮次不抽取：此时字段还没谈定，把半成品写进画像会让
         下一轮拿着错误的默认值去预填。写入失败同样只记日志，不影响已完成的回答。
         """
-        if self._memories is None:
+        if self._memories is None or not self._memory_enabled:
             return {}
         if any(task.status == TaskStatus.WAITING_INPUT for task in state.get("tasks", [])):
             return {}

@@ -95,7 +95,7 @@ FastAPI + LangGraph 的多 Agent 系统。`graph/workflow.py` 是调度父图，
 
 ### 长期记忆
 
-- 默认关闭（`MEMORY_ENABLED`）。画像存 `user_memories`；近期单据**不复制**，每轮从 `workflow_actions` 实时派生，摘要走 `_ACTION_SUMMARY_FIELDS` 白名单（请假原因、票据号不进上下文）。
+- 默认关闭（`MEMORY_ENABLED`），只管画像的读取和抽取；近期单据不受它门控——清单被连带清空时 Supervisor 看到"（暂无）"，会对有单据的用户说没有。画像存 `user_memories`；近期单据**不复制**，每轮从 `workflow_actions` 实时派生，摘要走 `_ACTION_SUMMARY_FIELDS` 白名单（请假原因、票据号不进上下文）。
 - 右栏"我的单据"（`GET /actions`）用同一份数据，不受 `MEMORY_ENABLED` 门控。露出的单号只取短单号，`idempotency_key` 会泄漏内部结构。
 - `recall` 在轮首，`remember` 在轮尾后台抽取；测试要调 `Workflow.drain_background` 才能断言写入。记忆只是建议默认值。Supervisor 只拿记忆的 key。
 
