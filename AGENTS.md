@@ -108,6 +108,7 @@ FastAPI + LangGraph 的多 Agent 系统。`graph/workflow.py` 是调度父图，
 
 - 所有配置经 `core/config.py` 的 `Settings` 校验，敏感项不设默认值，`.env.example` 是权威列表。生产必须配 `JWT_SECRET`（HS* 至少 32 字节）。
 - 模型按角色配思考和温度：Supervisor 关思考、温度 0（分类要稳定）；领域 Agent 开思考、预算 2000、温度 0.6（关思考或预算太小会缺字段直接提交，不限预算会长时间推理）。
+- 部署前先读 `docs/deployment.md`。
 - 本地 `.env` 里 `DEV_LOGIN_ENABLED=true` 时 `test_dev_token_endpoint_is_hidden_by_default` 会失败，是环境差异。
 
 ## 代码风格
