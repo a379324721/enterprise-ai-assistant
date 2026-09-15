@@ -343,7 +343,7 @@ curl -X POST http://localhost:8000/api/v1/conversations/<conversation-id>/confir
 
 每次请求结束会输出一条 `llm_usage` 结构化日志，包含调用次数、输入/输出 token 和折算成本。
 
-设置 `CONVERSATION_TOKEN_BUDGET` 后，单个会话累计 token 达到上限时新请求返回 429。
+设置 `CONVERSATION_TOKEN_BUDGET` 后，单个会话累计 token 达到上限时新请求返回 429。设置 `IP_TOKEN_BUDGET` 后，同一来源 IP 在 `IP_BUDGET_TTL_HOURS` 窗口内累计达到上限时同样返回 429；部署在反向代理后面要给 uvicorn 配 `--proxy-headers` 和 `FORWARDED_ALLOW_IPS`。
 计数存放在 Redis，Redis 不可用时放行而不是阻断业务。
 
 ## 测试与质量

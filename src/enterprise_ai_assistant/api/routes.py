@@ -117,26 +117,51 @@ def _budget_key(conversation_id: UUID) -> str:
     return f"budget:tokens:{conversation_id}"
 
 
-async def _enforce_token_budget(app: Any, conversation_id: UUID, settings: Settings) -> None:
-    """会话累计 token 超过预算时拒绝新一轮请求。
+def _ip_budget_key(client_ip: str) -> str:
+    return f"budget:tokens:ip:{client_ip}"
 
+
+def _client_ip(request: Request) -> str | None:
+    # 只认连接的对端地址，不自己解析 X-Forwarded-For：这个头谁都能伪造，换个值就换一份额度。
+    # 部署在反向代理后面时，由 uvicorn 的 --proxy-headers 和 FORWARDED_ALLOW_IPS 按受信代理改写。
+    return request.client.host if request.client else None
+
+
+async def _spent(app: Any, key: str) -> int | None:
+    try:
+        raw = await app.state.redis.get(key)
+    except Exception:
+        app.state.logger.warning("token_budget_check_failed", key=key)
+        return None
+    return None if raw is None else int(raw)
+
+
+async def _enforce_token_budget(
+    app: Any, conversation_id: UUID, settings: Settings, client_ip: str | None = None
+) -> None:
+    """会话或来源 IP 累计 token 超过预算时拒绝新一轮请求。
+
+    只在新一轮开始前检查，不拦确认卡的恢复：停在确认卡上的事拦下来就办不完了。
+    检查发生在执行之前，最后一轮会超出预算一轮的用量。
     预算计数仅用于成本护栏，Redis 不可用时放行而不是阻断业务。
     """
-    if settings.conversation_token_budget <= 0:
-        return
-    try:
-        spent = await app.state.redis.get(_budget_key(conversation_id))
-    except Exception:
-        app.state.logger.warning(
-            "token_budget_check_failed", conversation_id=str(conversation_id)
-        )
-        return
-    if spent is not None and int(spent) >= settings.conversation_token_budget:
-        BUDGET_REJECTIONS.inc()
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="当前会话的用量已达上限，请开启新会话",
-        )
+    if settings.conversation_token_budget > 0:
+        spent = await _spent(app, _budget_key(conversation_id))
+        if spent is not None and spent >= settings.conversation_token_budget:
+            BUDGET_REJECTIONS.inc()
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="当前会话的用量已达上限，请开启新会话",
+            )
+    if settings.ip_token_budget > 0 and client_ip:
+        spent = await _spent(app, _ip_budget_key(client_ip))
+        if spent is not None and spent >= settings.ip_token_budget:
+            BUDGET_REJECTIONS.inc()
+            # 开新会话绕不过按 IP 的额度，提示里不能再让人去开新会话。
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="当前网络的体验额度已用完，请稍后再试",
+            )
 
 
 async def _record_usage(
@@ -145,18 +170,30 @@ async def _record_usage(
     user_id: str,
     tracker: LLMUsageTracker,
     settings: Settings,
+    client_ip: str | None = None,
 ) -> None:
     tracker.log_summary(conversation_id=str(conversation_id), user_id=user_id)
-    if settings.conversation_token_budget <= 0 or tracker.total_tokens == 0:
+    if tracker.total_tokens == 0:
         return
-    try:
-        key = _budget_key(conversation_id)
-        await app.state.redis.incrby(key, tracker.total_tokens)
-        await app.state.redis.expire(key, settings.conversation_budget_ttl_hours * 3600)
-    except Exception:
-        app.state.logger.warning(
-            "token_budget_update_failed", conversation_id=str(conversation_id)
-        )
+    if settings.conversation_token_budget > 0:
+        try:
+            key = _budget_key(conversation_id)
+            await app.state.redis.incrby(key, tracker.total_tokens)
+            await app.state.redis.expire(key, settings.conversation_budget_ttl_hours * 3600)
+        except Exception:
+            app.state.logger.warning(
+                "token_budget_update_failed", conversation_id=str(conversation_id)
+            )
+    if settings.ip_token_budget > 0 and client_ip:
+        try:
+            key = _ip_budget_key(client_ip)
+            total = await app.state.redis.incrby(key, tracker.total_tokens)
+            # 固定窗口：只在这个窗口的第一笔用量时设过期。每次都续期的话，持续在用的 IP
+            # 计数永远不清零，额度用完后只要隔一会儿再试一次就又续上，等于永久封禁。
+            if total == tracker.total_tokens:
+                await app.state.redis.expire(key, settings.ip_budget_ttl_hours * 3600)
+        except Exception:
+            app.state.logger.warning("token_budget_update_failed", client_ip=client_ip)
 
 
 def _initial_state(payload: ChatRequest, identity: Identity) -> dict[str, Any]:
@@ -533,6 +570,7 @@ async def _execute_run(
     graph_input: dict[str, Any] | Command[Any],
     conversation_id: UUID,
     user_id: str,
+    client_ip: str | None = None,
 ) -> RunStatus:
     """在后台任务里执行工作流，把进度、回答增量和终态快照写入事件通道。
 
@@ -610,7 +648,7 @@ async def _execute_run(
         await publish("error", {"message": run.error_message})
         return RunStatus.failed
     finally:
-        await _record_usage(app, conversation_id, user_id, tracker, settings)
+        await _record_usage(app, conversation_id, user_id, tracker, settings, client_ip)
 
 
 def _disconnect_mode(requested: str | None, settings: Settings) -> DisconnectMode:
@@ -625,9 +663,12 @@ async def _start_run(
     *,
     request_id: UUID | None = None,
     on_disconnect: DisconnectMode = DisconnectMode.continue_,
+    client_ip: str | None = None,
 ) -> Run:
     async def runner(run: Run, publish: Publisher) -> RunStatus:
-        return await _execute_run(app, run, publish, graph_input, conversation_id, user_id)
+        return await _execute_run(
+            app, run, publish, graph_input, conversation_id, user_id, client_ip
+        )
 
     try:
         return await _runs(app).start(
@@ -722,7 +763,9 @@ async def chat(
 ) -> AssistantResponse:
     settings = get_settings()
     user_id = identity.user_id
-    await _enforce_token_budget(request.app, payload.conversation_id, settings)
+    await _enforce_token_budget(
+        request.app, payload.conversation_id, settings, _client_ip(request)
+    )
     await _validate_chat_turn(
         request.app, payload.conversation_id, user_id, payload.request_id
     )
@@ -732,6 +775,7 @@ async def chat(
         payload.conversation_id,
         user_id,
         request_id=payload.request_id,
+        client_ip=_client_ip(request),
     )
     if run.task is not None:
         # asyncio.wait 不会把本请求的取消传导给后台任务：调用方断开时，
@@ -751,7 +795,9 @@ async def chat_stream(
     """聊天输入使用 POST，因此该 SSE 接口由流式 fetch 消费。"""
     settings = get_settings()
     user_id = identity.user_id
-    await _enforce_token_budget(request.app, payload.conversation_id, settings)
+    await _enforce_token_budget(
+        request.app, payload.conversation_id, settings, _client_ip(request)
+    )
     await _validate_chat_turn(
         request.app, payload.conversation_id, user_id, payload.request_id
     )
@@ -762,6 +808,7 @@ async def chat_stream(
         user_id,
         request_id=payload.request_id,
         on_disconnect=_disconnect_mode(payload.on_disconnect, settings),
+        client_ip=_client_ip(request),
     )
     return _stream_response(request, run, apply_on_disconnect=True)
 
@@ -851,7 +898,9 @@ async def confirm(
     user_id: CurrentUser,
 ) -> AssistantResponse:
     command = await _validate_confirmation(request.app, conversation_id, user_id, payload)
-    run = await _start_run(request.app, command, conversation_id, user_id)
+    run = await _start_run(
+        request.app, command, conversation_id, user_id, client_ip=_client_ip(request)
+    )
     if run.task is not None:
         await asyncio.wait([run.task])
     return await _response(request.app, conversation_id, user_id)
@@ -873,6 +922,7 @@ async def confirm_stream(
         conversation_id,
         user_id,
         on_disconnect=_disconnect_mode(payload.on_disconnect, settings),
+        client_ip=_client_ip(request),
     )
     return _stream_response(request, run, apply_on_disconnect=True)
 

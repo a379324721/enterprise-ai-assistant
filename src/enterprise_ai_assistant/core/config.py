@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     # 单个会话累计 token 上限，0 表示不限制。防止异常会话无上限消耗额度。
     conversation_token_budget: int = Field(default=0, ge=0)
     conversation_budget_ttl_hours: int = Field(default=168, ge=1)
+    # 单个来源 IP 在一个窗口内的累计 token 上限，0 表示不限制。开新会话就能绕过会话预算，
+    # 公开的演示环境要靠它兜住总消耗。窗口从该 IP 的第一笔用量起算，到期整体清零。
+    ip_token_budget: int = Field(default=0, ge=0)
+    ip_budget_ttl_hours: int = Field(default=24, ge=1)
     # Context Supervisor 每轮都要读完整会话，历史无上限增长会让单轮 token 线性上涨。
     # 只把最近 N 条消息原样送进 prompt，更早的轮次降级成一句话摘要，0 表示不截断。
     context_window_messages: int = Field(default=12, ge=0)

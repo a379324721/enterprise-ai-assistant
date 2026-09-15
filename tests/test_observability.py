@@ -107,21 +107,24 @@ class FakeRedis:
     def __init__(self, spent: int | None = None, broken: bool = False) -> None:
         self.spent = spent
         self.broken = broken
+        self.values: dict[str, int] = {}
         self.increments: list[int] = []
+        self.expired: list[str] = []
 
     async def get(self, key: str) -> str | None:
-        del key
         if self.broken:
             raise ConnectionError("redis down")
-        return None if self.spent is None else str(self.spent)
+        value = self.values.get(key, self.spent)
+        return None if value is None else str(value)
 
     async def incrby(self, key: str, amount: int) -> int:
-        del key
         self.increments.append(amount)
-        return amount
+        self.values[key] = self.values.get(key, 0) + amount
+        return self.values[key]
 
     async def expire(self, key: str, seconds: int) -> bool:
-        del key, seconds
+        del seconds
+        self.expired.append(key)
         return True
 
 
@@ -182,6 +185,41 @@ async def test_usage_is_written_back_to_the_budget_counter() -> None:
     )
 
     assert redis.increments == [150]
+
+
+@pytest.mark.asyncio
+async def test_ip_budget_rejects_an_exhausted_ip_even_in_a_new_conversation() -> None:
+    """开新会话能绕过会话预算，按 IP 的额度绕不过。"""
+    settings = _settings(ip_token_budget=1000)
+    redis = FakeRedis()
+    redis.values[routes._ip_budget_key("10.0.0.1")] = 1200
+
+    with pytest.raises(HTTPException) as exc:
+        await routes._enforce_token_budget(_app(redis), uuid4(), settings, "10.0.0.1")
+
+    assert exc.value.status_code == 429
+    assert "新会话" not in str(exc.value.detail)
+    await routes._enforce_token_budget(_app(redis), uuid4(), settings, "10.0.0.2")
+
+
+@pytest.mark.asyncio
+async def test_ip_budget_window_is_not_extended_by_later_usage() -> None:
+    """每次用量都续期的话，持续在用的 IP 计数永远不清零。"""
+    settings = _settings(ip_token_budget=1000)
+    redis = FakeRedis()
+    key = routes._ip_budget_key("10.0.0.1")
+
+    for _ in range(2):
+        tracker = LLMUsageTracker(settings)
+        run_id = uuid4()
+        await tracker.on_chat_model_start({}, [], run_id=run_id, metadata={"agent": "hr"})
+        await tracker.on_llm_end(_result(100, 50), run_id=run_id)
+        await routes._record_usage(
+            _app(redis), CONVERSATION_ID, "u-1", tracker, settings, "10.0.0.1"
+        )
+
+    assert redis.values[key] == 300
+    assert redis.expired == [key]
 
 
 # -- 指标端点 -------------------------------------------------------------
