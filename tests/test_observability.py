@@ -198,7 +198,7 @@ async def test_ip_budget_rejects_an_exhausted_ip_even_in_a_new_conversation() ->
         await routes._enforce_token_budget(_app(redis), uuid4(), settings, "10.0.0.1")
 
     assert exc.value.status_code == 429
-    assert "新会话" not in str(exc.value.detail)
+    assert exc.value.detail == routes.QUOTA_EXHAUSTED_MESSAGE
     await routes._enforce_token_budget(_app(redis), uuid4(), settings, "10.0.0.2")
 
 

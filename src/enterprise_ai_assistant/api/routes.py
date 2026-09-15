@@ -157,10 +157,11 @@ async def _enforce_token_budget(
         spent = await _spent(app, _ip_budget_key(client_ip))
         if spent is not None and spent >= settings.ip_token_budget:
             BUDGET_REJECTIONS.inc()
-            # 开新会话绕不过按 IP 的额度，提示里不能再让人去开新会话。
+            # 开新会话绕不过按 IP 的额度，提示里不能再让人去开新会话。对用户来说和模型服务
+            # 额度用完是一回事，用同一句提示。
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="当前网络的体验额度已用完，请稍后再试",
+                detail=QUOTA_EXHAUSTED_MESSAGE,
             )
 
 
