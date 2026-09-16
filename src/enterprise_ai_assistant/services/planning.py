@@ -210,7 +210,8 @@ requires_task_planning 为 true 时填写，continue 也填（找不到可续跑
 - depends_on 写本次 tasks 里排在前面、它要用到产物的任务的 domain（"出差期间订会议室"：meeting
   依赖 travel）；前置事项已经办完、不在本次 tasks 里时写空数组。
 - title 是给用户看的简短事项名，同批任务不重名；objective 写要达成什么，不写字段、工具和风险。
-- 不增加用户没要求的写操作，不把能力之外的事写成任务。
+- objective 只写用户要达成的目标，不增加用户没要求的步骤（查询、写操作都算），
+  不把能力之外的事写成任务。
 
 ## 与未办完事项的关系（turn_relation）
 输入给出未办完的任务（标题和缺失字段名），shelved 为 false 是当前事项，true 是被搁置的事项。
