@@ -24,6 +24,7 @@ from enterprise_ai_assistant.core.models import (
     TurnRelation,
     recover_interrupted,
 )
+from enterprise_ai_assistant.core.observability import current_trace_id
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow, build_domain_graph
 from enterprise_ai_assistant.graph.state import AssistantState, DomainTaskInput
 from enterprise_ai_assistant.repositories.memories import MemoryRepository
@@ -46,6 +47,9 @@ TOOLS_CALLED_KEY = "tools_called"
 #: 实时画出来的标题和步骤不进会话的话，刷新页面就没了。不交给模型。
 TASK_KEY = "task"
 STEPS_KEY = "steps"
+#: 模型写出这段话的那次执行的 trace id。只有模型写的话才有，界面据此决定能不能点赞点踩：
+#: 取消回复、转交失败这类固定文案评价了也改进不了什么。不交给模型。
+TRACE_KEY = "trace_id"
 
 logger = structlog.get_logger()
 
@@ -56,6 +60,8 @@ def reply_message(
     *,
     task: PlannedTask | None = None,
     steps: list[ToolResult] | None = None,
+    trace_id: str | None = None,
+    message_id: str | None = None,
 ) -> AIMessage:
     extra: dict[str, Any] = {TOOLS_CALLED_KEY: list(dict.fromkeys(tools))}
     if task is not None:
@@ -63,7 +69,11 @@ def reply_message(
     if steps:
         # 只记工具名和成败。工具返回的 data 里有请假原因这类字段，不跟着进会话历史。
         extra[STEPS_KEY] = [{"tool": item.tool, "success": item.success} for item in steps]
-    return AIMessage(content=text, additional_kwargs=extra)
+    if trace_id:
+        extra[TRACE_KEY] = trace_id
+    # id 是反馈的句柄。显式给出而不是交给 add_messages 补：确认卡前说的话在写进会话之前
+    # 就可能被评价过，写进来时必须沿用那时的 id。
+    return AIMessage(id=message_id or uuid4().hex, content=text, additional_kwargs=extra)
 
 
 def decision_message(approved: bool, title: str) -> SystemMessage:
@@ -140,13 +150,19 @@ class _Merge:
         *,
         task_id: str | None = None,
         steps: list[ToolResult] | None = None,
+        trace_id: str | None = None,
+        message_id: str | None = None,
     ) -> None:
         # 用户取消的任务没有回答，决定已经记在会话里。
         if not answer.strip():
             return
         task = next((item for item in self.tasks if item.id == task_id), None)
         self.answers.append(answer)
-        self.new_answers.append(reply_message(answer, tools, task=task, steps=steps))
+        self.new_answers.append(
+            reply_message(
+                answer, tools, task=task, steps=steps, trace_id=trace_id, message_id=message_id
+            )
+        )
 
 
 class Workflow:
@@ -486,7 +502,8 @@ class Workflow:
         if not context.requires_task_planning:
             # 闲聊、道谢、清单外的诉求都不动计划：待补充期间插一句"好的稍等"，
             # 用户回过头补充时任务还在。
-            return self._reply(update, context.reply)
+            # 只有模型写的回复记 trace：取消的固定文案不给评价。
+            return self._reply(update, context.reply, trace_id=current_trace_id())
 
         # 新的业务请求。当前计划没办完就静默搁置，用户说"继续刚才那个"时还能换回来。
         if current_open:
@@ -504,14 +521,16 @@ class Workflow:
         return update
 
     @staticmethod
-    def _reply(update: dict[str, Any], text: str) -> dict[str, Any]:
+    def _reply(
+        update: dict[str, Any], text: str, *, trace_id: str | None = None
+    ) -> dict[str, Any]:
         answer = text.strip()
         return {
             **update,
             "last_answer": answer,
             "turn_answers": [answer],
             # 直接回复和取消事项的固定文案都没有调用工具。
-            "messages": [reply_message(answer, [])],
+            "messages": [reply_message(answer, [], trace_id=trace_id)],
         }
 
     @staticmethod
@@ -635,7 +654,13 @@ class Workflow:
             merged.tool_results.extend(result.tool_results)
             # 回答之前已经流给用户的话排在回答前面，转交出去的任务说过的也照样记。
             for note in result.notes:
-                merged.say(note.text, note.tools, task_id=result.task_id)
+                merged.say(
+                    note.text,
+                    note.tools,
+                    task_id=result.task_id,
+                    trace_id=note.trace_id,
+                    message_id=note.id,
+                )
             if result.status == TaskStatus.HANDED_OFF:
                 self._reroute(merged, result)
                 continue
@@ -684,6 +709,7 @@ class Workflow:
             [item.tool for item in result.tool_results],
             task_id=result.task_id,
             steps=result.tool_results,
+            trace_id=result.trace_id,
         )
 
     MAX_HANDOFFS = 2

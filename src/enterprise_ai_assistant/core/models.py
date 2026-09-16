@@ -347,6 +347,10 @@ class AgentNote(BaseModel):
 
     text: str
     tools: list[str] = Field(default_factory=list)
+    # 生成时就定下的消息 id 和所在 trace。停在确认卡上时这句话要到下一次执行才写进会话，
+    # 那时的 trace 已经换了；id 也得在写进会话之前就有，历史接口补出来的这条才能被评价。
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    trace_id: str | None = None
 
 
 class PendingConfirmation(BaseModel):
@@ -419,6 +423,9 @@ class DomainTaskResult(BaseModel):
     handoff_to: AgentName | None = None
     # 回答之前已经流给用户、但还没进会话的话。停在确认卡之前说的随 PendingConfirmation 走了，不在这里。
     notes: list[AgentNote] = Field(default_factory=list)
+    # 写出 answer 的那次执行的 trace。并行分支里先办完的一支要等另一支确认后才归并，
+    # 归并时的 trace 不是生成回答的那个。
+    trace_id: str | None = None
 
     @model_validator(mode="after")
     def validate_shape(self) -> "DomainTaskResult":

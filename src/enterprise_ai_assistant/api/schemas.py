@@ -1,7 +1,7 @@
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from enterprise_ai_assistant.core.models import (
     AgentName,
@@ -13,6 +13,7 @@ from enterprise_ai_assistant.core.models import (
     TaskStatus,
     ToolResult,
 )
+from enterprise_ai_assistant.repositories.feedback import FeedbackRating, FeedbackReason
 
 
 class ChatRequest(BaseModel):
@@ -154,6 +155,28 @@ class ConversationMessage(BaseModel):
     task_id: str | None = None
     title: str | None = None
     steps: list[TurnStep] = Field(default_factory=list)
+    # 只有模型写的助手消息才有 message_id，有才显示点赞点踩；固定文案评价了也改进不了什么。
+    # feedback 是当前用户已经给过的评价，没评价过为 None。
+    message_id: str | None = None
+    feedback: FeedbackRating | None = None
+
+
+class MessageFeedbackRequest(BaseModel):
+    rating: FeedbackRating
+    # 理由和补充说明只跟着点踩：点赞时界面不收，接口也不接，免得 LangSmith 上出现带理由的赞。
+    reasons: list[FeedbackReason] = Field(default_factory=list, max_length=5)
+    comment: str | None = Field(default=None, max_length=500)
+
+    @field_validator("comment")
+    @classmethod
+    def blank_comment_is_none(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
+
+    @model_validator(mode="after")
+    def only_downvotes_carry_reasons(self) -> "MessageFeedbackRequest":
+        if self.rating == FeedbackRating.UP and (self.reasons or self.comment):
+            raise ValueError("点赞不带理由和说明")
+        return self
 
 
 class ConversationHistoryResponse(BaseModel):

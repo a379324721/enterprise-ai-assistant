@@ -4,7 +4,7 @@ import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from langchain_core.messages import HumanMessage
@@ -26,6 +26,7 @@ from enterprise_ai_assistant.api.schemas import (
     HealthResponse,
     Matter,
     MemoryListResponse,
+    MessageFeedbackRequest,
     TokenResponse,
     TurnStep,
 )
@@ -38,7 +39,7 @@ from enterprise_ai_assistant.core.models import (
     TaskStatus,
     ToolResult,
 )
-from enterprise_ai_assistant.core.observability import LLMUsageTracker
+from enterprise_ai_assistant.core.observability import TRACE_ID_KEY, LLMUsageTracker
 from enterprise_ai_assistant.core.runs import (
     END_SENTINEL,
     HEARTBEAT_SENTINEL,
@@ -59,15 +60,18 @@ from enterprise_ai_assistant.core.security import (
 from enterprise_ai_assistant.graph.workflow import (
     STEPS_KEY,
     TASK_KEY,
+    TRACE_KEY,
     decision_message,
     reply_message,
 )
+from enterprise_ai_assistant.repositories.feedback import FeedbackRepository, MessageFeedback
 from enterprise_ai_assistant.repositories.users import (
     DemoUser,
     DemoUserRepository,
     conversation_id_for,
     normalize_name,
 )
+from enterprise_ai_assistant.services.feedback import FeedbackEvent, FeedbackSync
 from enterprise_ai_assistant.tools.registry import TOOL_LABELS
 
 router = APIRouter(prefix="/api/v1")
@@ -587,11 +591,18 @@ async def _execute_run(
         "metadata", {"conversation_id": str(conversation_id), "run_id": run.run_id}
     )
     matters = _MattersRelay(publish)
+    config = _config(conversation_id, user_id, tracker)
+    # 自己定 trace id 作为根 run 的 run_id，并放进 metadata 让节点读到：模型写出的话记下它，
+    # 用户对这段话的反馈才能挂回 LangSmith 上的这条 trace。不指定的话 id 由 LangChain 在
+    # 内部生成，图里拿不到。
+    trace_id = uuid4()
+    config["run_id"] = trace_id
+    config["metadata"][TRACE_ID_KEY] = str(trace_id)
     try:
         relay = _AnswerRelay(publish)
         async for part in app.state.graph.astream(
             graph_input,
-            _config(conversation_id, user_id, tracker),
+            config,
             # tasks 而不是 updates：updates 在节点**跑完**之后才 emit，用它发
             # "正在生成回复"就意味着回答早已流完才显示这句话。tasks 会在任务开始
             # 时先发一次，进度文案才对得上正在发生的事。
@@ -815,16 +826,22 @@ async def chat_stream(
 
 
 def _history_message(
-    index: int, role: Literal["user", "assistant", "decision"], text: str, extra: dict[str, Any]
+    index: int,
+    role: Literal["user", "assistant", "decision"],
+    text: str,
+    extra: dict[str, Any],
+    message_id: str | None = None,
 ) -> ConversationMessage:
     """历史里的一条消息，助手回答带上实时画出来时的任务标题和执行步骤。
 
     这两样实时是从本轮计划和 task_done 里拿的，刷新后计划可能已经换了，只能用写回答时
     记在消息上的那份（`reply_message`）。早先的消息没记，就不带。
     """
+    # 记着 trace 的才是模型写的话，才给评价的句柄。
+    rated_id = message_id if role == "assistant" and extra.get(TRACE_KEY) else None
     task = extra.get(TASK_KEY) if role == "assistant" else None
     if not isinstance(task, dict):
-        return ConversationMessage(index=index, role=role, text=text)
+        return ConversationMessage(index=index, role=role, text=text, message_id=rated_id)
     task_id = str(task.get("id", ""))
     steps = [
         TurnStep(
@@ -843,6 +860,7 @@ def _history_message(
         task_id=task_id,
         title=str(task.get("title", "")) or None,
         steps=steps,
+        message_id=rated_id,
     )
 
 
@@ -866,7 +884,18 @@ def _resume_command(
         resume={interrupt_id: decision} if interrupt_id else decision,
         update={
             "messages": [
-                *(reply_message(note.text, note.tools, task=task) for note in pending.notes),
+                *(
+                    # 沿用生成时定下的 id 和 trace：停在卡上时这句话可能已经被评价过，
+                    # 而此刻已经是另一次执行了。
+                    reply_message(
+                        note.text,
+                        note.tools,
+                        task=task,
+                        trace_id=note.trace_id,
+                        message_id=note.id,
+                    )
+                    for note in pending.notes
+                ),
                 decision_message(payload.approved, pending.title),
             ]
         },
@@ -989,7 +1018,9 @@ async def list_conversation_messages(
         text = _message_text_delta(message.content).strip()
         if not text:
             continue
-        turns.append(_history_message(len(turns), role, text, message.additional_kwargs))
+        turns.append(
+            _history_message(len(turns), role, text, message.additional_kwargs, message.id)
+        )
     # 停在确认卡上时，卡片之前说过的话还在中断里，确认后才进会话。不补上的话，
     # 刷新页面只剩一张卡，用户看不到据以决定的内容（比如余额）。
     pending = _pending_confirmation(snapshot)
@@ -1003,12 +1034,97 @@ async def list_conversation_messages(
                     text=note.text,
                     task_id=pending.task_id,
                     title=titles.get(pending.task_id),
+                    message_id=note.id if note.trace_id else None,
                 )
             )
 
     end = len(turns) if before is None else min(before, len(turns))
     start = max(0, end - limit)
-    return ConversationHistoryResponse(messages=turns[start:end], has_more=start > 0)
+    page = turns[start:end]
+    repository: FeedbackRepository | None = getattr(request.app.state, "feedback", None)
+    rated = [item.message_id for item in page if item.message_id]
+    if repository is not None and rated:
+        ratings = await repository.ratings(user_id, rated)
+        page = [
+            item.model_copy(update={"feedback": ratings.get(item.message_id)})
+            if item.message_id
+            else item
+            for item in page
+        ]
+    return ConversationHistoryResponse(messages=page, has_more=start > 0)
+
+
+@dataclass(frozen=True)
+class _RatedMessage:
+    text: str
+    trace_id: str
+    task_id: str | None
+
+
+def _rated_message(snapshot: Any, message_id: str) -> _RatedMessage | None:
+    """在会话里找到可以评价的那条助手消息，包括停在确认卡上、还没写进会话的话。"""
+    for message in snapshot.values.get("messages", []):
+        if message.type != "ai" or message.id != message_id:
+            continue
+        trace_id = message.additional_kwargs.get(TRACE_KEY)
+        if not trace_id:
+            return None
+        task = message.additional_kwargs.get(TASK_KEY)
+        return _RatedMessage(
+            text=_message_text_delta(message.content).strip(),
+            trace_id=str(trace_id),
+            task_id=str(task.get("id")) if isinstance(task, dict) else None,
+        )
+    pending = _pending_confirmation(snapshot)
+    if pending is None:
+        return None
+    for note in pending.notes:
+        if note.id == message_id and note.trace_id:
+            return _RatedMessage(text=note.text, trace_id=note.trace_id, task_id=pending.task_id)
+    return None
+
+
+@router.put(
+    "/conversations/{conversation_id}/messages/{message_id}/feedback",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def rate_message(
+    conversation_id: UUID,
+    message_id: str,
+    payload: MessageFeedbackRequest,
+    request: Request,
+    user_id: CurrentUser,
+) -> Response:
+    """对一条助手回答点赞或点踩，重复提交覆盖上一次。
+
+    先落本地表再同步 LangSmith：界面上点没点过以本地为准，LangSmith 不可用时不影响评价。
+    消息必须在当前用户自己的会话里查得到，否则任何人都能往任意 trace 上刷反馈。
+    """
+    repository: FeedbackRepository | None = getattr(request.app.state, "feedback", None)
+    if repository is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="接口不可用")
+    snapshot = await request.app.state.graph.aget_state(_config(conversation_id, user_id))
+    if not snapshot.values or snapshot.values.get("user_id") != user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
+    found = _rated_message(snapshot, message_id)
+    if found is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="这条消息不能评价")
+    feedback = MessageFeedback(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        message_id=message_id,
+        trace_id=found.trace_id,
+        rating=payload.rating,
+        reasons=list(dict.fromkeys(payload.reasons)),
+        comment=payload.comment,
+    )
+    first = await repository.save(feedback)
+    sync: FeedbackSync | None = getattr(request.app.state, "feedback_sync", None)
+    if sync is not None:
+        sync.submit(
+            FeedbackEvent(feedback=feedback, first=first, task_id=found.task_id, text=found.text)
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/conversations/{conversation_id}", response_model=AssistantResponse)

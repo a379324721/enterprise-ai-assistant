@@ -25,12 +25,14 @@ from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow
 from enterprise_ai_assistant.graph.serde import checkpoint_serializer
 from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
 from enterprise_ai_assistant.repositories.actions import PostgresActionRepository
+from enterprise_ai_assistant.repositories.feedback import PostgresFeedbackRepository
 from enterprise_ai_assistant.repositories.memories import PostgresMemoryRepository
 from enterprise_ai_assistant.repositories.policies import (
     CachedMilvusPolicyRepository,
     bootstrap_policy_collection,
 )
 from enterprise_ai_assistant.repositories.users import PostgresDemoUserRepository
+from enterprise_ai_assistant.services.feedback import build_feedback_sync
 from enterprise_ai_assistant.services.llm import build_chat_model, build_embeddings
 from enterprise_ai_assistant.services.planning import LLMPlanningService
 from enterprise_ai_assistant.tools import LocalEnterpriseToolProvider
@@ -113,6 +115,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.db_pool = db_pool
         app.state.memories = memories
         app.state.demo_users = PostgresDemoUserRepository(db_pool)
+        app.state.feedback = PostgresFeedbackRepository(db_pool)
+        feedback_sync = build_feedback_sync(settings)
+        if feedback_sync is not None:
+            # 关停时把还在排队的反馈发完再退出，发不完的本地表里也有。
+            stack.push_async_callback(feedback_sync.aclose)
+        app.state.feedback_sync = feedback_sync
         app.state.redis = redis
         app.state.milvus = milvus
         app.state.logger = logger
@@ -129,7 +137,7 @@ def create_app(lifespan_handler: Any = lifespan) -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=True,
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PUT"],
         allow_headers=["Content-Type", "Authorization"],
     )
     application.include_router(router)

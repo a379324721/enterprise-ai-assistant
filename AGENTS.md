@@ -75,6 +75,14 @@ FastAPI + LangGraph 的多 Agent 系统。`graph/workflow.py` 是调度父图，
 - 每条助手消息在 `additional_kwargs["tools_called"]` 记着那一轮调用过的工具（`reply_message` 写入），`_conversation()` 渲染成 `[未调用工具]` / `[调用了：…]` 交给模型，界面只取正文。没有它，Supervisor 分不清哪条回复查过，会谎称调用了系统接口。领域任务的回答另记 `task`（id 和当时的标题）和 `steps`（工具名和成败，不带 data），只给历史接口还原刷新前的标题和步骤气泡，不交给模型；步骤和 `task_done` 推的是同一份，改展示规则要两边一起改。
 - 人工确认的决定用 `SystemMessage`（`decision_message`）追加进 `messages`，不用 `HumanMessage`，否则会被当成用户输入。界面历史显示正文；`_conversation()` 把它渲染成助手一侧的 `[用户在确认卡上选择了…]` 标注交给模型。取消不生成回答（`DomainTaskResult.answer` 为空），这条标注是模型知道"用户取消、没有执行"的唯一依据。
 
+### 点赞点踩
+
+- 评价单位是一条助手消息，不是一轮或一个任务：同一次执行、同一个任务里常有好几段话。句柄是 `AIMessage.id`。
+- `_execute_run` 自己生成 trace id，作为根 run 的 `run_id` 并放进 metadata；模型写的话在**生成处**用 `current_trace_id()` 记下（`AgentNote`、`DomainTaskResult.trace_id`、Supervisor 的 `reply`），不在写进会话时取——确认卡前说的话和并行分支先办完的回答都是在下一次执行里才写进会话的。`AgentNote.id` 同理在生成时定下，恢复时沿用。
+- 消息带 `trace_id` 才能评价；固定文案（取消、转交失败）不带，不要补上。
+- 界面上点没点过以 `message_feedback` 表为准，LangSmith（`key=user_score`）只用来筛 badcase，后台队列串行同步，失败不影响本地。接口必须在当前用户的会话里找到这条消息才接受，否则能往任意 trace 上刷反馈。
+- 前端流式画的回答没有 id，本轮结束后用历史接口最近一页整体替换（`refreshLatest`），不要在前端按任务去对 id。
+
 ### 结构化输出
 
 理解、兜底规划、记忆抽取共用 `_StructuredStage`：schema 以强制调用的工具下发，**不要改回 `response_format`**（DashScope 上的 DeepSeek 不按它生成，字段全靠猜）；下发的 schema 去掉 `maxLength`/`minLength`（强制调用时 DeepSeek 会一直不返回），长度由 pydantic 本地校验；关流式；校验失败时把原输出和错误说明交还模型修正，最多三次。校验器的报错会进 prompt，要写成模型能照着改的中文。

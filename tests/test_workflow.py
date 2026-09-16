@@ -693,6 +693,65 @@ async def test_what_the_agent_says_before_a_confirmation_lands_in_the_conversati
     )
 
 
+@pytest.mark.asyncio
+async def test_each_utterance_keeps_the_trace_that_generated_it() -> None:
+    provider = LocalEnterpriseToolProvider(InMemoryActionRepository(), InMemoryPolicyRepository())
+    graph = build_graph(
+        Workflow(SupervisorAgent(LeavePlanningService())),
+        DomainTaskWorkflow(NarratingLeaveRuntimeFactory(DomainToolRegistry(provider))),
+        InMemorySaver(),
+    )
+    thread = {"thread_id": "thread-trace"}
+    state = initial_state()
+    state["messages"] = [HumanMessage(content="我还有多少年假？下周五请一天年假")]
+    await graph.ainvoke(
+        state, {"configurable": thread, "metadata": {"trace_id": "trace-ask"}}
+    )
+    snapshot = await graph.aget_state({"configurable": thread})
+    found = routes._pending_interrupt(snapshot)
+    assert found is not None
+    interrupt, pending = found
+    [note] = pending.notes
+    assert note.trace_id == "trace-ask"
+
+    command = routes._resume_command(
+        ConfirmationRequest(confirmation_id=pending.confirmation_id, approved=True),
+        interrupt,
+        pending,
+        snapshot.values["tasks"][0],
+    )
+    final = await graph.ainvoke(
+        command, {"configurable": thread, "metadata": {"trace_id": "trace-confirm"}}
+    )
+
+    said, _, answer = final["messages"][1:]
+    # 余额那句是停在卡上之前生成的，确认后才写进会话：trace 和 id 都沿用生成时的，
+    # 用户在卡上评价过的那条和写进会话的是同一条。
+    assert (said.id, said.additional_kwargs["trace_id"]) == (note.id, "trace-ask")
+    assert answer.additional_kwargs["trace_id"] == "trace-confirm"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trace_id", ["trace-hi", None])
+async def test_a_direct_reply_carries_the_trace_of_its_run(trace_id: str | None) -> None:
+    provider = LocalEnterpriseToolProvider(InMemoryActionRepository(), InMemoryPolicyRepository())
+    graph = build_graph(
+        Workflow(SupervisorAgent(DirectPlanningService())),
+        DomainTaskWorkflow(ScriptedRuntimeFactory(DomainToolRegistry(provider))),
+        InMemorySaver(),
+    )
+    state = initial_state()
+    state["messages"] = [HumanMessage(content="你好")]
+    config: dict[str, Any] = {"configurable": {"thread_id": "direct"}}
+    if trace_id:
+        config["metadata"] = {"trace_id": trace_id}
+
+    final = await graph.ainvoke(state, config)
+
+    # 评测和测试直接跑图、不指定 trace，这时写出的话没有可挂反馈的 trace，不给评价。
+    assert final["messages"][-1].additional_kwargs.get("trace_id") == trace_id
+
+
 class NarratingPolicyRuntime(ScriptedRuntime):
     """查了一次没查到，先说一句再换个关键词查，最后作答。"""
 

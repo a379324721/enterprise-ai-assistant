@@ -7,6 +7,7 @@ from uuid import UUID
 import structlog
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.outputs import LLMResult
+from langgraph.config import get_config
 from starlette.types import ASGIApp
 
 from enterprise_ai_assistant.core.config import Settings
@@ -20,6 +21,23 @@ from enterprise_ai_assistant.core.metrics import (
 )
 
 logger = structlog.get_logger()
+
+#: 执行配置 metadata 里记本次执行 trace id 的键。trace id 由 API 层在启动执行时生成，
+#: 同时作为根 run 的 run_id，LangSmith 上的 trace 就是这个 id。
+TRACE_ID_KEY = "trace_id"
+
+
+def current_trace_id() -> str | None:
+    """当前图执行的 trace id；不在图执行里、或调用方没指定（评测、测试）时为 None。
+
+    模型写出的话要记下它，用户对这段话的反馈才能挂回 LangSmith 上的那条 trace。
+    """
+    try:
+        config = get_config()
+    except RuntimeError:
+        return None
+    value = (config.get("metadata") or {}).get(TRACE_ID_KEY)
+    return str(value) if value else None
 
 
 def _usage_from(response: LLMResult) -> tuple[int, int]:

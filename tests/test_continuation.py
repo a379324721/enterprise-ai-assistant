@@ -180,7 +180,8 @@ async def _turn(graph: Any, text: str) -> dict[str, Any]:
         "request_id": uuid4(),
     }
     result: dict[str, Any] = await graph.ainvoke(
-        state, {"configurable": {"thread_id": str(CONVERSATION_ID)}}
+        state,
+        {"configurable": {"thread_id": str(CONVERSATION_ID)}, "metadata": {"trace_id": "t"}},
     )
     return result
 
@@ -398,6 +399,8 @@ async def test_cancel_with_nothing_unfinished_is_ignored() -> None:
     # 指认不到任何未办完的事项：如实说没有可放弃的，不能让用户以为撤掉了。
     assert state["last_answer"] == NOTHING_TO_CANCEL_REPLY
     assert state["messages"][-1].content == NOTHING_TO_CANCEL_REPLY
+    # 固定文案不是模型写的，不记 trace，界面上也就不给点赞点踩。
+    assert "trace_id" not in state["messages"][-1].additional_kwargs
 
 
 @pytest.mark.asyncio

@@ -91,6 +91,39 @@ COMMENT ON COLUMN user_memories.created_at IS
     '该 key 首次写入的时间；覆盖写不更新此列。';
 COMMENT ON COLUMN user_memories.updated_at IS
     '最后一次覆盖写的时间。召回按此列倒序取前 N 条，越新的画像越可能仍然有效。';
+
+CREATE TABLE IF NOT EXISTS message_feedback (
+    user_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    conversation_id UUID NOT NULL,
+    trace_id TEXT NOT NULL,
+    rating TEXT NOT NULL,
+    reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
+    comment TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- 同一个人对同一条回答只有一条反馈：改主意是覆盖，不是再记一票。
+    PRIMARY KEY (user_id, message_id)
+);
+
+COMMENT ON TABLE message_feedback IS
+    '用户对助手回答的点赞点踩。界面显示是否评价过以此表为准；同一份反馈另行同步到 '
+    'LangSmith 的 trace 上用于筛 badcase，那边写失败不影响这里。';
+COMMENT ON COLUMN message_feedback.user_id IS
+    '评价人，取自访问令牌的 sub 声明，不接受客户端指定。';
+COMMENT ON COLUMN message_feedback.message_id IS
+    '被评价的助手消息 id，即检查点里 AIMessage.id。只有模型写的消息可以评价。';
+COMMENT ON COLUMN message_feedback.conversation_id IS
+    '消息所在会话。清空会话不连带删除，反馈仍可用于回溯。';
+COMMENT ON COLUMN message_feedback.trace_id IS
+    '写出这段话的那次图执行在 LangSmith 上的 trace id。确认卡前说的话在上一次执行里生成，'
+    '不等于写进会话时的那次。';
+COMMENT ON COLUMN message_feedback.rating IS 'up 或 down。';
+COMMENT ON COLUMN message_feedback.reasons IS
+    '点踩理由的枚举值数组：fabricated、misunderstood、wrong_fields、overreach、other。';
+COMMENT ON COLUMN message_feedback.comment IS '用户补充说明的原文，选填。';
+COMMENT ON COLUMN message_feedback.created_at IS '第一次评价的时间。';
+COMMENT ON COLUMN message_feedback.updated_at IS '最后一次修改评价的时间。';
 """
 
 

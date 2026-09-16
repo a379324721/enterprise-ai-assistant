@@ -32,7 +32,11 @@ type Message = {
   // 从这一轮的 result.tasks 里取到任务标题记在消息上。历史消息由接口带回写回答时的标题，
   // 早先没记下的历史消息没有。
   taskId?: string; agent?: string; title?: string;
+  // 只有模型写的、已经写进会话的回答才有 messageId，有才显示点赞点踩。流式画出来的回答
+  // 这时还没有，本轮结束后从历史接口取回。feedback 是自己已经给过的评价。
+  messageId?: string; feedback?: Rating | null;
 };
+type Rating = "up" | "down";
 //: 延迟渲染那一轮攒下的回答段落，一段对应一个任务。
 type AnswerSegment = {taskId?: string; agent?: string; text: string};
 type SseMessage = {event: string; data: unknown};
@@ -40,6 +44,7 @@ type SseMessage = {event: string; data: unknown};
 type HistoryMessage = {
   index: number; role: "user" | "assistant" | "decision"; text: string;
   task_id: string | null; title: string | null; steps: TurnStep[];
+  message_id: string | null; feedback: Rating | null;
 };
 
 /** 把历史消息还原成实时画出来的样子：步骤排在所属回答前面，回答带任务标题。 */
@@ -47,6 +52,7 @@ function fromHistory(items: HistoryMessage[]): Message[] {
   return items.flatMap((item): Message[] => {
     const message: Message = {role: item.role, text: item.text, index: item.index};
     if (item.task_id) { message.taskId = item.task_id; message.title = item.title ?? undefined; }
+    if (item.message_id) { message.messageId = item.message_id; message.feedback = item.feedback; }
     return item.steps.length > 0 ? [{role: "steps", text: "", steps: item.steps}, message] : [message];
   });
 }
@@ -166,6 +172,71 @@ async function consumeSse(
   }
 }
 
+//: 点踩理由，取值和后端 FeedbackReason 一致。按领域 Agent 的原则分，不按具体 badcase 列，
+//: 在 LangSmith 上按理由筛就知道是哪条原则被违反了。
+const FEEDBACK_REASONS: {value: string; label: string}[] = [
+  {value: "fabricated", label: "内容不实 / 编造"},
+  {value: "misunderstood", label: "没理解我的意思"},
+  {value: "wrong_fields", label: "信息填错了"},
+  {value: "overreach", label: "做了我没让做的事"},
+  {value: "other", label: "其他"},
+];
+const PANEL_WIDTH = 300;
+const PANEL_HEIGHT = 250;
+
+type RateFn = (messageId: string, rating: Rating, reasons?: string[], comment?: string) => Promise<boolean>;
+
+/** 点踩后补充理由的浮层。
+ *
+ *  用 fixed 定位浮在对话上面，不插进消息流：展开在消息之间会把下面的对话整体往下推。
+ *  位置按按钮算，上方放得下就放上方（被评价的多半是靠下的最新回答），否则放下方。
+ *  踩在点按钮时已经提交了，这里只补理由，点跳过也不会丢这一票。
+ */
+function DownvotePanel({anchor, messageId, rate, onClose}: {
+  anchor: DOMRect; messageId: string; rate: RateFn; onClose: () => void;
+}) {
+  const [reasons, setReasons] = useState<string[]>([]);
+  const [comment, setComment] = useState("");
+  const [state, setState] = useState<"editing" | "sending" | "sent" | "failed">("editing");
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    function onPointer(event: MouseEvent) {
+      if (panelRef.current && !panelRef.current.contains(event.target as Node)) onClose();
+    }
+    function onKey(event: KeyboardEvent) { if (event.key === "Escape") onClose(); }
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onPointer); document.removeEventListener("keydown", onKey); };
+  }, [onClose]);
+
+  async function submit() {
+    setState("sending");
+    if (!await rate(messageId, "down", reasons, comment)) { setState("failed"); return; }
+    setState("sent");
+    window.setTimeout(onClose, 1200);
+  }
+
+  const top = anchor.top >= PANEL_HEIGHT + 8 ? anchor.top - PANEL_HEIGHT - 6 : anchor.bottom + 6;
+  const left = Math.max(8, Math.min(anchor.left, window.innerWidth - PANEL_WIDTH - 8));
+  return <div className="feedbackPanel" ref={panelRef} style={{top, left, width: PANEL_WIDTH}}>
+    {state === "sent" ? <p className="thanks">感谢反馈，我们会据此改进</p> : <>
+      <strong>哪里不对？（可多选）</strong>
+      <div className="reasons">{FEEDBACK_REASONS.map((reason) => <button
+        key={reason.value}
+        className={reasons.includes(reason.value) ? "chosen" : ""}
+        onClick={() => setReasons((old) => old.includes(reason.value) ? old.filter((item) => item !== reason.value) : [...old, reason.value])}
+      >{reason.label}</button>)}</div>
+      <textarea value={comment} maxLength={500} rows={3} placeholder="补充说明（选填）" onChange={(event) => setComment(event.target.value)}/>
+      {state === "failed" && <p className="panelError">提交失败，请重试</p>}
+      <div className="panelActions">
+        <button onClick={onClose}>跳过</button>
+        <button className="primary" disabled={state === "sending" || (reasons.length === 0 && !comment.trim())} onClick={() => void submit()}>提交</button>
+      </div>
+    </>}
+  </div>;
+}
+
 /** 演示登录：只有名字，没有凭据。正式部署由企业 SSO 取代这一屏。 */
 function LoginView({onSignedIn}: {onSignedIn: (session: Session) => void}) {
   const [name, setName] = useState("");
@@ -252,6 +323,9 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
   // 已经画进对话流的步骤。确认前后的两次 done 都带着同一轮更早的步骤，不去重会画两遍。
   const shownSteps = useRef<Set<string>>(new Set());
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  // 正在补充点踩理由的那条回答和按钮位置。同一时刻只开一个浮层。
+  const [downvoting, setDownvoting] = useState<{messageId: string; anchor: DOMRect} | null>(null);
+  const closeDownvote = useCallback(() => setDownvoting(null), []);
 
   // 向上翻页会把更早的消息插到当前内容上方，浏览器只保留 scrollTop 的数值，于是
   // 视口相对内容整体上移——用户刚才在看的那条被推到屏幕外，看着就像"跳到最上面"。
@@ -349,6 +423,74 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
       if (!signal?.aborted) setLoadingHistory(false);
     }
   }, [authHeaders, fetchActions, loadHistory, session.conversationId]);
+
+  /** 本轮结束后，用历史接口的最近一页替换屏幕上对应的那一段。
+   *
+   *  点赞点踩要用消息 id，可流式画出来的回答在写进会话之前就出现了，那时没有 id；确认卡前
+   *  说的话要到确认后才写进会话。与其在前端按任务、按顺序去对 id，不如直接换成会话里的
+   *  那份：历史接口本来就要能照原样画回实时的样子，只有一套数据来源就不会对错。
+   *  取不到就算了，只是这几条暂时没有评价按钮。
+   */
+  const refreshLatest = useCallback(async () => {
+    try {
+      const response = await fetch(
+        `/api/v1/conversations/${session.conversationId}/messages?limit=${PAGE_SIZE}`,
+        {headers: authHeaders},
+      );
+      if (!response.ok) return;
+      const body = await response.json() as {messages: HistoryMessage[]; has_more: boolean};
+      if (body.messages.length === 0) return;
+      const first = body.messages[0].index;
+      setMessages((old) => {
+        // 保留这一页之前的内容：往上翻过的历史带着 index，本轮实时画的没有。
+        let cut = old.findIndex((message) => message.role !== "steps" && (message.index === undefined || message.index >= first));
+        if (cut < 0) cut = old.length;
+        // 步骤排在所属回答前面，回答被替换，它前面的步骤也得一起换掉。
+        while (cut > 0 && old[cut - 1].role === "steps") cut -= 1;
+        return [...old.slice(0, cut), ...fromHistory(body.messages)];
+      });
+      // 往上翻完了的会话，最近一页的 has_more 会是 true，但更早的已经在屏幕上了。
+      setHasMore((old) => old && body.has_more);
+    } catch { /* 见上 */ }
+  }, [authHeaders, session.conversationId]);
+
+  // 每条消息上一次评价请求。点踩和紧接着补理由是两次请求，并发发出去的话，先发的"只有踩"
+  // 可能后到，把理由覆盖掉；同一条消息的请求一个接一个发。
+  const ratingQueue = useRef(new Map<string, Promise<unknown>>());
+
+  /** 提交评价，先改界面再发请求，失败退回原来的状态。 */
+  const rate = useCallback<RateFn>(async (messageId, rating, reasons = [], comment = "") => {
+    let previous: Rating | null = null;
+    let captured = false;
+    setMessages((old) => old.map((message) => {
+      if (message.messageId !== messageId) return message;
+      if (!captured) { previous = message.feedback ?? null; captured = true; }
+      return {...message, feedback: rating};
+    }));
+    const send = async () => {
+      try {
+        const response = guard(await fetch(
+          `/api/v1/conversations/${session.conversationId}/messages/${messageId}/feedback`,
+          {method: "PUT", headers: authHeaders, body: JSON.stringify({rating, reasons, comment: comment.trim() || null})},
+        ));
+        return response.ok;
+      } catch { return false; }
+    };
+    const request = (ratingQueue.current.get(messageId) ?? Promise.resolve()).then(send);
+    ratingQueue.current.set(messageId, request);
+    const ok = await request;
+    if (!ok) {
+      setMessages((old) => old.map((message) => message.messageId === messageId ? {...message, feedback: previous} : message));
+    }
+    return ok;
+  }, [authHeaders, guard, session.conversationId]);
+
+  function downvote(message: Message, button: HTMLElement) {
+    if (!message.messageId) return;
+    // 先把踩记上：用户常常点完就走，理由是补充，不能等填完才算数。
+    if (message.feedback !== "down") void rate(message.messageId, "down");
+    setDownvoting({messageId: message.messageId, anchor: button.getBoundingClientRect()});
+  }
 
   useEffect(() => {
     // StrictMode 在开发模式下会把 effect 跑两遍，切换用户也会重跑；没有中止信号的话，
@@ -562,6 +704,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
         body: JSON.stringify({message: text, request_id: crypto.randomUUID(), conversation_id: session.conversationId}),
       }));
       await consumeSse(response, handleStreamEvent);
+      await refreshLatest();
     } catch (issue) {
       const message = describeFailure(issue, "系统异常");
       setMessages((old) => old.map((item, index) => index === old.length - 1 ? {...item, text: item.text || message} : item));
@@ -598,6 +741,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
       // 单据先取回来，再和回答、任务面板一次性提交：React 会把这几个 setState
       // 合成一次渲染，三者同一帧出现，转圈在此之前一直转着。
       if (completed) applyCompletion(completed, await fetchActions(), deferredSegments.current);
+      await refreshLatest();
     } catch (issue) {
       setMessages((old) => [...old, {role: "assistant", text: describeFailure(issue, "系统异常")}]);
       // 请求没走通，服务端那边仍然停在等确认上；卡片必须放回去，否则用户再没有入口。
@@ -624,19 +768,35 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
           className="messages"
           ref={messagesRef}
           onScroll={(event) => {
+            // 浮层是按按钮位置 fixed 摆的，不跟着滚；对话一滚就收起，免得它指着别的消息。
+            if (downvoting) setDownvoting(null);
             const box = event.currentTarget;
             // 留 40px 容差：流式输出时行高不断变化，要求严格贴底会被误判成用户已经离开底部。
             stickToBottom.current = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
           }}
         >
           {hasMore && <button className="loadEarlier" disabled={loadingHistory} onClick={() => void loadEarlier()}>{loadingHistory ? "加载中…" : "加载更早的消息"}</button>}
-          {messages.map((message, index) => <div key={message.index ?? `live-${index}`} className={`message ${message.role}`}>
-            {message.role === "steps" && message.steps?.map((step) => <span key={step.id} className={step.success ? "step ok" : "step fail"}>{step.success ? "✓" : "✕"} {step.label}</span>)}
-            {sectionLabel(message) && <span className="section">{sectionLabel(message)}</span>}
-            {message.role === "assistant" ? <MarkdownMessage text={message.text}/> : message.role === "steps" ? null : message.text}
-            {busy && index === messages.length - 1 && message.role === "assistant" && <span className="cursor"/>}
-          </div>)}
-          {busy && !streamingAnswer && <div className="thinking"><span className="spinner"/>{progress || "正在处理…"}</div>}
+          {messages.map((message, index) => {
+            const bubble = <div key={message.index ?? `live-${index}`} className={`message ${message.role}`}>
+              {message.role === "steps" && message.steps?.map((step) => <span key={step.id} className={step.success ? "step ok" : "step fail"}>{step.success ? "✓" : "✕"} {step.label}</span>)}
+              {sectionLabel(message) && <span className="section">{sectionLabel(message)}</span>}
+              {message.role === "assistant" ? <MarkdownMessage text={message.text}/> : message.role === "steps" ? null : message.text}
+              {busy && index === messages.length - 1 && message.role === "assistant" && <span className="cursor"/>}
+            </div>;
+            if (!message.messageId) return bubble;
+            // 按钮挂在气泡下面，悬停才出现；评价过的一直亮着，刷新后也在。
+            return <div key={message.index ?? `live-${index}`} className={`rated${message.feedback ? " hasFeedback" : ""}`}>
+              {bubble}
+              <div className="feedback">
+                <button title="回答得好" aria-pressed={message.feedback === "up"} className={message.feedback === "up" ? "on" : ""}
+                  onClick={() => { setDownvoting(null); if (message.feedback !== "up" && message.messageId) void rate(message.messageId, "up"); }}>👍</button>
+                <button title="回答有问题" aria-pressed={message.feedback === "down"} className={message.feedback === "down" ? "on" : ""}
+                  onClick={(event) => downvote(message, event.currentTarget)}>👎</button>
+              </div>
+            </div>;
+          })}
+          {downvoting && <DownvotePanel key={downvoting.messageId} anchor={downvoting.anchor} messageId={downvoting.messageId} rate={rate} onClose={closeDownvote}/>}
+        {busy && !streamingAnswer && <div className="thinking"><span className="spinner"/>{progress || "正在处理…"}</div>}
         </div>
         {result?.pending_confirmation && <div className="confirmCard"><div className="risk">需要你的确认</div><strong>{result.pending_confirmation.title}</strong>
           {/* 字段名和取值标签由后端按工具入参契约给出，这里只负责排版。 */}

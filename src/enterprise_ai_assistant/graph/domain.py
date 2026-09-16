@@ -26,6 +26,7 @@ from enterprise_ai_assistant.core.models import (
     TaskStatus,
     ToolResult,
 )
+from enterprise_ai_assistant.core.observability import current_trace_id
 from enterprise_ai_assistant.graph.state import DomainTaskState
 from enterprise_ai_assistant.tools import BusinessToolOutcome, ToolContext, ToolRisk
 from enterprise_ai_assistant.tools.registry import HANDOFF_TOOL
@@ -217,7 +218,9 @@ class DomainTaskWorkflow:
                 # 只留在参数里时，实测它不当作说过的话，回答里又把余额报一遍。
                 recorded = response.model_copy(update={"content": said})
             if text:
-                notes.append(AgentNote(text=text, tools=tools_so_far))
+                notes.append(
+                    AgentNote(text=text, tools=tools_so_far, trace_id=current_trace_id())
+                )
 
         retry_required = bool(validation_messages) or (pending is None and not executed)
         domain_messages = [
@@ -481,6 +484,7 @@ class DomainTaskWorkflow:
             tool_results=list(state.get("domain_tool_results", [])),
             draft=state.get("domain_draft") if status == TaskStatus.WAITING_INPUT else None,
             notes=list(state.get("domain_notes", [])),
+            trace_id=current_trace_id(),
         )
 
 
