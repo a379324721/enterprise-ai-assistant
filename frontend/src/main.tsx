@@ -137,6 +137,16 @@ async function readError(response: Response, fallback: string): Promise<string> 
   return fallback;
 }
 
+/** 生成请求 id。不用 crypto.randomUUID：它只在 HTTPS 和 localhost 下存在，http 部署时调用直接抛
+ * TypeError，消息发不出去，界面还会显示成"无法连接服务器"。getRandomValues 没有这个限制。 */
+function newRequestId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 /** 把异常翻成用户看得懂的一句话。fetch 连不上服务端时抛 TypeError。 */
 function describeFailure(issue: unknown, fallback = "加载失败"): string {
   if (issue instanceof TypeError) return "无法连接服务器，请确认后端已启动";
@@ -701,7 +711,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
     try {
       const response = guard(await fetch("/api/v1/chat/stream", {
         method: "POST", headers: authHeaders,
-        body: JSON.stringify({message: text, request_id: crypto.randomUUID(), conversation_id: session.conversationId}),
+        body: JSON.stringify({message: text, request_id: newRequestId(), conversation_id: session.conversationId}),
       }));
       await consumeSse(response, handleStreamEvent);
       await refreshLatest();
