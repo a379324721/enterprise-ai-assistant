@@ -79,8 +79,8 @@ def wired(monkeypatch: pytest.MonkeyPatch) -> tuple[FakePool, FakeRedis, FakeMil
     return pool, redis, milvus
 
 
-async def _noop_bootstrap(client: Any, embeddings: Any) -> None:
-    del client, embeddings
+async def _noop_bootstrap(client: Any, embeddings: Any, **kwargs: Any) -> None:
+    del client, embeddings, kwargs
 
 
 @pytest.mark.asyncio
@@ -113,8 +113,8 @@ async def test_policy_bootstrap_failure_does_not_block_startup(
     """制度语料初始化失败只降级检索能力，不应让整个服务起不来。"""
     checkpoint_pool = FakeCheckpointPool()
 
-    async def exploding_bootstrap(client: Any, embeddings: Any) -> None:
-        del client, embeddings
+    async def exploding_bootstrap(client: Any, embeddings: Any, **kwargs: Any) -> None:
+        del client, embeddings, kwargs
         raise RuntimeError("milvus unreachable")
 
     monkeypatch.setattr(main, "bootstrap_policy_collection", exploding_bootstrap)

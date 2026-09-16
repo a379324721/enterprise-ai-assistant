@@ -49,5 +49,8 @@ def build_embeddings(settings: Settings | None = None) -> OpenAIEmbeddings:
         check_embedding_ctx_length=False,
         # 明确请求 JSON 浮点向量，因为并非所有服务都支持 base64。
         model_kwargs={"encoding_format": "float"},
+        # DashScope 一次最多接受 10 条，超过直接 400；LangChain 默认 1000 条一批，
+        # 制度语料一过 10 条，启动时的语料初始化就整批失败，检索一直落空。
+        chunk_size=10,
         max_retries=3,
     )

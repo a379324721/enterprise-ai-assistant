@@ -118,6 +118,7 @@ FastAPI + LangGraph 的多 Agent 系统。`graph/workflow.py` 是调度父图，
 - 模型按角色配思考和温度：Supervisor 关思考、温度 0（分类要稳定）；领域 Agent 开思考、预算 2000、温度 0.6（关思考或预算太小会缺字段直接提交，不限预算会长时间推理）。
 - 部署前先读 `docs/deployment.md`。
 - `POLICY_VECTOR_URI` 是本地文件路径时走 Milvus Lite，同一个文件只能被一个进程打开：别的进程要读制度向量时先停服务，多副本改用 Milvus 服务。
+- 制度语料在 `repositories/policies.py` 的 `POLICY_DOCUMENTS`，Milvus 和内存实现共用。启动时按内容哈希（含 embedding 模型名）同步：只重算增改的条目、删掉语料里没有的，维度变了整个重建。改条款沿用原 id；`POLICY_REBUILD` 只在向量本身坏了时临时打开。DashScope 的 embedding 一批最多 10 条，`build_embeddings` 的 `chunk_size` 不要调大。
 - 本地 `.env` 里 `DEV_LOGIN_ENABLED=true` 时 `test_dev_token_endpoint_is_hidden_by_default` 会失败，是环境差异。
 
 ## 代码风格

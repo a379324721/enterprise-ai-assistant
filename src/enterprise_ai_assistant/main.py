@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         embeddings = build_embeddings(settings)
         try:
-            await bootstrap_policy_collection(milvus, embeddings)
+            await bootstrap_policy_collection(milvus, embeddings, rebuild=settings.policy_rebuild)
         except Exception:
             # 语料初始化失败只影响制度检索，工具会返回明确的失败结果而不是编造内容；
             # 让进程继续启动，其余领域能力和健康检查仍然可用。
