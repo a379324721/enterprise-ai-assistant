@@ -157,7 +157,7 @@ async def _confirm(graph: Any) -> str:
 async def test_independent_tasks_run_together_and_confirm_one_card_at_a_time() -> None:
     CALLS.clear()
     graph = build_graph(
-        Workflow(SupervisorAgent(TwoTasks())),
+        Workflow(SupervisorAgent(TwoTasks()), parallel_tasks=True),
         DomainTaskWorkflow(RendezvousFactory()),
         InMemorySaver(),
     )
@@ -208,7 +208,7 @@ async def test_checkpoints_restore_with_an_explicit_type_allowlist(
     """
     CALLS.clear()
     graph = build_graph(
-        Workflow(SupervisorAgent(TwoTasks())),
+        Workflow(SupervisorAgent(TwoTasks()), parallel_tasks=True),
         DomainTaskWorkflow(RendezvousFactory()),
         InMemorySaver(serde=checkpoint_serializer()),
     )

@@ -80,6 +80,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             memory_enabled=settings.memory_enabled,
             recall_limit=settings.memory_recall_limit,
             recent_action_limit=settings.memory_recent_action_limit,
+            parallel_tasks=settings.parallel_tasks_enabled,
         )
         # 登记在数据库连接池之后，释放时先于连接池执行：后台记忆抽取写完再关连接。
         stack.push_async_callback(workflow.drain_background)

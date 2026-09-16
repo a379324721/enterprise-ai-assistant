@@ -96,7 +96,7 @@ FastAPI + LangGraph 的多 Agent 系统。`graph/workflow.py` 是调度父图，
 ### 执行、并行与流式
 
 - 图执行跑在 `RunManager` 的后台任务里，SSE 只是订阅者；断开默认不中断（`RUN_ON_DISCONNECT=continue`），重连带 `Last-Event-ID` 补发。多副本需要跨进程的 `StreamBridge`。
-- 依赖都完成的任务由 `select_task` 一次挑出、`Send` 并行派发，`apply_domain_result` 等整批结束后按**计划顺序**归并，每归并一个推一条 `task_done`（带执行步骤）。领域子图包在函数里调用，并行分支写带归并规则的 `domain_results`。
+- 默认串行（`PARALLEL_TASKS_ENABLED=false`），`select_task` 每批只取计划顺序里第一个可执行的任务：并行时几件事会在同一轮里一起追问，用户只答一件，续跑会把所有待补充的任务放回队列，没答的那件被原样再问一遍。打开后依赖都完成的任务由 `select_task` 一次挑出、`Send` 并行派发，`apply_domain_result` 等整批结束后按**计划顺序**归并，每归并一个推一条 `task_done`（带执行步骤）。领域子图包在函数里调用，并行分支写带归并规则的 `domain_results`。
 - 两个分支可能同时停在确认卡上，恢复必须按中断 id 指明（`_resume_command`）。
 - 执行并行、展示串行：`_AnswerRelay` 同一时刻只转发一段回答，按 `langgraph_checkpoint_ns` 区分、`chunk_position="last"` 判断结束，压住回答开头，见到工具调用增量就当这段话结束、此后不再转发（前端不会覆盖已画出的文字）。
 - 检查点序列化器（`graph/serde.py`）自动登记 `core.models` 里的类型；进状态的新类型放在那个模块里。

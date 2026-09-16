@@ -104,14 +104,14 @@ class DraftAwareRuntime:
                 "args": {
                     "missing_fields": ["end_date"],
                     "question": "预计哪天返回？",
-                    "known_fields": [
-                        {"name": "destination", "label": "目的地", "value": "上海"}
-                    ],
+                    "known_fields": [{"name": "destination", "label": "目的地", "value": "上海"}],
                 },
             }
         else:
-            tool = "search_travel_policy" if self.name == AgentName.TRAVEL else (
-                "search_general_policy"
+            tool = (
+                "search_travel_policy"
+                if self.name == AgentName.TRAVEL
+                else ("search_general_policy")
             )
             call = {"name": tool, "args": {"query": "制度"}}
         return AIMessage(
@@ -154,17 +154,13 @@ def _resolution(
         requires_task_planning=planning,
         turn_relation=relation,
         target_plan_id=target,
-        tasks=[
-            TaskOutline(title=request, domain=domain, objective=request) for domain in domains
-        ],
+        tasks=[TaskOutline(title=request, domain=domain, objective=request) for domain in domains],
         reply="" if planning or relation == TurnRelation.CANCEL else "不客气",
     )
 
 
 def _build(planning: ScriptedPlanning) -> tuple[Any, DraftAwareRuntimeFactory]:
-    provider = LocalEnterpriseToolProvider(
-        InMemoryActionRepository(), InMemoryPolicyRepository()
-    )
+    provider = LocalEnterpriseToolProvider(InMemoryActionRepository(), InMemoryPolicyRepository())
     runtimes = DraftAwareRuntimeFactory(DomainToolRegistry(provider))
     graph = build_graph(
         Workflow(SupervisorAgent(planning)), DomainTaskWorkflow(runtimes), InMemorySaver()
@@ -195,9 +191,7 @@ async def test_supplement_resumes_the_waiting_task_without_replanning() -> None:
     planning = ScriptedPlanning(
         [
             _resolution("去上海出差并查考勤制度"),
-            _resolution(
-                "去上海出差当天往返并查考勤制度", relation=TurnRelation.CONTINUE
-            ),
+            _resolution("去上海出差当天往返并查考勤制度", relation=TurnRelation.CONTINUE),
         ]
     )
     graph, runtimes = _build(planning)
@@ -444,9 +438,7 @@ async def test_business_request_without_tasks_falls_back_to_the_planner() -> Non
 
 @pytest.mark.asyncio
 async def test_continue_without_a_waiting_task_falls_back_to_planning() -> None:
-    planning = ScriptedPlanning(
-        [_resolution("查询差旅制度", relation=TurnRelation.CONTINUE)]
-    )
+    planning = ScriptedPlanning([_resolution("查询差旅制度", relation=TurnRelation.CONTINUE)])
     graph, _ = _build(planning)
 
     state = await _turn(graph, "差旅制度")
@@ -479,9 +471,7 @@ class FailOnceRuntimeFactory(DraftAwareRuntimeFactory):
             if "previous_draft" in payload and factory.fail_next_resume:
                 factory.fail_next_resume = False
                 raise RuntimeError("Error code: 403 - Free quota exhausted")
-            return await original(
-                task_objective, messages, task_id=task_id, answering=answering
-            )
+            return await original(task_objective, messages, task_id=task_id, answering=answering)
 
         runtime.decide = decide  # type: ignore[method-assign]
         return runtime
@@ -496,9 +486,7 @@ async def test_a_resume_that_crashed_can_be_resumed_again() -> None:
             _resolution("去上海出差单程", relation=TurnRelation.CONTINUE),
         ]
     )
-    provider = LocalEnterpriseToolProvider(
-        InMemoryActionRepository(), InMemoryPolicyRepository()
-    )
+    provider = LocalEnterpriseToolProvider(InMemoryActionRepository(), InMemoryPolicyRepository())
     runtimes = FailOnceRuntimeFactory(DomainToolRegistry(provider))
     graph = build_graph(
         Workflow(SupervisorAgent(planning)), DomainTaskWorkflow(runtimes), InMemorySaver()
@@ -534,3 +522,31 @@ async def test_first_attempt_crash_leaves_the_task_pending_not_waiting() -> None
     [recovered] = recover_interrupted(tasks, {})
 
     assert recovered.status == TaskStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_independent_tasks_wait_while_an_earlier_one_asks_for_input() -> None:
+    # 默认串行：并行时两件事会在同一轮里一起追问，用户只答一件，没答的那件下一轮又被原样问一遍。
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差，顺便查考勤制度", domains=[AgentName.TRAVEL, AgentName.POLICY]),
+            _resolution("当天往返", relation=TurnRelation.CONTINUE),
+        ]
+    )
+    graph, runtimes = _build(planning)
+
+    first = await _turn(graph, "去上海出差，顺便查考勤制度")
+
+    assert _statuses(first) == [
+        ("task-1", TaskStatus.WAITING_INPUT),
+        ("task-2", TaskStatus.PENDING),
+    ]
+    assert [task_id for task_id, _ in runtimes.seen] == ["task-1"]
+
+    second = await _turn(graph, "当天往返")
+
+    assert _statuses(second) == [
+        ("task-1", TaskStatus.COMPLETED),
+        ("task-2", TaskStatus.COMPLETED),
+    ]
+    assert [task_id for task_id, _ in runtimes.seen] == ["task-1", "task-1", "task-2"]

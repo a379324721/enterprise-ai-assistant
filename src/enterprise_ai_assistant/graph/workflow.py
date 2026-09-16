@@ -179,8 +179,13 @@ class Workflow:
         memory_enabled: bool = True,
         recall_limit: int = 20,
         recent_action_limit: int = 5,
+        parallel_tasks: bool = False,
     ) -> None:
         self.supervisor = supervisor
+        # 默认一次只派发一个任务。并行时几个任务会同时缺字段、在同一轮里一起追问，
+        # 用户只回答其中一件，续跑又会把所有待补充的任务放回队列，没回答的那件原样再问一遍。
+        # 串行时第一个任务停下来等补充，本轮就结束，后面的任务等它办完才开始问。
+        self._parallel_tasks = parallel_tasks
         self._history_window = history_window
         self._digest_turns = digest_turns
         self._domain_window = domain_window
@@ -561,12 +566,15 @@ class Workflow:
         return {"user_goal": plan.user_goal, "tasks": tasks}
 
     async def select_task(self, state: AssistantState) -> dict[str, Any]:
-        """挑出本批可以同时执行的任务。
+        """挑出本批要执行的任务。
 
-        依赖都已完成的任务互不影响，一次全部派发、并行执行：一轮里"查年假余额"和"查报销
-        制度"不必排队等前一个的模型调用。有依赖的任务要等前置任务完成后的下一批。
+        开了并行时，依赖都已完成的任务一次全部派发：一轮里"查年假余额"和"查报销制度"
+        不必排队等前一个的模型调用。关着时只取计划顺序里的第一个。有依赖的任务要等前置
+        任务完成后的下一批。
         """
         runnable = self.supervisor.runnable_tasks(state["tasks"])
+        if not self._parallel_tasks:
+            runnable = runnable[:1]
         if not runnable:
             return {
                 "active_task_id": None,
