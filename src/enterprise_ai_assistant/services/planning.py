@@ -167,7 +167,7 @@ class PlanningService(Protocol):
     ) -> MemoryExtraction: ...
 
 
-class LLMPlanningService:
+class LLMPlanningService(PlanningService):
     """通过两阶段 LLM 推理，避免路由退化为关键词意图匹配。"""
 
     def __init__(self, model: ChatOpenAI) -> None:

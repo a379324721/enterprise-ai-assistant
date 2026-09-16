@@ -9,6 +9,7 @@ import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
+from enterprise_ai_assistant.agents.domain_runtime import DomainRuntimeProvider
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.api.routes import _execute_run
 from enterprise_ai_assistant.core.models import (
@@ -29,13 +30,14 @@ from enterprise_ai_assistant.graph.state import DomainTaskState
 from enterprise_ai_assistant.graph.workflow import HANDOFF_EXHAUSTED_REPLY, Workflow, build_graph
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
+from enterprise_ai_assistant.services.planning import PlanningService
 from enterprise_ai_assistant.tools import LocalEnterpriseToolProvider, ToolContext
 from enterprise_ai_assistant.tools.registry import DomainToolRegistry, RegisteredTool
 
 CONVERSATION_ID = UUID("00000000-0000-0000-0000-000000000021")
 
 
-class OnePlan:
+class OnePlan(PlanningService):
     def __init__(self, tasks: list[TaskOutline]) -> None:
         self._tasks = tasks
 
@@ -110,7 +112,7 @@ class HandoffRuntime:
         return result
 
 
-class HandoffRuntimeFactory:
+class HandoffRuntimeFactory(DomainRuntimeProvider):
     def __init__(self, routes: dict[AgentName, str]) -> None:
         provider = LocalEnterpriseToolProvider(
             InMemoryActionRepository(), InMemoryPolicyRepository()

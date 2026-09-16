@@ -7,6 +7,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
+from enterprise_ai_assistant.agents.domain_runtime import DomainRuntimeProvider
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.api import routes
 from enterprise_ai_assistant.api.schemas import ConfirmationRequest
@@ -167,7 +168,7 @@ class ScriptedRuntime:
         return result
 
 
-class ScriptedRuntimeFactory:
+class ScriptedRuntimeFactory(DomainRuntimeProvider):
     def __init__(self, registry: DomainToolRegistry) -> None:
         self.registry = registry
 

@@ -11,6 +11,7 @@ from uuid import UUID
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage
 
+from enterprise_ai_assistant.agents.domain_runtime import DomainRuntimeProvider
 from enterprise_ai_assistant.core.models import (
     AgentName,
     ContextResolution,
@@ -81,7 +82,7 @@ class StubRuntime:
         raise AssertionError(f"not used: {name} {arguments}")
 
 
-class StubRuntimeProvider:
+class StubRuntimeProvider(DomainRuntimeProvider):
     def __init__(self, response: AIMessage) -> None:
         provider = LocalEnterpriseToolProvider(
             InMemoryActionRepository(), InMemoryPolicyRepository()

@@ -87,7 +87,7 @@ class ActionRepository(Protocol):
     ) -> dict[str, Any] | None: ...
 
 
-class PostgresActionRepository:
+class PostgresActionRepository(ActionRepository):
     """为企业写操作提供持久且幂等的执行边界。"""
 
     def __init__(self, pool: asyncpg.Pool) -> None:
@@ -283,7 +283,7 @@ _RECORD_METADATA = frozenset(
 )
 
 
-class InMemoryActionRepository:
+class InMemoryActionRepository(ActionRepository):
     def __init__(self) -> None:
         self.records: dict[str, dict[str, Any]] = {}
         self.created_at: dict[str, datetime] = {}

@@ -15,7 +15,7 @@ class PolicyRepository(Protocol):
     async def search(self, query: str, domain: str, limit: int = 3) -> list[dict[str, str]]: ...
 
 
-class CachedMilvusPolicyRepository:
+class CachedMilvusPolicyRepository(PolicyRepository):
     """使用 Redis 查询缓存和 Milvus 向量存储进行制度语义检索。"""
 
     def __init__(
@@ -109,7 +109,7 @@ async def bootstrap_policy_collection(
     await asyncio.to_thread(client.upsert, collection_name=collection, data=data)
 
 
-class InMemoryPolicyRepository:
+class InMemoryPolicyRepository(PolicyRepository):
     POLICIES = {
         "travel": [
             {

@@ -213,14 +213,14 @@ class DomainRuntime(Protocol):
     async def invoke_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]: ...
 
 
-class DomainRuntimeFactory:
+class DomainRuntimeProvider(Protocol):
+    def create(self, agent: AgentName, context: ToolContext) -> DomainRuntime: ...
+
+
+class DomainRuntimeFactory(DomainRuntimeProvider):
     def __init__(self, model: BaseChatModel, tools: DomainToolRegistry) -> None:
         self._model = model
         self._tools = tools
 
     def create(self, agent: AgentName, context: ToolContext) -> DomainRuntime:
         return DomainAgentRuntime(agent, self._model, tuple(self._tools.for_agent(agent, context)))
-
-
-class DomainRuntimeProvider(Protocol):
-    def create(self, agent: AgentName, context: ToolContext) -> DomainRuntime: ...

@@ -36,12 +36,13 @@ from enterprise_ai_assistant.repositories.memories import (
     InMemoryMemoryRepository,
     summarize_action,
 )
+from enterprise_ai_assistant.services.planning import PlanningService
 
 CONVERSATION_ID = UUID("00000000-0000-0000-0000-000000000001")
 REQUEST_ID = UUID("00000000-0000-0000-0000-000000000002")
 
 
-class MemoryPlanningService:
+class MemoryPlanningService(PlanningService):
     """按脚本返回抽取结果，并记录送进抽取器的输入。"""
 
     def __init__(

@@ -9,6 +9,7 @@ import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
+from enterprise_ai_assistant.agents.domain_runtime import DomainRuntimeProvider
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.api import routes
 from enterprise_ai_assistant.api.schemas import ConfirmationRequest
@@ -27,6 +28,7 @@ from enterprise_ai_assistant.graph.serde import checkpoint_serializer
 from enterprise_ai_assistant.graph.workflow import Workflow, build_graph
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
+from enterprise_ai_assistant.services.planning import PlanningService
 from enterprise_ai_assistant.tools import LocalEnterpriseToolProvider, ToolContext
 from enterprise_ai_assistant.tools.registry import DomainToolRegistry, RegisteredTool
 
@@ -52,7 +54,7 @@ _WRITES: dict[AgentName, dict[str, Any]] = {
 }
 
 
-class TwoTasks:
+class TwoTasks(PlanningService):
     async def resolve_context(
         self,
         conversation: list[dict[str, str]],
@@ -125,7 +127,7 @@ class RendezvousRuntime:
         return result
 
 
-class RendezvousFactory:
+class RendezvousFactory(DomainRuntimeProvider):
     def __init__(self) -> None:
         provider = LocalEnterpriseToolProvider(
             InMemoryActionRepository(), InMemoryPolicyRepository()

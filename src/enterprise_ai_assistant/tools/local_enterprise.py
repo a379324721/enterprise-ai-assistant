@@ -10,6 +10,7 @@ from enterprise_ai_assistant.repositories.actions import ActionRepository
 from enterprise_ai_assistant.repositories.policies import PolicyRepository
 from enterprise_ai_assistant.tools.contracts import (
     BusinessToolOutcome,
+    EnterpriseToolProvider,
     ExpenseClaimInput,
     ExpenseClaimUpdateInput,
     LeaveBalanceInput,
@@ -95,7 +96,7 @@ def mock_submission_status(
     return _MOCK_APPROVAL_STATUSES[digest % len(_MOCK_APPROVAL_STATUSES)]
 
 
-class LocalEnterpriseToolProvider:
+class LocalEnterpriseToolProvider(EnterpriseToolProvider):
     """当前企业工具实现；后续可在不改变 Agent 的情况下替换为远端适配器。"""
 
     def __init__(

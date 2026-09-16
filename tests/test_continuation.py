@@ -9,6 +9,7 @@ import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
+from enterprise_ai_assistant.agents.domain_runtime import DomainRuntimeProvider
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.core.models import (
     AgentName,
@@ -130,7 +131,7 @@ class DraftAwareRuntime:
         return result
 
 
-class DraftAwareRuntimeFactory:
+class DraftAwareRuntimeFactory(DomainRuntimeProvider):
     def __init__(self, registry: DomainToolRegistry) -> None:
         self.registry = registry
         self.seen: list[Any] = []

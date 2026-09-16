@@ -47,7 +47,7 @@ class DemoUserRepository(Protocol):
     async def get_or_create(self, user_id: str, display_name: str) -> tuple[DemoUser, bool]: ...
 
 
-class PostgresDemoUserRepository:
+class PostgresDemoUserRepository(DemoUserRepository):
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
@@ -77,7 +77,7 @@ class PostgresDemoUserRepository:
         return DemoUser(**dict(existing)), False
 
 
-class InMemoryDemoUserRepository:
+class InMemoryDemoUserRepository(DemoUserRepository):
     def __init__(self) -> None:
         self.users: dict[str, DemoUser] = {}
 

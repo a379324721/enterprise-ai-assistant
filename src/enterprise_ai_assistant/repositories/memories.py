@@ -80,7 +80,7 @@ class MemoryRepository(Protocol):
     async def delete(self, user_id: str, memory_id: UUID) -> bool: ...
 
 
-class PostgresMemoryRepository:
+class PostgresMemoryRepository(MemoryRepository):
     """用 Postgres 持久化用户画像，并从写操作审计记录派生近期业务事实。"""
 
     def __init__(self, pool: asyncpg.Pool) -> None:
@@ -186,7 +186,7 @@ class PostgresMemoryRepository:
         return result.endswith(" 1")
 
 
-class InMemoryMemoryRepository:
+class InMemoryMemoryRepository(MemoryRepository):
     """测试与本地评测用的等价实现。"""
 
     def __init__(self) -> None:
