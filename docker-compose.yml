@@ -9,7 +9,10 @@ services:
       # 演示编排默认沿用 .env 中的开发配置；生产部署必须注入独立的 JWT_SECRET。
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       DEV_LOGIN_ENABLED: ${DEV_LOGIN_ENABLED:-false}
-    ports: ["8000:8000"]
+      # 只信任 nginx 转发来的 X-Forwarded-For。不要配 *：直连 api 的请求会自带这个头伪造 IP。
+      FORWARDED_ALLOW_IPS: 172.30.0.10
+    # 只绑本机：公网直连 api 绕过 nginx，拿到的是真实对端地址，但也绕过了前端这一层。
+    ports: ["127.0.0.1:8000:8000"]
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -17,8 +20,13 @@ services:
 
   frontend:
     build: ./frontend
-    ports: ["5173:80"]
+    # 服务器上在 .env 里配 FRONTEND_PORT=80。
+    ports: ["${FRONTEND_PORT:-5173}:80"]
     depends_on: [api]
+    networks:
+      default:
+        # 固定地址，api 的 FORWARDED_ALLOW_IPS 按它信任代理头。
+        ipv4_address: 172.30.0.10
 
   postgres:
     image: postgres:16-alpine
@@ -26,7 +34,8 @@ services:
       POSTGRES_USER: enterprise
       POSTGRES_PASSWORD: enterprise
       POSTGRES_DB: enterprise_ai
-    ports: ["5432:5432"]
+    # 只绑本机：公网暴露数据库，用的还是上面的默认密码。
+    ports: ["127.0.0.1:5432:5432"]
     volumes: ["postgres_data:/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U enterprise -d enterprise_ai"]
@@ -36,7 +45,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
+    ports: ["127.0.0.1:6379:6379"]
     command: redis-server --appendonly yes
     volumes: ["redis_data:/data"]
     healthcheck:
@@ -44,6 +53,12 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
 
 volumes:
   postgres_data:

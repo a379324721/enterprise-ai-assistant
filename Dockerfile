@@ -11,5 +11,5 @@ ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 COPY --from=builder /app/.venv /app/.venv
 COPY src ./src
 EXPOSE 8000
-CMD ["uvicorn", "enterprise_ai_assistant.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "enterprise_ai_assistant.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
 
