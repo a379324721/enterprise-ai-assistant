@@ -58,7 +58,11 @@ function fromHistory(items: HistoryMessage[]): Message[] {
 }
 type Session = {token: string; userId: string; displayName: string; conversationId: string};
 
-const examples = ["申请后天去上海出差，顺便订个当天下午的会议室", "我还有多少年假？下周五请一天年假", "查询差旅住宿标准"];
+const examples = [
+  {tag: "差旅 · 会议室", text: "申请后天去上海出差，顺便订个当天下午的会议室"},
+  {tag: "人事", text: "我还有多少年假？下周五请一天年假"},
+  {tag: "制度", text: "查询差旅住宿标准"},
+];
 //: 领域名的中文标签，用于多任务回答的分节标题。
 const DOMAIN_LABELS: Record<string, string> = {
   travel: "差旅",
@@ -114,6 +118,19 @@ function MarkdownMessage({text}: {text: string}) {
     }}
   >{text}</ReactMarkdown>;
 }
+
+//: 界面用到的几个线性图标。内联 SVG 跟随 currentColor，不再引一个图标库。
+function Icon({children, size = 16}: {children: React.ReactNode; size?: number}) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>;
+}
+const SparkIcon = () => <Icon><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/></Icon>;
+const SendIcon = () => <Icon><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></Icon>;
+const ArrowIcon = () => <Icon size={14}><path d="M7 17L17 7"/><path d="M8 7h9v9"/></Icon>;
+const CheckIcon = () => <Icon size={12}><path d="M20 6L9 17l-5-5"/></Icon>;
+const CrossIcon = () => <Icon size={12}><path d="M18 6L6 18"/><path d="M6 6l12 12"/></Icon>;
+const ShieldIcon = () => <Icon><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/></Icon>;
+const InfoIcon = () => <Icon size={13}><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></Icon>;
+const ThumbIcon = () => <Icon size={14}><path d="M7 10v12"/><path d="M15 5.9L14 10h5.8a2 2 0 0 1 1.9 2.6l-2.3 7A2 2 0 0 1 17.5 21H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h2.8a2 2 0 0 0 1.8-1.1L12 2a3.1 3.1 0 0 1 3 3.9z"/></Icon>;
 
 /**
  * 取服务端的 detail 作为提示。
@@ -290,14 +307,15 @@ function LoginView({onSignedIn}: {onSignedIn: (session: Session) => void}) {
 
   return <main className="loginPage">
     <div className="loginCard">
-      <div className="brandMark">E</div>
-      <h1>Enterprise AI Assistant</h1>
+      <span className="brandMark large"><SparkIcon/></span>
+      <h1>企业智能助手</h1>
       <p>输入你的名字即可开始。演示环境不设密码，一个名字对应一个用户，下次用同一个名字会回到同一个会话。</p>
       <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <input value={name} onChange={(event) => setName(event.target.value)} placeholder="你的名字" autoFocus maxLength={64}/>
-        <button className="approve" disabled={busy || !name.trim()}>{busy ? "正在进入…" : "进入"}</button>
+        <button className="btn primary" disabled={busy || !name.trim()}>{busy ? "正在进入…" : "进入"}</button>
       </form>
       {error && <p className="loginError">{error}</p>}
+      <div className="loginDomains">{Object.values(DOMAIN_LABELS).map((label) => <span key={label}>{label}</span>)}</div>
     </div>
   </main>;
 }
@@ -763,17 +781,23 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
     }
   }
 
-  return <main>
-    <header><div className="brandMark">E</div><div><h1>Enterprise AI Assistant</h1><p>企业事务，一个对话完成</p></div>
-      <span className="online">● {session.displayName}</span>
-      <button className="signOut" disabled={busy} onClick={() => void clearConversation()}>清空会话</button>
-      <button className="signOut" onClick={onSignOut}>退出</button>
-    </header>
-    <section className="layout">
+  const pending = result?.pending_confirmation ?? null;
+  // 等待回答时那一行"正在处理"也属于助手一侧：紧跟在用户那句话后面时带上头像，
+  // 和随后出现的回答对齐。空占位不画，它只是给第一段回答留的位置。
+  const lastVisible = [...messages].reverse().find((message) => !(message.role === "assistant" && !message.text));
+  const thinkingLeads = !lastVisible || lastVisible.role === "user" || lastVisible.role === "decision";
+
+  // 没有全局顶栏：会话操作放在聊天窗口自己的标题栏里，右栏从页顶一直通到页底。
+  return <div className="app">
       <div className="chatPanel">
-        <div className="intro"><span>AI</span><div><strong>我是企业智能助手</strong><p>我可以协助差旅、报销、请假、会议室预订和制度查询，也能帮你查已提交单据的状态。涉及提交的操作会先请你确认。</p></div></div>
-        {messages.length === 0 && !loadingHistory && <div className="examples">{examples.map((item) => <button key={item} disabled={busy} onClick={() => void send(item)}>{item}<b>↗</b></button>)}</div>}
-        {loadError && <div className="loadBanner"><span>{loadError}</span><button disabled={loadingHistory} onClick={() => void enterConversation()}>重试</button></div>}
+        <header className="topbar">
+          <div className="brand"><span className="brandMark"><SparkIcon/></span><div><h1>企业智能助手</h1><p>企业事务，一个对话完成</p></div></div>
+          <div className="topActions">
+            <span className="userChip"><span className="userAvatar">{session.displayName.slice(0, 1)}</span>{session.displayName}</span>
+            <button className="ghost" disabled={busy} onClick={() => void clearConversation()}>清空会话</button>
+            <button className="ghost" onClick={onSignOut}>退出</button>
+          </div>
+        </header>
         <div
           className="messages"
           ref={messagesRef}
@@ -785,87 +809,136 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
             stickToBottom.current = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
           }}
         >
-          {hasMore && <button className="loadEarlier" disabled={loadingHistory} onClick={() => void loadEarlier()}>{loadingHistory ? "加载中…" : "加载更早的消息"}</button>}
-          {messages.map((message, index) => {
-            const bubble = <div key={message.index ?? `live-${index}`} className={`message ${message.role}`}>
-              {message.role === "steps" && message.steps?.map((step) => <span key={step.id} className={step.success ? "step ok" : "step fail"}>{step.success ? "✓" : "✕"} {step.label}</span>)}
-              {sectionLabel(message) && <span className="section">{sectionLabel(message)}</span>}
-              {message.role === "assistant" ? <MarkdownMessage text={message.text}/> : message.role === "steps" ? null : message.text}
-              {busy && index === messages.length - 1 && message.role === "assistant" && <span className="cursor"/>}
-            </div>;
-            if (!message.messageId) return bubble;
-            // 按钮挂在气泡下面，悬停才出现；评价过的一直亮着，刷新后也在。
-            return <div key={message.index ?? `live-${index}`} className={`rated${message.feedback ? " hasFeedback" : ""}`}>
-              {bubble}
-              <div className="feedback">
-                <button title="回答得好" aria-pressed={message.feedback === "up"} className={message.feedback === "up" ? "on" : ""}
-                  onClick={() => { setDownvoting(null); if (message.feedback !== "up" && message.messageId) void rate(message.messageId, "up"); }}>👍</button>
-                <button title="回答有问题" aria-pressed={message.feedback === "down"} className={message.feedback === "down" ? "on" : ""}
-                  onClick={(event) => downvote(message, event.currentTarget)}>👎</button>
+          <div className="thread">
+            {loadError && <div className="loadBanner"><span>{loadError}</span><button disabled={loadingHistory} onClick={() => void enterConversation()}>重试</button></div>}
+            {messages.length === 0 && !loadingHistory && <div className="welcome">
+              <span className="welcomeMark"><SparkIcon/></span>
+              <h2>你好，{session.displayName}</h2>
+              <p>我可以协助差旅、报销、请假、会议室预订和制度查询，也能帮你查已提交单据的状态。涉及提交的操作会先请你确认。</p>
+              <div className="examples">{examples.map((item) => <button key={item.text} disabled={busy} onClick={() => void send(item.text)}>
+                <small>{item.tag}</small>{item.text}<ArrowIcon/>
+              </button>)}</div>
+            </div>}
+            {hasMore && <button className="loadEarlier" disabled={loadingHistory} onClick={() => void loadEarlier()}>{loadingHistory ? "加载中…" : "加载更早的消息"}</button>}
+            {messages.map((message, index) => {
+              const key = message.index ?? `live-${index}`;
+              if (message.role === "user") return <div key={key} className="userTurn"><div className="message user">{message.text}</div><span className="userAvatar inTurn">{session.displayName.slice(0, 1)}</span></div>;
+              if (message.role === "decision") return <div key={key} className="decision"><span><InfoIcon/>{message.text}</span></div>;
+              const streaming = busy && index === messages.length - 1 && message.role === "assistant";
+              // 还没来 token 的空占位不画：一个挂着光标的空行和下面的"正在处理"是重复的。
+              if (message.role === "assistant" && !message.text) return null;
+              const previous = messages[index - 1];
+              // 一轮里助手一侧的步骤和几段回答只在第一条前面放头像，读起来是同一个人接着说。
+              const leads = !previous || previous.role === "user" || previous.role === "decision";
+              const gutter = <div className="gutter">{leads && <span className="assistantAvatar"><SparkIcon/></span>}</div>;
+              if (message.role === "steps") {
+                return <div key={key} className="turn">{gutter}<div className="steps">
+                  {message.steps?.map((step) => <span key={step.id} className={step.success ? "step ok" : "step fail"}>{step.success ? <CheckIcon/> : <CrossIcon/>}{step.label}</span>)}
+                </div></div>;
+              }
+              const label = sectionLabel(message);
+              return <div key={key} className={`turn${message.feedback ? " hasFeedback" : ""}`}>
+                {gutter}
+                <div className="turnBody">
+                  {label && <span className="section">{label}</span>}
+                  <div className="message assistant"><MarkdownMessage text={message.text}/>{streaming && <span className="cursor"/>}</div>
+                  {/* 按钮挂在回答下面，悬停才出现；评价过的一直亮着，刷新后也在。 */}
+                  {message.messageId && <div className="feedback">
+                    <button title="回答得好" aria-label="回答得好" aria-pressed={message.feedback === "up"} className={message.feedback === "up" ? "on" : ""}
+                      onClick={() => { setDownvoting(null); if (message.feedback !== "up" && message.messageId) void rate(message.messageId, "up"); }}><ThumbIcon/></button>
+                    <button title="回答有问题" aria-label="回答有问题" aria-pressed={message.feedback === "down"} className={message.feedback === "down" ? "on down" : "down"}
+                      onClick={(event) => downvote(message, event.currentTarget)}><ThumbIcon/></button>
+                  </div>}
+                </div>
+              </div>;
+            })}
+            {downvoting && <DownvotePanel key={downvoting.messageId} anchor={downvoting.anchor} messageId={downvoting.messageId} rate={rate} onClose={closeDownvote}/>}
+            {busy && !streamingAnswer && <div className="turn">
+              <div className="gutter">{thinkingLeads && <span className="assistantAvatar"><SparkIcon/></span>}</div>
+              <div className="thinking"><span className="dots"><i/><i/><i/></span>{progress || "正在处理…"}</div>
+            </div>}
+          </div>
+        </div>
+        <div className="dock">
+          {pending && <div className="confirmCard">
+            <div className="confirmHead"><span className="confirmIcon"><ShieldIcon/></span><div><small>需要你的确认</small><strong>{pending.title}</strong></div></div>
+            {/* 字段名和取值标签由后端按工具入参契约给出，这里只负责排版。 */}
+            <dl className="confirmFields">{pending.fields.map((field) => <div key={field.name}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
+            <div className="confirmFoot">
+              <p>系统只会在你确认后执行该操作。</p>
+              <button className="btn" disabled={busy} onClick={() => void confirm(false)}>取消</button>
+              <button className="btn primary" disabled={busy} onClick={() => void confirm(true)}>确认执行</button>
+            </div>
+          </div>}
+          {/* 空会话时欢迎页已经摆着这几个示例；进了会话它们就没了，想换一个问还得手打。
+              待确认期间服务端不收新消息（409），先收起来。 */}
+          {messages.length > 0 && !pending && <div className="quickAsks">{examples.map((item) => <button key={item.text} disabled={busy} onClick={() => void send(item.text)}>{item.text}</button>)}</div>}
+          <form className="composer" onSubmit={(event) => { event.preventDefault(); void send(); }}>
+            <textarea
+              ref={inputRef}
+              // 待确认期间服务端会以 409 拒绝新消息，与其让用户打完字再报错，不如直接说明。
+              disabled={Boolean(pending)}
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => {
+                // 输入法组合期间的回车是在确认候选词，不能当成发送——中文拼音下
+                // 每选一次词都会把半截话发出去。
+                if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+                event.preventDefault();
+                void send();
+              }}
+              placeholder={pending ? "请先确认或取消上面的操作" : "描述你想办理的事情…"}
+              rows={2}
+            />
+            <button className="send" aria-label="发送" title="发送" disabled={busy || Boolean(pending) || !input.trim()}><SendIcon/></button>
+          </form>
+          <p className="composerHint">回车发送，Shift + 回车换行</p>
+        </div>
+      </div>
+      <aside>
+        <section className="panelSection">
+          <div className="sectionHead"><h2>进行中</h2>{matters.length > 0 && <small>{matters.length}</small>}</div>
+          {/* 右栏只放有生命周期的事：还没办完的在这里，提交过的在下面的单据里。查询和
+              闲聊办完就结束了，不占位置；执行过程在对话流里以步骤的形式出现。 */}
+          {matters.length === 0 && <p className="asideIdle">当前没有进行中的事项</p>}
+          <div className="matterList">{matters.map((matter) => <div className={`matter ${matter.status}`} key={matter.plan_id}>
+            <div className="matterHead"><strong>{matter.title}</strong><em className="pill"><i/>{MATTER_STATUS_LABELS[matter.status]}</em></div>
+            {(matter.known_fields.length > 0 || matter.missing_fields.length > 0) && <ul className="fields">
+              {matter.known_fields.map((field) => <li key={field.name}><span>{field.label}</span><b>{field.value}</b>
+                {/* 档案给的只是建议值，用户还没确认过，得和用户亲口说的区分开。 */}
+                {field.source === "memory" && <i>建议</i>}</li>)}
+              {matter.missing_fields.map((name) => <li key={name} className="missing"><span>{name}</span><b>待补充</b></li>)}
+            </ul>}
+            {matter.tasks.length > 1 && <div className="subtasks">{matter.tasks.filter((task) => task.id !== matter.task_id).map((task) =>
+              <div key={task.id} className={task.status}><span>{task.status === "completed" ? <CheckIcon/> : <i/>}</span>{task.title}<em>{TASK_STATUS_LABELS[task.status] || task.status}</em></div>)}
+            </div>}
+            {/* 只往输入框里填一句话：字段仍由对话补充、由领域 Agent 解析，不开第二条提交路径。 */}
+            {matter.status === "shelved" && <button className="resume" disabled={busy} onClick={() => {
+              setInput(`继续办理「${matter.title}」`);
+              inputRef.current?.focus();
+            }}>继续办理</button>}
+          </div>)}</div>
+        </section>
+        <section className="panelSection">
+          <div className="sectionHead"><h2>我的单据</h2>{actions.length > 0 && <small>{actions.length}</small>}</div>
+          {actions.length === 0 && <p className="asideIdle">这里会列出你提交过的单据</p>}
+          <div className="actionList">{actions.map((item, index) => {
+            const label = ACTION_LABELS[item.action_type] || item.action_type;
+            return <div className={`action${item.revoked_at ? " revoked" : ""}`} key={item.reference_id || `action-${index}`}>
+              <span className="actionBadge">{label.slice(0, 1)}</span>
+              <div>
+                {/* 只分"已提交"和"已撤销"。workflow_actions 不知道外部系统的审批结果；
+                    不写状态，这份列表就会被整体读成"这些都批了"。 */}
+                <div className="actionHead"><strong>{label}</strong><em>{item.revoked_at ? "已撤销" : "已提交"}</em><small>{item.created_at.slice(5, 10)}</small></div>
+                {/* 字段名不翻译也不重排，顺序由后端白名单决定，前端只负责拼；枚举取值才翻译。 */}
+                <p>{Object.values(item.fields).map((value) => VALUE_LABELS[value] ?? value).join(" · ")}</p>
+                <code>{item.reference_id}</code>
               </div>
             </div>;
-          })}
-          {downvoting && <DownvotePanel key={downvoting.messageId} anchor={downvoting.anchor} messageId={downvoting.messageId} rate={rate} onClose={closeDownvote}/>}
-        {busy && !streamingAnswer && <div className="thinking"><span className="spinner"/>{progress || "正在处理…"}</div>}
-        </div>
-        {result?.pending_confirmation && <div className="confirmCard"><div className="risk">需要你的确认</div><strong>{result.pending_confirmation.title}</strong>
-          {/* 字段名和取值标签由后端按工具入参契约给出，这里只负责排版。 */}
-          <dl className="confirmFields">{result.pending_confirmation.fields.map((field) => <div key={field.name}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
-          <p>系统只会在你确认后执行该操作。</p><div><button className="cancel" disabled={busy} onClick={() => void confirm(false)}>取消</button><button className="approve" disabled={busy} onClick={() => void confirm(true)}>确认执行</button></div></div>}
-        <form onSubmit={(event) => { event.preventDefault(); void send(); }}>
-          <textarea
-            ref={inputRef}
-            // 待确认期间服务端会以 409 拒绝新消息，与其让用户打完字再报错，不如直接说明。
-            disabled={Boolean(result?.pending_confirmation)}
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              // 输入法组合期间的回车是在确认候选词，不能当成发送——中文拼音下
-              // 每选一次词都会把半截话发出去。
-              if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
-              event.preventDefault();
-              void send();
-            }}
-            placeholder={result?.pending_confirmation ? "请先确认或取消上面的操作" : "描述你想办理的事情…（回车发送，Shift + 回车换行）"}
-            rows={2}
-          />
-          <button disabled={busy || Boolean(result?.pending_confirmation)}>发送</button>
-        </form>
-      </div>
-      <aside><div className="asideHead"><span>进行中</span>{matters.length > 0 && <small>{matters.length}</small>}</div>
-        {/* 右栏只放有生命周期的事：还没办完的在这里，提交过的在下面的单据里。查询和
-            闲聊办完就结束了，不占位置；执行过程在对话流里以步骤的形式出现。 */}
-        {matters.length === 0 && <p className="asideIdle">当前没有进行中的事项</p>}
-        <div className="matterList">{matters.map((matter) => <div className={`matter ${matter.status}`} key={matter.plan_id}>
-          <div className="matterHead"><strong>{matter.title}</strong><em>{MATTER_STATUS_LABELS[matter.status]}</em></div>
-          {(matter.known_fields.length > 0 || matter.missing_fields.length > 0) && <ul className="fields">
-            {matter.known_fields.map((field) => <li key={field.name}><span>{field.label}</span><b>{field.value}</b>
-              {/* 档案给的只是建议值，用户还没确认过，得和用户亲口说的区分开。 */}
-              {field.source === "memory" && <i>建议</i>}</li>)}
-            {matter.missing_fields.map((name) => <li key={name} className="missing"><span>{name}</span><b>待补充</b></li>)}
-          </ul>}
-          {matter.tasks.length > 1 && <div className="subtasks">{matter.tasks.filter((task) => task.id !== matter.task_id).map((task) =>
-            <div key={task.id} className={task.status}><span>{task.status === "completed" ? "✓" : "○"}</span>{task.title}<em>{TASK_STATUS_LABELS[task.status] || task.status}</em></div>)}
-          </div>}
-          {/* 只往输入框里填一句话：字段仍由对话补充、由领域 Agent 解析，不开第二条提交路径。 */}
-          {matter.status === "shelved" && <button className="resume" disabled={busy} onClick={() => {
-            setInput(`继续办理「${matter.title}」`);
-            inputRef.current?.focus();
-          }}>继续</button>}
-        </div>)}</div>
-        <div className="asideHead actionsHead"><span>我的单据</span>{actions.length > 0 && <small>{actions.length}</small>}</div>
-        {actions.length === 0 && <p className="asideIdle">这里会列出你提交过的单据</p>}
-        <div className="actionList">{actions.map((item, index) => <div className="action" key={item.reference_id || `action-${index}`}>
-          {/* 只分"已提交"和"已撤销"。workflow_actions 不知道外部系统的审批结果；
-              不写状态，这份列表就会被整体读成"这些都批了"。 */}
-          <div><strong>{ACTION_LABELS[item.action_type] || item.action_type}</strong><em>{item.revoked_at ? "已撤销" : "已提交"}</em><small>{item.created_at.slice(5, 10)}</small></div>
-          {/* 字段名不翻译也不重排，顺序由后端白名单决定，前端只负责拼；枚举取值才翻译。 */}
-          <p>{Object.values(item.fields).map((value) => VALUE_LABELS[value] ?? value).join(" · ")}</p>
-          <code>{item.reference_id}</code>
-        </div>)}</div>
+          })}</div>
+        </section>
       </aside>
-    </section>
-  </main>;
+  </div>;
 }
 
 function App() {

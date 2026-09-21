@@ -1,19 +1,266 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
-:root{font-family:"DM Sans","Noto Sans SC",sans-serif;color:#17211b;background:#f1f4ef;font-synthesis:none;/* streaming.css 的流式光标引用它；变量没定义时整条 background 声明失效，光标会变成透明。 */--brand-bright:#39775a}*{box-sizing:border-box}body{margin:0}button,textarea{font:inherit}main{max-width:1440px;margin:auto;min-height:100vh;padding:0 34px 32px}header{height:86px;display:flex;align-items:center;gap:13px}.brandMark{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;color:white;background:#1c6144;font-weight:700;font-size:21px;box-shadow:0 8px 20px #1c614433}h1{font-size:17px;margin:0;letter-spacing:-.2px}header p{font-size:12px;color:#718078;margin:3px 0}.online{margin-left:auto;background:#e1eee5;color:#276445;padding:7px 12px;border-radius:99px;font-size:11px}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(310px,.65fr);gap:18px;height:calc(100vh - 118px)}.chatPanel,aside{background:#fff;border:1px solid #dfe5df;border-radius:17px;box-shadow:0 12px 36px #2e483b0b}.chatPanel{padding:28px;display:flex;flex-direction:column;overflow:auto}.intro{display:flex;gap:14px;padding-bottom:18px;border-bottom:1px solid #edf0ed}.intro>span{flex:none;width:36px;height:36px;display:grid;place-items:center;background:#e5f0e8;color:#256243;border-radius:10px;font-weight:700;font-size:12px}.intro strong{font-size:15px}.intro p{margin:6px 0 0;color:#6b7770;font-size:13px}.examples{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:21px 0}.examples button{background:#f8faf7;border:1px solid #e5eae5;border-radius:11px;padding:13px;text-align:left;color:#435048;font-size:12px;cursor:pointer;min-height:67px}.examples b{display:block;text-align:right;color:var(--brand-bright)}.messages{flex:1;overflow:auto;padding:14px 1px}.message{max-width:72%;margin:9px 0;padding:11px 14px;border-radius:13px;font-size:13px;line-height:1.55}.message.user{margin-left:auto;background:#1f6848;color:white;border-bottom-right-radius:3px}.message.assistant{background:#f0f4ef;border-bottom-left-radius:3px}.thinking{color:#7c8981;font-size:12px;padding:8px}.confirmCard{border:1px solid #f2d7a8;background:#fffbf3;border-radius:13px;padding:15px;margin-bottom:12px}.confirmCard .risk{color:#a06613;font-size:11px;font-weight:700;text-transform:uppercase;margin-bottom:7px}.confirmCard strong{font-size:13px}.confirmCard p{font-size:11px;color:#806d4e}.confirmCard>div:last-child{text-align:right}.confirmCard button{border-radius:8px;padding:7px 13px;margin-left:7px;cursor:pointer}.cancel{background:white;border:1px solid #ddd}.approve{background:#17613f;border:1px solid #17613f;color:white}form{border:1px solid #d9e0da;border-radius:13px;padding:9px;display:flex;align-items:flex-end;box-shadow:0 5px 16px #2942330a}textarea{border:0;outline:0;resize:none;flex:1;padding:6px;background:transparent;font-size:13px}form>button{border:0;background:#1e6747;color:white;padding:9px 18px;border-radius:9px;cursor:pointer}form>button:disabled{opacity:.5}aside{padding:20px;overflow:auto}.asideHead{display:flex;justify-content:space-between;font-weight:600;font-size:14px;padding-bottom:16px;border-bottom:1px solid #edf0ed}.asideHead small{background:#e8eee9;color:#536259;padding:3px 8px;border-radius:99px}.goal{background:#f2f6f2;padding:12px;border-radius:10px;margin:16px 0}.goal small,.task small{display:block;color:#839087;font-size:10px}.goal p{font-size:12px;margin:4px 0}.task{display:flex;gap:10px;align-items:flex-start;padding:13px 2px;border-bottom:1px solid #edf0ed}.task>span{flex:none;width:22px;height:22px;border:1px solid #cbd5ce;border-radius:50%;display:grid;place-items:center;font-size:10px}.task>span.completed{background:#266849;color:white;border-color:#266849}.task>span.running{border-color:#d1912c;color:#b27211}.task>div{flex:1}.task strong{font-size:12px;display:block;margin-bottom:4px}.task em{font-style:normal;font-size:9px;color:#78837c;background:#f0f3f0;padding:3px 6px;border-radius:5px}@media(max-width:800px){main{padding:0 12px 12px}.layout{grid-template-columns:1fr;height:auto}.chatPanel{min-height:70vh}.examples{grid-template-columns:1fr}aside{min-height:300px}}
+/* 不从 Google Fonts 取字体：国内网络下这条请求常年超时，首屏会一直等它。系统字体里的苹方 / 雅黑足够。 */
+:root{
+  --bg:#f5f6f8;--surface:#fff;--sunken:#f9fafb;--line:#e7e9ee;--line-strong:#d6dae1;
+  --text:#1b2130;--text-2:#475064;--muted:#6f7788;--faint:#9aa1ae;
+  --brand:#3b4fd8;--brand-deep:#2f40b8;--brand-soft:#eef0fd;--brand-line:#cfd5f8;
+  /* streaming.css 的流式光标引用它；变量没定义时整条 background 声明失效，光标会变成透明。 */
+  --brand-bright:#5268f0;
+  --amber:#a55a07;--amber-soft:#fff7eb;--amber-line:#f3d9ad;
+  --green:#18794e;--green-soft:#ebf7f0;--green-line:#c4e6d3;
+  --red:#b42318;--red-soft:#fef3f2;--red-line:#f5cdc7;
+  --blue:#2463a8;--blue-soft:#edf4fc;--blue-line:#cddff3;
+  --radius:14px;--shadow:0 1px 2px #1b21300a,0 8px 24px #1b21300d;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  color:var(--text);background:var(--bg);font-synthesis:none;-webkit-font-smoothing:antialiased;
+}
+*{box-sizing:border-box}
+body{margin:0}
+button,textarea,input{font:inherit;color:inherit}
+button{cursor:pointer}
+button:disabled{cursor:default}
+:focus-visible{outline:2px solid var(--brand-bright);outline-offset:2px}
 
-.message.assistant p{margin:0 0 .7em}.message.assistant p:last-child{margin-bottom:0}.message.assistant h1,.message.assistant h2,.message.assistant h3,.message.assistant h4{line-height:1.3;margin:1em 0 .45em}.message.assistant h1:first-child,.message.assistant h2:first-child,.message.assistant h3:first-child,.message.assistant h4:first-child{margin-top:0}.message.assistant h1{font-size:1.45em}.message.assistant h2{font-size:1.3em}.message.assistant h3{font-size:1.15em}.message.assistant ul,.message.assistant ol{margin:.45em 0 .7em;padding-left:1.6em}.message.assistant li+li{margin-top:.25em}.message.assistant blockquote{margin:.7em 0;padding:.15em 0 .15em .8em;border-left:3px solid #8aaa98;color:#53685c}.message.assistant code{padding:.12em .35em;border-radius:4px;background:#dfe8e1;font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;font-size:.9em}.message.assistant pre{max-width:100%;margin:.7em 0;padding:11px 13px;overflow-x:auto;border-radius:8px;background:#1e2b24;color:#e8f0ea}.message.assistant pre code{padding:0;background:transparent;color:inherit}.message.assistant a{color:#176b47;text-decoration:underline;text-underline-offset:2px}.message.assistant hr{border:0;border-top:1px solid #ccd7cf;margin:1em 0}.message.assistant table{display:block;max-width:100%;overflow-x:auto;border-collapse:collapse;margin:.7em 0}.message.assistant th,.message.assistant td{border:1px solid #cbd7ce;padding:5px 8px;text-align:left;white-space:nowrap}.message.assistant th{background:#e2ebe4}.message.assistant img{max-width:100%;height:auto;border-radius:6px}.message.assistant input[type="checkbox"]{margin-right:.4em;accent-color:#1f6848}
-.loginPage{display:grid;place-items:center;min-height:100vh}.loginCard{background:#fff;border:1px solid #dfe5df;border-radius:17px;box-shadow:0 12px 36px #2e483b0b;padding:34px;width:min(380px,90vw);text-align:center}.loginCard .brandMark{margin:0 auto 16px}.loginCard h1{font-size:18px}.loginCard>p{font-size:12px;color:#6b7770;line-height:1.6;margin:8px 0 20px}.loginCard form{padding:0;border:0;box-shadow:none;display:block}.loginCard form>button{width:100%;margin-top:12px;border:0;border-radius:9px;padding:11px;cursor:pointer;font-size:13px}.loginCard form>button:disabled{opacity:.5;cursor:default}.loginCard input{width:100%;border:1px solid #d9e0da;border-radius:11px;padding:11px 13px;font:inherit;font-size:13px;outline:0}.loginCard input:focus{border-color:#1f6848}.loginError{color:#a33b2a;font-size:12px;margin:14px 0 0;line-height:1.5}.signOut{margin-left:10px;background:transparent;border:1px solid #dfe5df;color:#6b7770;border-radius:99px;padding:6px 13px;font-size:11px;cursor:pointer}.loadEarlier{display:block;margin:0 auto 10px;background:#f4f7f4;border:1px solid #e2e8e3;color:#536259;border-radius:99px;padding:6px 15px;font-size:11px;cursor:pointer}.loadEarlier:disabled{opacity:.6;cursor:default}.loadBanner{display:flex;align-items:center;gap:10px;background:#fdf3f1;border:1px solid #f0cfc7;color:#9c3f2c;border-radius:11px;padding:10px 13px;margin-bottom:10px;font-size:12px}.loadBanner span{flex:1}.loadBanner button{background:#fff;border:1px solid #e3c1b8;color:#9c3f2c;border-radius:8px;padding:5px 12px;font-size:11px;cursor:pointer}.loadBanner button:disabled{opacity:.6;cursor:default}
+/* 通用按钮 */
+.btn{border:1px solid var(--line-strong);background:var(--surface);color:var(--text-2);border-radius:9px;padding:7px 15px;font-size:13px;font-weight:500;transition:background .15s,border-color .15s}
+.btn:hover:not(:disabled){background:var(--sunken);border-color:#c4c9d2}
+.btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+.btn.primary:hover:not(:disabled){background:var(--brand-deep);border-color:var(--brand-deep)}
+.btn:disabled{opacity:.5}
+.ghost{border:0;background:none;color:var(--muted);border-radius:8px;padding:6px 10px;font-size:13px}
+.ghost:hover:not(:disabled){background:#eef0f3;color:var(--text)}
+.ghost:disabled{opacity:.45}
 
-/* 右栏第二段：我的单据。任务段可空，这一段常驻，面板不再整栏空白。 */
-.asideHead.actionsHead{margin-top:22px;padding-bottom:10px}.asideIdle{color:#8a958e;font-size:12px;padding:14px 2px;margin:0}.actionList{display:flex;flex-direction:column}.action{padding:11px 2px;border-bottom:1px solid #edf0ed}.action>div{display:flex;align-items:center;gap:8px}.action strong{font-size:12px}.action em{font-style:normal;font-size:9px;color:#536259;background:#eaefea;padding:3px 6px;border-radius:5px}.action code{display:block;margin-top:4px;font-family:"SFMono-Regular",Consolas,monospace;font-size:10px;color:#8a958e}.action small{margin-left:auto;color:#95a09a;font-size:10px}.action p{margin:5px 0 0;font-size:11px;color:#6b7770;line-height:1.5}
-/* 确认决定在对话里的留痕，以及等待时的转圈。 */
-.message.decision{max-width:none;margin:14px 0;padding:0;background:none;text-align:center;color:#8a958e;font-size:11px}.spinner{display:inline-block;width:11px;height:11px;margin-right:7px;vertical-align:-1px;border:2px solid #d7e0d9;border-top-color:var(--brand-bright);border-radius:50%;animation:panel-spin .7s linear infinite}@keyframes panel-spin{to{transform:rotate(360deg)}}
+.brandMark{flex:none;width:34px;height:34px;border-radius:10px;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,#5b6ff2,#3445c9);box-shadow:0 4px 12px #3b4fd833}
+.brandMark.large{width:48px;height:48px;border-radius:14px}
+.brandMark.large svg{width:22px;height:22px}
+
+/* 外框：聊天窗口和右栏左右两栏占满一屏，只有对话流和右栏各自滚动。 */
+.app{height:100vh;display:grid;grid-template-columns:minmax(0,1fr) clamp(360px,30vw,460px)}
+.topbar{flex:none;height:60px;display:flex;align-items:center;justify-content:space-between;padding:0 20px;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:11px}
+.brand h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.2px}
+.brand p{font-size:12px;color:var(--faint);margin:2px 0 0}
+.topActions{display:flex;align-items:center;gap:4px}
+.userChip{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-2);padding:4px 12px 4px 4px;margin-right:8px;border:1px solid var(--line);border-radius:99px}
+.userAvatar{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;background:var(--brand-soft);color:var(--brand);font-size:12px;font-weight:600}
+
+/* 对话区 */
+.chatPanel{min-width:0;display:flex;flex-direction:column;min-height:0;background:var(--surface)}
+.messages{flex:1;min-height:0;overflow:auto;padding:28px 24px 12px}
+.thread{max-width:780px;margin:0 auto}
+
+.welcome{text-align:center;padding:7vh 0 12px}
+.welcomeMark{width:52px;height:52px;margin:0 auto;border-radius:16px;display:grid;place-items:center;color:var(--brand);background:var(--brand-soft);border:1px solid var(--brand-line)}
+.welcomeMark svg{width:24px;height:24px}
+.welcome h2{font-size:22px;margin:18px 0 8px;font-weight:600}
+.welcome>p{max-width:520px;margin:0 auto;color:var(--muted);font-size:14px;line-height:1.7}
+.examples{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:32px 0 0;text-align:left}
+.examples button{position:relative;text-align:left;display:flex;flex-direction:column;justify-content:flex-start;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px 30px;color:var(--text);font-size:13px;line-height:1.55;box-shadow:0 1px 2px #1b213008;transition:border-color .15s,box-shadow .15s,transform .15s}
+.examples button:hover:not(:disabled){border-color:var(--brand-line);box-shadow:var(--shadow);transform:translateY(-1px)}
+.examples button:disabled{opacity:.6}
+.examples small{display:block;color:var(--brand);font-size:11px;font-weight:500;margin-bottom:6px}
+.examples button svg{position:absolute;right:12px;bottom:10px;color:var(--faint)}
+.examples button:hover svg{color:var(--brand)}
+
+.message{font-size:14px;line-height:1.7;overflow-wrap:anywhere}
+.userTurn{display:flex;justify-content:flex-end;align-items:flex-start;gap:12px;margin:18px 0}
+.userAvatar.inTurn{flex:none;width:30px;height:30px;border-radius:9px;font-size:13px;border:1px solid var(--brand-line)}
+.message.user{max-width:75%;padding:10px 15px;background:var(--brand);color:#fff;border-radius:16px 16px 4px 16px;white-space:pre-wrap;line-height:1.6}
+/* 助手一侧：左边留一条放头像的槽，同一轮的步骤和几段回答对齐在槽右边。 */
+.turn{display:flex;gap:12px;margin:6px 0}
+.gutter{flex:none;width:30px}
+.assistantAvatar{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;color:var(--brand);background:var(--brand-soft);border:1px solid var(--brand-line)}
+.turnBody{flex:1;min-width:0}
+/* 助手气泡的小圆角在左上，对着头像；和用户气泡左右对称，一眼看出谁说的。 */
+.message.assistant{width:fit-content;max-width:88%;padding:10px 15px;background:#f2f4f7;color:var(--text);border-radius:4px 16px 16px 16px}
 /* 多任务回答的分节标题：每段回答讲的是不同的事，标出它属于哪个任务。 */
-.message .section{display:block;margin-bottom:5px;font-size:10px;color:#6f7d74;letter-spacing:.2px}
+.section{display:inline-flex;align-items:center;gap:6px;margin-bottom:6px;font-size:12px;font-weight:500;color:var(--brand)}
+.section::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.6}
+.thinking{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;min-height:30px}
+.dots{display:inline-flex;gap:4px}
+.dots i{width:6px;height:6px;border-radius:50%;background:var(--brand-bright);animation:dot-pulse 1.1s ease-in-out infinite}
+.dots i:nth-child(2){animation-delay:.15s}
+.dots i:nth-child(3){animation-delay:.3s}
+@keyframes dot-pulse{0%,80%,100%{opacity:.25;transform:scale(.8)}40%{opacity:1;transform:scale(1)}}
 
 /* 对话流里的执行步骤：一行小标签，说明这一轮做了什么。 */
-.message.steps{max-width:none;margin:4px 0 2px;padding:0;background:none;display:flex;flex-wrap:wrap;gap:6px}.step{font-size:10px;color:#4f6357;background:#eef3ef;border:1px solid #e0e8e2;border-radius:99px;padding:3px 9px}.step.fail{color:#9c3f2c;background:#fdf3f1;border-color:#f0cfc7}
-/* 右栏第一段：进行中的事项卡。 */
-.matterList{display:flex;flex-direction:column;gap:10px;margin-top:14px}.matter{border:1px solid #e3e9e4;border-radius:12px;padding:12px 13px;background:#fbfcfb}.matter.waiting_input{border-color:#cfe0d4;background:#f6faf7}.matter.waiting_confirmation{border-color:#f2d7a8;background:#fffbf3}.matter.shelved{opacity:.78}.matter.in_progress{border-color:#d6e2ee;background:#f7fafd}.matter.in_progress .matterHead em{color:#2f5f8a;background:#e3edf6}.matterHead{display:flex;align-items:center;gap:8px}.matterHead strong{font-size:12px;flex:1}.matterHead em{font-style:normal;font-size:9px;color:#536259;background:#e8eee9;padding:3px 6px;border-radius:5px}.matter.waiting_confirmation .matterHead em{color:#a06613;background:#fbecd2}.fields{list-style:none;margin:9px 0 0;padding:0}.fields li{display:flex;gap:8px;font-size:11px;padding:3px 0;align-items:baseline}.fields span{width:64px;flex:none;color:#839087}.fields b{font-weight:500;color:#2c3a31;flex:1}.fields i{font-style:normal;font-size:9px;color:#8a6a2c;background:#f8eed8;padding:1px 5px;border-radius:4px}.fields li.missing b{color:#b27211}.subtasks{margin-top:8px;padding-top:7px;border-top:1px dashed #e0e7e1}.subtasks div{display:flex;align-items:center;gap:6px;font-size:11px;color:#56655c;padding:2px 0}.subtasks span{width:12px;color:#266849}.subtasks em{margin-left:auto;font-style:normal;font-size:9px;color:#8a958e}.resume{margin-top:9px;background:#fff;border:1px solid #cfdcd2;color:#1f6848;border-radius:8px;padding:4px 12px;font-size:11px;cursor:pointer}.resume:disabled{opacity:.5;cursor:default}textarea:disabled{cursor:not-allowed}
-.confirmFields{margin:10px 0 0;display:grid;gap:4px}.confirmFields>div{display:flex;gap:10px;font-size:12px}.confirmFields dt{flex:none;width:84px;color:#806d4e}.confirmFields dd{margin:0;color:#3f3a2e;word-break:break-all}
-.rated{margin:9px 0}.rated>.message{margin:0}.feedback{display:flex;gap:2px;height:24px;align-items:center;padding-left:4px;opacity:0;transition:opacity .15s}.rated:hover .feedback,.rated.hasFeedback .feedback,.feedback:focus-within{opacity:1}@media(hover:none){.feedback{opacity:1}}.feedback button{border:0;background:none;padding:2px 5px;border-radius:6px;font-size:12px;cursor:pointer;filter:grayscale(1);opacity:.55}.feedback button:hover{background:#eef3ef;opacity:.9}.feedback button.on{filter:none;opacity:1;background:#e1eee5}.feedbackPanel{position:fixed;z-index:20;background:#fff;border:1px solid #dfe5df;border-radius:13px;box-shadow:0 14px 40px #2e483b24;padding:14px;font-size:12px}.feedbackPanel strong{display:block;font-size:12px;margin-bottom:9px}.feedbackPanel .reasons{display:flex;flex-wrap:wrap;gap:6px}.feedbackPanel .reasons button{background:#f6f8f6;border:1px solid #e0e7e1;color:#435048;border-radius:99px;padding:4px 10px;font-size:11px;cursor:pointer}.feedbackPanel .reasons button.chosen{background:#e1eee5;border-color:#9cc3ab;color:#1f6848}.feedbackPanel textarea{width:100%;margin-top:10px;border:1px solid #d9e0da;border-radius:9px;padding:7px 9px;font-size:12px;resize:none}.feedbackPanel textarea:focus{border-color:#1f6848}.panelActions{display:flex;justify-content:flex-end;gap:7px;margin-top:10px}.panelActions button{background:#fff;border:1px solid #dfe5df;color:#6b7770;border-radius:8px;padding:5px 13px;font-size:11px;cursor:pointer}.panelActions button.primary{background:#1e6747;border-color:#1e6747;color:#fff}.panelActions button:disabled{opacity:.5;cursor:default}.panelError{color:#a33b2a;margin:8px 0 0;font-size:11px}.feedbackPanel .thanks{margin:6px 0;color:#276445;text-align:center}
+.steps{flex:1;display:flex;flex-wrap:wrap;gap:6px;padding-top:5px}
+.step{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--green);background:var(--green-soft);border:1px solid var(--green-line);border-radius:99px;padding:2px 10px 2px 8px}
+.step.fail{color:var(--red);background:var(--red-soft);border-color:var(--red-line)}
+
+/* 确认决定在对话里的留痕：不是任何一方说的话，是一条居中的小提示；不画横线，免得读成分段。 */
+.decision{display:flex;justify-content:center;margin:14px 0}
+.decision span{display:inline-flex;align-items:center;gap:6px;max-width:80%;padding:4px 12px;border-radius:99px;background:#f2f4f7;color:var(--muted);font-size:12px;line-height:1.5}
+.decision svg{flex:none;color:var(--faint)}
+
+.loadEarlier{display:block;margin:0 auto 14px;background:var(--surface);border:1px solid var(--line);color:var(--muted);border-radius:99px;padding:5px 16px;font-size:12px}
+.loadEarlier:hover:not(:disabled){color:var(--text);border-color:var(--line-strong)}
+.loadEarlier:disabled{opacity:.6}
+.loadBanner{display:flex;align-items:center;gap:10px;background:var(--red-soft);border:1px solid var(--red-line);color:var(--red);border-radius:11px;padding:10px 14px;margin-bottom:14px;font-size:13px}
+.loadBanner span{flex:1}
+.loadBanner button{background:var(--surface);border:1px solid var(--red-line);color:var(--red);border-radius:8px;padding:4px 12px;font-size:12px}
+.loadBanner button:disabled{opacity:.6}
+
+/* 评价按钮：悬停才出现，评价过的一直亮着。 */
+.feedback{display:flex;gap:2px;margin:2px 0 -4px -6px;opacity:0;transition:opacity .15s}
+.turn:hover .feedback,.turn.hasFeedback .feedback,.feedback:focus-within{opacity:1}
+@media(hover:none){.feedback{opacity:1}}
+.feedback button{display:grid;place-items:center;width:28px;height:26px;border:0;background:none;border-radius:7px;color:var(--faint)}
+.feedback button.down svg{transform:scaleY(-1)}
+.feedback button:hover{background:#eef0f3;color:var(--text-2)}
+.feedback button.on{color:var(--brand);background:var(--brand-soft)}
+.feedback button.down.on{color:var(--red);background:var(--red-soft)}
+.feedbackPanel{position:fixed;z-index:20;background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:0 16px 40px #1b213024;padding:14px;font-size:13px}
+.feedbackPanel strong{display:block;font-size:13px;font-weight:600;margin-bottom:10px}
+.feedbackPanel .reasons{display:flex;flex-wrap:wrap;gap:6px}
+.feedbackPanel .reasons button{background:var(--sunken);border:1px solid var(--line);color:var(--text-2);border-radius:99px;padding:4px 11px;font-size:12px}
+.feedbackPanel .reasons button.chosen{background:var(--brand-soft);border-color:var(--brand-line);color:var(--brand)}
+.feedbackPanel textarea{width:100%;margin-top:10px;border:1px solid var(--line-strong);border-radius:9px;padding:7px 10px;font-size:13px;resize:none;outline:0}
+.feedbackPanel textarea:focus{border-color:var(--brand-bright)}
+.panelActions{display:flex;justify-content:flex-end;gap:7px;margin-top:10px}
+.panelActions button{background:var(--surface);border:1px solid var(--line-strong);color:var(--muted);border-radius:8px;padding:5px 14px;font-size:12px}
+.panelActions button.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+.panelActions button:disabled{opacity:.5}
+.panelError{color:var(--red);margin:8px 0 0;font-size:12px}
+.feedbackPanel .thanks{margin:6px 0;color:var(--green);text-align:center}
+
+/* 底部停靠区：确认卡贴在输入框上面，待确认时视线不用离开输入的位置。 */
+.dock{flex:none;padding:8px 24px 14px}
+.dock>*{max-width:780px;margin-left:auto;margin-right:auto}
+.confirmCard{background:var(--surface);border:1px solid var(--amber-line);border-radius:var(--radius);padding:16px 18px;margin-bottom:10px;box-shadow:0 8px 28px #a55a0714;border-top:3px solid #e9a23b}
+.confirmHead{display:flex;align-items:center;gap:12px}
+.confirmIcon{flex:none;width:34px;height:34px;border-radius:10px;display:grid;place-items:center;color:var(--amber);background:var(--amber-soft)}
+.confirmHead small{display:block;color:var(--amber);font-size:12px;font-weight:500;margin-bottom:2px}
+.confirmHead strong{font-size:15px;font-weight:600}
+.confirmFields{margin:14px 0 0;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px 14px;padding:12px 14px;background:var(--sunken);border:1px solid var(--line);border-radius:10px}
+.confirmFields>div{min-width:0}
+.confirmFields dt{color:var(--faint);font-size:12px;margin-bottom:2px}
+.confirmFields dd{margin:0;color:var(--text);font-size:13px;font-weight:500;overflow-wrap:anywhere}
+.confirmFoot{display:flex;align-items:center;gap:8px;margin-top:14px}
+.confirmFoot p{flex:1;margin:0;font-size:12px;color:var(--muted)}
+
+.quickAsks{display:flex;gap:8px;margin-bottom:10px;overflow-x:auto;scrollbar-width:none}
+.quickAsks::-webkit-scrollbar{display:none}
+.quickAsks button{flex:none;border:1px solid var(--line-strong);background:var(--surface);color:var(--text-2);border-radius:99px;padding:5px 13px;font-size:12px;white-space:nowrap;transition:border-color .15s,color .15s,background .15s}
+.quickAsks button:hover:not(:disabled){border-color:var(--brand-line);color:var(--brand);background:var(--brand-soft)}
+.quickAsks button:disabled{opacity:.5}
+.composer{display:flex;align-items:flex-end;gap:8px;background:var(--surface);border:1px solid var(--line-strong);border-radius:16px;padding:8px 8px 8px 14px;box-shadow:var(--shadow);transition:border-color .15s,box-shadow .15s}
+.composer:focus-within{border-color:var(--brand-line);box-shadow:0 0 0 4px var(--brand-soft),var(--shadow)}
+.composer textarea{flex:1;border:0;outline:0;resize:none;padding:6px 0;background:transparent;font-size:14px;line-height:1.6}
+.composer textarea::placeholder{color:var(--faint)}
+.composer textarea:disabled{cursor:not-allowed}
+.send{flex:none;width:36px;height:36px;border:0;border-radius:11px;display:grid;place-items:center;background:var(--brand);color:#fff;transition:background .15s,opacity .15s}
+.send:hover:not(:disabled){background:var(--brand-deep)}
+.send:disabled{opacity:.35}
+.composerHint{margin-top:7px;margin-bottom:0;text-align:center;font-size:11px;color:var(--faint)}
+
+/* 右栏：进行中的事项 + 我的单据。任务段可空，单据段常驻，面板不会整栏空白。 */
+aside{min-height:0;overflow:auto;background:var(--bg);border-left:1px solid var(--line);padding:6px 22px 24px}
+.panelSection{padding:20px 0 8px}
+.panelSection+.panelSection{border-top:1px solid var(--line);margin-top:10px}
+.sectionHead{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.sectionHead h2{font-size:13px;font-weight:600;margin:0;color:var(--text)}
+.sectionHead small{min-width:20px;text-align:center;background:#eef0f3;color:var(--muted);padding:1px 7px;border-radius:99px;font-size:11px}
+.asideIdle{color:var(--faint);font-size:13px;margin:0;padding:18px 12px;text-align:center;border:1px dashed var(--line-strong);border-radius:12px;background:#fbfbfc}
+
+.matterList{display:flex;flex-direction:column;gap:10px}
+.matter{--tone:var(--muted);--tone-soft:#eef0f3;border:1px solid var(--line);border-left:3px solid var(--tone);border-radius:12px;padding:12px 14px;background:var(--surface)}
+.matter.waiting_input{--tone:var(--brand-bright);--tone-soft:var(--brand-soft)}
+.matter.waiting_confirmation{--tone:#e29b30;--tone-soft:var(--amber-soft)}
+.matter.in_progress{--tone:var(--blue);--tone-soft:var(--blue-soft)}
+.matter.shelved{--tone:var(--line-strong);background:#fbfbfc}
+.matterHead{display:flex;align-items:flex-start;gap:8px}
+.matterHead strong{flex:1;font-size:13px;font-weight:600;line-height:1.45}
+.pill{flex:none;display:inline-flex;align-items:center;gap:5px;font-style:normal;font-size:11px;color:var(--tone);background:var(--tone-soft);padding:2px 8px;border-radius:99px}
+.pill i{width:5px;height:5px;border-radius:50%;background:currentColor}
+.matter.waiting_confirmation .pill{color:var(--amber)}
+.matter.shelved .pill{color:var(--muted)}
+.matter.in_progress .pill i{animation:dot-pulse 1.1s ease-in-out infinite}
+.fields{list-style:none;margin:10px 0 0;padding:0}
+.fields li{display:flex;gap:10px;font-size:12px;padding:3px 0;align-items:baseline}
+.fields span{width:68px;flex:none;color:var(--faint)}
+.fields b{font-weight:500;color:var(--text-2);flex:1;min-width:0;overflow-wrap:anywhere}
+.fields i{font-style:normal;font-size:10px;color:var(--amber);background:var(--amber-soft);padding:1px 6px;border-radius:4px}
+.fields li.missing b{color:var(--amber);font-weight:400}
+.subtasks{margin-top:10px;padding-top:8px;border-top:1px dashed var(--line)}
+.subtasks div{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text-2);padding:3px 0}
+.subtasks span{flex:none;width:14px;height:14px;display:grid;place-items:center;color:var(--green)}
+.subtasks span i{width:8px;height:8px;border:1.5px solid var(--line-strong);border-radius:50%}
+.subtasks em{margin-left:auto;font-style:normal;font-size:11px;color:var(--faint)}
+.resume{margin-top:10px;background:var(--surface);border:1px solid var(--brand-line);color:var(--brand);border-radius:8px;padding:4px 12px;font-size:12px}
+.resume:hover:not(:disabled){background:var(--brand-soft)}
+.resume:disabled{opacity:.5}
+
+.actionList{display:flex;flex-direction:column;gap:2px}
+.action{display:flex;gap:11px;padding:10px 8px;margin:0 -8px;border-radius:10px}
+.action:hover{background:var(--surface)}
+.action>div{flex:1;min-width:0}
+.actionBadge{flex:none;width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:12px;font-weight:600;color:var(--brand);background:var(--brand-soft)}
+.action.revoked .actionBadge{color:var(--faint);background:#eef0f3}
+.actionHead{display:flex;align-items:center;gap:7px}
+.actionHead strong{font-size:13px;font-weight:600}
+.actionHead em{font-style:normal;font-size:11px;color:var(--green);background:var(--green-soft);padding:1px 7px;border-radius:99px}
+.action.revoked .actionHead em{color:var(--muted);background:#eef0f3}
+.actionHead small{margin-left:auto;color:var(--faint);font-size:11px}
+.action p{margin:4px 0 0;font-size:12px;color:var(--muted);line-height:1.5;overflow-wrap:anywhere}
+.action.revoked p{text-decoration:line-through;text-decoration-color:var(--faint)}
+.action code{display:block;margin-top:4px;font-family:"SF Mono",SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--faint)}
+
+/* 回答里的 Markdown */
+.message.assistant p{margin:0 0 .7em}
+.message.assistant p:last-child{margin-bottom:0}
+.message.assistant h1,.message.assistant h2,.message.assistant h3,.message.assistant h4{line-height:1.35;margin:1.1em 0 .5em;font-weight:600}
+.message.assistant h1:first-child,.message.assistant h2:first-child,.message.assistant h3:first-child,.message.assistant h4:first-child{margin-top:0}
+.message.assistant h1{font-size:1.35em}
+.message.assistant h2{font-size:1.2em}
+.message.assistant h3{font-size:1.08em}
+.message.assistant ul,.message.assistant ol{margin:.45em 0 .7em;padding-left:1.5em}
+.message.assistant li+li{margin-top:.25em}
+.message.assistant li::marker{color:var(--faint)}
+.message.assistant strong{font-weight:600}
+.message.assistant blockquote{margin:.7em 0;padding:.2em 0 .2em .9em;border-left:3px solid var(--brand-line);color:var(--text-2)}
+.message.assistant code{padding:.12em .4em;border-radius:5px;background:#e3e6ec;font-family:"SF Mono",SFMono-Regular,Consolas,"Liberation Mono",monospace;font-size:.88em}
+.message.assistant pre{max-width:100%;margin:.7em 0;padding:12px 14px;overflow-x:auto;border-radius:10px;background:#1c2233;color:#e6e9f2}
+.message.assistant pre code{padding:0;background:transparent;color:inherit}
+.message.assistant a{color:var(--brand);text-decoration:underline;text-underline-offset:2px}
+.message.assistant hr{border:0;border-top:1px solid var(--line);margin:1em 0}
+.message.assistant table{display:block;max-width:100%;overflow-x:auto;border-collapse:collapse;margin:.7em 0;font-size:13px}
+.message.assistant th,.message.assistant td{border:1px solid var(--line-strong);background:var(--surface);padding:6px 10px;text-align:left;white-space:nowrap}
+.message.assistant th{background:#e9ecf1;font-weight:600}
+.message.assistant img{max-width:100%;height:auto;border-radius:8px}
+.message.assistant input[type="checkbox"]{margin-right:.4em;accent-color:var(--brand)}
+
+/* 登录 */
+.loginPage{display:grid;place-items:center;min-height:100vh;padding:20px;background:radial-gradient(1200px 600px at 50% -10%,#e3e7fd,transparent 70%),var(--bg)}
+.loginCard{background:var(--surface);border:1px solid var(--line);border-radius:20px;box-shadow:0 24px 60px #1b213014;padding:40px 36px 30px;width:min(400px,100%);text-align:center}
+.loginCard .brandMark{margin:0 auto 18px}
+.loginCard h1{font-size:20px;font-weight:600;margin:0}
+.loginCard>p{font-size:13px;color:var(--muted);line-height:1.7;margin:10px 0 24px}
+.loginCard input{width:100%;border:1px solid var(--line-strong);border-radius:11px;padding:11px 14px;font-size:14px;outline:0;transition:border-color .15s,box-shadow .15s}
+.loginCard input:focus{border-color:var(--brand-bright);box-shadow:0 0 0 4px var(--brand-soft)}
+.loginCard .btn{width:100%;margin-top:12px;padding:11px;font-size:14px;border-radius:11px}
+.loginError{color:var(--red);font-size:13px;margin:14px 0 0;line-height:1.5}
+.loginDomains{display:flex;justify-content:center;flex-wrap:wrap;gap:6px;margin-top:26px;padding-top:20px;border-top:1px solid var(--line)}
+.loginDomains span{font-size:12px;color:var(--muted);background:var(--sunken);border:1px solid var(--line);padding:2px 10px;border-radius:99px}
+
+@media(max-width:960px){
+  .app{grid-template-columns:minmax(0,1fr) 320px}
+  .examples{grid-template-columns:1fr}
+}
+/* 窄屏：整页滚动，对话在上、右栏排到下面。 */
+@media(max-width:720px){
+  .app{display:block;height:auto;min-height:100vh}
+  .topbar{padding:0 12px}
+  .brand p,.userChip{display:none}
+  .chatPanel{height:100vh}
+  .messages{padding:18px 14px 8px}
+  .dock{padding:6px 12px 12px}
+  .message.user{max-width:80%}
+  .userAvatar.inTurn{width:26px;height:26px;font-size:12px}
+  .gutter{width:26px}
+  .assistantAvatar{width:26px;height:26px}
+  .confirmFields{grid-template-columns:1fr 1fr}
+  .confirmFoot{flex-wrap:wrap}
+  .confirmFoot p{flex-basis:100%}
+  aside{border-left:0;border-top:1px solid var(--line)}
+}
