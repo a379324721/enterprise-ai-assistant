@@ -61,6 +61,18 @@ def test_a_turn_that_runs_nothing_must_carry_a_reply() -> None:
         )
 
 
+def test_continue_must_run_the_open_task() -> None:
+    """continue 一定续跑原任务，reply 不会发出；"续跑却不执行"的组合必须打回让模型二选一。"""
+    with pytest.raises(ValidationError, match="continue 时 requires_task_planning 必须为 true"):
+        ContextResolution(
+            standalone_request="用户没有发票号，要求随便编一个凭证号",
+            intent_summary="要求编造凭证号",
+            requires_task_planning=False,
+            turn_relation=TurnRelation.CONTINUE,
+            reply="凭证信息必须真实，我不能编一个发票号。",
+        )
+
+
 def test_cancel_and_task_turns_need_no_reply() -> None:
     # 取消由运行时按实际结果回复，执行任务由领域 Agent 回复。
     ContextResolution(

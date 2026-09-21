@@ -272,6 +272,15 @@ class ContextResolution(BaseModel):
                 "requires_task_planning 为 false 且 turn_relation 不是 cancel 时必须写 reply："
                 "这一轮没有别的环节会回复用户"
             )
+        # continue 必然续跑原任务，运行时不看 requires_task_planning，reply 会被静默丢掉。
+        # 放过这种自相矛盾的组合，模型想"不执行、直接回复"的判断就无声失效了；
+        # 打回去让它二选一。
+        if self.turn_relation == TurnRelation.CONTINUE and not self.requires_task_planning:
+            raise ValueError(
+                "turn_relation 为 continue 时 requires_task_planning 必须为 true、reply 留空："
+                "continue 会续跑未办完的任务，由领域 Agent 回复用户。"
+                "如果本轮不该续跑、只需直接回复，turn_relation 改为 new"
+            )
         return self
 
 
