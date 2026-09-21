@@ -903,23 +903,43 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
           {/* 右栏只放有生命周期的事：还没办完的在这里，提交过的在下面的单据里。查询和
               闲聊办完就结束了，不占位置；执行过程在对话流里以步骤的形式出现。 */}
           {matters.length === 0 && <p className="asideIdle">当前没有进行中的事项</p>}
-          <div className="matterList">{matters.map((matter) => <div className={`matter ${matter.status}`} key={matter.plan_id}>
-            <div className="matterHead"><strong>{matter.title}</strong><em className="pill"><i/>{MATTER_STATUS_LABELS[matter.status]}</em></div>
-            {(matter.known_fields.length > 0 || matter.missing_fields.length > 0) && <ul className="fields">
+          <div className="matterList">{matters.map((matter) => {
+            const fields = (matter.known_fields.length > 0 || matter.missing_fields.length > 0) && <ul className="fields">
               {matter.known_fields.map((field) => <li key={field.name}><span>{field.label}</span><b>{field.value}</b>
                 {/* 档案给的只是建议值，用户还没确认过，得和用户亲口说的区分开。 */}
                 {field.source === "memory" && <i>建议</i>}</li>)}
               {matter.missing_fields.map((name) => <li key={name} className="missing"><span>{name}</span><b>待补充</b></li>)}
-            </ul>}
-            {matter.tasks.length > 1 && <div className="subtasks">{matter.tasks.filter((task) => task.id !== matter.task_id).map((task) =>
-              <div key={task.id} className={task.status}><span>{task.status === "completed" ? <CheckIcon/> : <i/>}</span>{task.title}<em>{TASK_STATUS_LABELS[task.status] || task.status}</em></div>)}
-            </div>}
-            {/* 只往输入框里填一句话：字段仍由对话补充、由领域 Agent 解析，不开第二条提交路径。 */}
-            {matter.status === "shelved" && <button className="resume" disabled={busy} onClick={() => {
-              setInput(`继续办理「${matter.title}」`);
-              inputRef.current?.focus();
-            }}>继续办理</button>}
-          </div>)}</div>
+            </ul>;
+            // 一个计划拆出好几个任务时，卡片是一张任务清单：只拿当前任务当标题、其余压成一行小字，
+            // 看着就像一个任务。字段只属于当前任务，展开在它自己那一项下面。
+            const multi = matter.tasks.length > 1;
+            const hasCurrent = matter.tasks.some((task) => task.id === matter.task_id);
+            const done = matter.tasks.filter((task) => task.status === "completed").length;
+            return <div className={`matter ${matter.status}`} key={matter.plan_id}>
+              <div className="matterHead">
+                {multi ? <strong>共 {matter.tasks.length} 项任务<small>已完成 {done}/{matter.tasks.length}</small></strong> : <strong>{matter.title}</strong>}
+                <em className="pill"><i/>{MATTER_STATUS_LABELS[matter.status]}</em>
+              </div>
+              {multi ? <>
+                <ol className="taskSteps">{matter.tasks.map((task, order) => {
+                  const current = task.id === matter.task_id;
+                  return <li key={task.id} className={`${task.status}${current ? " current" : ""}`}>
+                    <span className="stepNo">{task.status === "completed" ? <CheckIcon/> : order + 1}</span>
+                    <div className="stepBody">
+                      <div className="stepHead"><b>{task.title}</b><em>{TASK_STATUS_LABELS[task.status] || task.status}</em></div>
+                      {current && fields}
+                    </div>
+                  </li>;
+                })}</ol>
+                {!hasCurrent && fields}
+              </> : fields}
+              {/* 只往输入框里填一句话：字段仍由对话补充、由领域 Agent 解析，不开第二条提交路径。 */}
+              {matter.status === "shelved" && <button className="resume" disabled={busy} onClick={() => {
+                setInput(`继续办理「${matter.title}」`);
+                inputRef.current?.focus();
+              }}>继续办理</button>}
+            </div>;
+          })}</div>
         </section>
         <section className="panelSection">
           <div className="sectionHead docs"><span className="sectionIcon"><FileIcon/></span><h2>我的单据</h2>{actions.length > 0 && <small>{actions.length}</small>}</div>

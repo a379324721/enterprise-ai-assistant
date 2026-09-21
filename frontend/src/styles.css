@@ -185,11 +185,26 @@ aside{min-height:0;overflow:auto;background:var(--bg);border-left:1px solid var(
 .fields b{font-weight:500;color:var(--text-2);flex:1;min-width:0;overflow-wrap:anywhere}
 .fields i{font-style:normal;font-size:10px;color:var(--amber);background:var(--amber-soft);padding:1px 6px;border-radius:4px}
 .fields li.missing b{color:var(--amber);font-weight:400}
-.subtasks{margin-top:10px;padding-top:8px;border-top:1px dashed var(--line)}
-.subtasks div{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text-2);padding:3px 0}
-.subtasks span{flex:none;width:14px;height:14px;display:grid;place-items:center;color:var(--green)}
-.subtasks span i{width:8px;height:8px;border:1.5px solid var(--line-strong);border-radius:50%}
-.subtasks em{margin-left:auto;font-style:normal;font-size:11px;color:var(--faint)}
+.matterHead strong small{margin-left:8px;font-size:12px;font-weight:400;color:var(--faint)}
+/* 多任务计划：按计划顺序的任务清单，序号用竖线串起来；当前任务带底色，字段展开在它下面。 */
+.taskSteps{list-style:none;margin:12px 0 0;padding:0}
+.taskSteps li{position:relative;display:flex;gap:10px;padding-bottom:10px}
+.taskSteps li:last-child{padding-bottom:0}
+.taskSteps li:not(:last-child)::before{content:"";position:absolute;left:10px;top:24px;bottom:2px;width:1px;background:var(--line-strong)}
+.stepNo{flex:none;width:21px;height:21px;margin-top:6px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:600;color:var(--muted);background:var(--surface);border:1px solid var(--line-strong)}
+.taskSteps li.completed .stepNo{color:#fff;background:var(--green);border-color:var(--green)}
+.taskSteps li.current .stepNo{color:#fff;background:var(--tone);border-color:var(--tone)}
+.stepBody{flex:1;min-width:0;padding:5px 10px;border-radius:9px}
+.taskSteps li.current .stepBody{background:var(--tone-soft)}
+.stepHead{display:flex;align-items:baseline;gap:8px}
+.stepHead b{flex:1;min-width:0;font-size:13px;font-weight:500;color:var(--text-2);line-height:1.5}
+.taskSteps li.current .stepHead b{font-weight:600;color:var(--text)}
+.taskSteps li.completed .stepHead b{color:var(--muted)}
+.stepHead em{flex:none;font-style:normal;font-size:11px;color:var(--faint)}
+.taskSteps li.current .stepHead em{color:var(--tone)}
+.stepBody .fields{margin-top:6px}
+.matter.shelved .taskSteps li.current .stepNo{color:var(--muted);background:#eef0f3;border-color:var(--line-strong)}
+.matter.shelved .taskSteps li.current .stepHead em{color:var(--muted)}
 .resume{margin-top:10px;background:var(--surface);border:1px solid var(--brand-line);color:var(--brand);border-radius:8px;padding:4px 12px;font-size:12px}
 .resume:hover:not(:disabled){background:var(--brand-soft)}
 .resume:disabled{opacity:.5}
