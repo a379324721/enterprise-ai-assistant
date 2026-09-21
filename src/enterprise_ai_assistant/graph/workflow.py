@@ -589,9 +589,14 @@ class Workflow:
             else item
             for item in state["tasks"]
         ]
-        # 领域 Agent 要的是本轮改写后的请求，不是计划的总目标：续跑轮里用户的补充
-        # （"当天往返""选第一间"）只在本轮的 standalone_request 里。
+        # 被续跑的任务（带着上一轮的草稿）要本轮改写后的请求：用户的补充
+        # （"当天往返""选第一间"）只在本轮的 standalone_request 里。其余任务要计划的
+        # 总目标：续跑轮的改写只讲被续跑的那件事，排队的任务拿到它，会以为用户根本
+        # 没提自己的事、判断派错了领域而转交，接手的领域看任务目标又转回来。
+        # 新建计划的轮次两者相同。早于 user_goal 的检查点没有这个字段，退回本轮改写。
         context = ContextResolution.model_validate(state["understanding"])
+        drafts = state.get("drafts", {})
+        plan_goal = state.get("user_goal") or context.standalone_request
         artifacts = state.get("artifacts", {})
         # 只取原文，不带 Supervisor 那份早先会话摘要：摘要是改写过的请求，
         # 领域 Agent 读原文正是为了不依赖改写。同一批并行的任务彼此看不到对方的回答。
@@ -614,7 +619,9 @@ class Workflow:
                     user_name=state.get("user_name", ""),
                     conversation_id=state["conversation_id"],
                     request_id=state["request_id"],
-                    user_goal=context.standalone_request,
+                    user_goal=(
+                        context.standalone_request if task.id in drafts else plan_goal
+                    ),
                     task=task,
                     dependency_results={
                         dependency: artifacts[dependency]
@@ -623,7 +630,7 @@ class Workflow:
                     },
                     memories=self._relevant_memories(state),
                     recent_actions=list(state.get("recent_actions", [])),
-                    draft=state.get("drafts", {}).get(task.id),
+                    draft=drafts.get(task.id),
                     recent_messages=recent_messages,
                 )
                 for task in runnable

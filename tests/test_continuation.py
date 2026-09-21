@@ -235,6 +235,34 @@ async def test_supplement_resumes_the_waiting_task_without_replanning() -> None:
 
 
 @pytest.mark.asyncio
+async def test_queued_tasks_keep_the_plan_goal_when_a_resumed_task_finishes() -> None:
+    """续跑轮的改写只讲被续跑的那件事，排队的任务要拿计划的总目标。
+
+    否则排队任务看到的"用户请求"里没有自己的事，会判断派错了领域而转交出去，
+    接手的领域看任务目标又转回来——实测两个任务各来回一趟，一轮跑了十几分钟。
+    """
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差并查考勤制度"),
+            _resolution("去上海出差当天往返", relation=TurnRelation.CONTINUE),
+        ]
+    )
+    graph, runtimes = _build(planning)
+
+    await _turn(graph, "去上海出差，顺便查下考勤制度")
+    second = await _turn(graph, "当天往返")
+
+    assert _statuses(second) == [
+        ("task-1", TaskStatus.COMPLETED),
+        ("task-2", TaskStatus.COMPLETED),
+    ]
+    requests = {task_id: payload["standalone_request"] for task_id, payload in runtimes.seen}
+    # 被续跑的任务要本轮的补充，排队的任务要整件事的目标。
+    assert requests["task-1"] == "去上海出差当天往返"
+    assert requests["task-2"] == "去上海出差并查考勤制度"
+
+
+@pytest.mark.asyncio
 async def test_small_talk_while_waiting_keeps_the_plan() -> None:
     planning = ScriptedPlanning(
         [
