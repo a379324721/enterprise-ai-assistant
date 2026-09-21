@@ -130,6 +130,8 @@ const CheckIcon = () => <Icon size={12}><path d="M20 6L9 17l-5-5"/></Icon>;
 const CrossIcon = () => <Icon size={12}><path d="M18 6L6 18"/><path d="M6 6l12 12"/></Icon>;
 const ShieldIcon = () => <Icon><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/></Icon>;
 const InfoIcon = () => <Icon size={13}><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></Icon>;
+const ClockIcon = () => <Icon><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></Icon>;
+const FileIcon = () => <Icon><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/></Icon>;
 const ThumbIcon = () => <Icon size={14}><path d="M7 10v12"/><path d="M15 5.9L14 10h5.8a2 2 0 0 1 1.9 2.6l-2.3 7A2 2 0 0 1 17.5 21H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h2.8a2 2 0 0 0 1.8-1.1L12 2a3.1 3.1 0 0 1 3 3.9z"/></Icon>;
 
 /**
@@ -897,7 +899,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
       </div>
       <aside>
         <section className="panelSection">
-          <div className="sectionHead"><h2>进行中</h2>{matters.length > 0 && <small>{matters.length}</small>}</div>
+          <div className="sectionHead"><span className="sectionIcon"><ClockIcon/></span><h2>进行中</h2>{matters.length > 0 && <small>{matters.length}</small>}</div>
           {/* 右栏只放有生命周期的事：还没办完的在这里，提交过的在下面的单据里。查询和
               闲聊办完就结束了，不占位置；执行过程在对话流里以步骤的形式出现。 */}
           {matters.length === 0 && <p className="asideIdle">当前没有进行中的事项</p>}
@@ -920,7 +922,7 @@ function ChatView({session, onSignOut}: {session: Session; onSignOut: () => void
           </div>)}</div>
         </section>
         <section className="panelSection">
-          <div className="sectionHead"><h2>我的单据</h2>{actions.length > 0 && <small>{actions.length}</small>}</div>
+          <div className="sectionHead docs"><span className="sectionIcon"><FileIcon/></span><h2>我的单据</h2>{actions.length > 0 && <small>{actions.length}</small>}</div>
           {actions.length === 0 && <p className="asideIdle">这里会列出你提交过的单据</p>}
           <div className="actionList">{actions.map((item, index) => {
             const label = ACTION_LABELS[item.action_type] || item.action_type;

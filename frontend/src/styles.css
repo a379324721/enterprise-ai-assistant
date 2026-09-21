@@ -158,9 +158,12 @@ button:disabled{cursor:default}
 aside{min-height:0;overflow:auto;background:var(--bg);border-left:1px solid var(--line);padding:6px 22px 24px}
 .panelSection{padding:20px 0 8px}
 .panelSection+.panelSection{border-top:1px solid var(--line);margin-top:10px}
-.sectionHead{display:flex;align-items:center;gap:8px;margin-bottom:12px}
-.sectionHead h2{font-size:13px;font-weight:600;margin:0;color:var(--text)}
-.sectionHead small{min-width:20px;text-align:center;background:#eef0f3;color:var(--muted);padding:1px 7px;border-radius:99px;font-size:11px}
+/* 两段的标题要从一栏卡片里跳出来：带底色的图标块 + 大一号的字，两段用不同颜色区分。 */
+.sectionHead{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.sectionIcon{flex:none;width:30px;height:30px;border-radius:9px;display:grid;place-items:center;color:var(--brand);background:var(--brand-soft);border:1px solid var(--brand-line)}
+.sectionHead.docs .sectionIcon{color:var(--green);background:var(--green-soft);border-color:var(--green-line)}
+.sectionHead h2{font-size:15px;font-weight:600;margin:0;color:var(--text)}
+.sectionHead small{min-width:22px;text-align:center;background:var(--surface);border:1px solid var(--line);color:var(--text-2);padding:1px 8px;border-radius:99px;font-size:12px;font-weight:500}
 .asideIdle{color:var(--faint);font-size:13px;margin:0;padding:18px 12px;text-align:center;border:1px dashed var(--line-strong);border-radius:12px;background:#fbfbfc}
 
 .matterList{display:flex;flex-direction:column;gap:10px}
@@ -170,7 +173,7 @@ aside{min-height:0;overflow:auto;background:var(--bg);border-left:1px solid var(
 .matter.in_progress{--tone:var(--blue);--tone-soft:var(--blue-soft)}
 .matter.shelved{--tone:var(--line-strong);background:#fbfbfc}
 .matterHead{display:flex;align-items:flex-start;gap:8px}
-.matterHead strong{flex:1;font-size:13px;font-weight:600;line-height:1.45}
+.matterHead strong{flex:1;font-size:14px;font-weight:600;line-height:1.45}
 .pill{flex:none;display:inline-flex;align-items:center;gap:5px;font-style:normal;font-size:11px;color:var(--tone);background:var(--tone-soft);padding:2px 8px;border-radius:99px}
 .pill i{width:5px;height:5px;border-radius:50%;background:currentColor}
 .matter.waiting_confirmation .pill{color:var(--amber)}
@@ -191,20 +194,22 @@ aside{min-height:0;overflow:auto;background:var(--bg);border-left:1px solid var(
 .resume:hover:not(:disabled){background:var(--brand-soft)}
 .resume:disabled{opacity:.5}
 
-.actionList{display:flex;flex-direction:column;gap:2px}
-.action{display:flex;gap:11px;padding:10px 8px;margin:0 -8px;border-radius:10px}
-.action:hover{background:var(--surface)}
+/* 单据一张一张的卡片，和上面的事项卡同一套外观，而不是一串文字。 */
+.actionList{display:flex;flex-direction:column;gap:10px}
+.action{display:flex;gap:12px;padding:12px 14px;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:0 1px 2px #1b213008;transition:border-color .15s,box-shadow .15s}
+.action:hover{border-color:var(--brand-line);box-shadow:var(--shadow)}
+.action.revoked{background:#fbfbfc;box-shadow:none}
 .action>div{flex:1;min-width:0}
-.actionBadge{flex:none;width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:12px;font-weight:600;color:var(--brand);background:var(--brand-soft)}
+.actionBadge{flex:none;width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-size:14px;font-weight:600;color:var(--brand);background:var(--brand-soft)}
 .action.revoked .actionBadge{color:var(--faint);background:#eef0f3}
 .actionHead{display:flex;align-items:center;gap:7px}
-.actionHead strong{font-size:13px;font-weight:600}
+.actionHead strong{font-size:14px;font-weight:600}
 .actionHead em{font-style:normal;font-size:11px;color:var(--green);background:var(--green-soft);padding:1px 7px;border-radius:99px}
 .action.revoked .actionHead em{color:var(--muted);background:#eef0f3}
 .actionHead small{margin-left:auto;color:var(--faint);font-size:11px}
-.action p{margin:4px 0 0;font-size:12px;color:var(--muted);line-height:1.5;overflow-wrap:anywhere}
+.action p{margin:6px 0 0;font-size:13px;color:var(--muted);line-height:1.5;overflow-wrap:anywhere}
 .action.revoked p{text-decoration:line-through;text-decoration-color:var(--faint)}
-.action code{display:block;margin-top:4px;font-family:"SF Mono",SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--faint)}
+.action code{display:block;margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);font-family:"SF Mono",SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--faint)}
 
 /* 回答里的 Markdown */
 .message.assistant p{margin:0 0 .7em}
