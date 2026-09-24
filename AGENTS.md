@@ -35,6 +35,7 @@ uv run python -m evals.runner --suite guardrail  # 单个评测集；不带 --su
 
 - key 只在 `.env` 里，要从 `Settings` 取出来显式传：`Client(api_key=s.langsmith_api_key.get_secret_value(), api_url=s.langsmith_endpoint)`。
 - 根 run 的 `extra.metadata` 带 `user_id`、`conversation_id`；`client.list_runs(trace_id=...)` 按 `dotted_order` 排序得到整棵树，`run_type == "llm"` 的 inputs 是完整 prompt，`context-supervisor` 的 inputs 是理解阶段的入参，可以拿来重放。
+- 按 `conversation_id` 筛出的 trace 不一定是一段连续会话：演示用户的会话 ID 由名字派生，"清空会话"只删检查点、ID 不变，清空前后的轮次混在一起，trace 上也没有清空标记。判断"模型忘了之前的事"之前，先看那一轮 `context-supervisor` 的 inputs：`conversation` 突然只剩本轮一句、`open_tasks` 为空，就是之前清空过，不是模型的问题。
 - shell 里有 SOCKS 代理而 httpx 没装 socksio，访问 LangSmith 和模型服务的脚本用 `env -u all_proxy -u ALL_PROXY` 启动。
 - 看不到 trace 时，停在确认卡上的会话可以用 `AsyncPostgresSaver.aget_tuple({"configurable": {"thread_id": <conversation_id>, "checkpoint_ns": ""}})` 读检查点。
 
