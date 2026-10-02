@@ -155,12 +155,18 @@ context_cases:
         content: 提交这趟前往上海的差旅申请还需要一个信息：您的返程日期是哪天？
       - role: user
         content: 当天往返
-    open_tasks:
+    matters:
       - plan_id: p-trip
-        task_id: task-1
-        title: 提交上海差旅申请
-        domain: travel
-        missing_fields: [end_date]
+        tasks:
+          - task_id: task-1
+            title: 提交上海差旅申请
+            domain: travel
+            status: waiting_input
+            missing_fields: [end_date]
+          - task_id: task-2
+            title: 预订出差当天下午的会议室
+            domain: meeting
+            status: pending
     expect_task_planning: true
     expect_turn_relation: continue
     expect_keywords: ["上海"]
@@ -176,12 +182,14 @@ context_cases:
         content: 查到两间空闲会议室：1. SH-301 讨论室（8 人）2. SH-302 会议室（20 人），请选择一间。
       - role: user
         content: "1"
-    open_tasks:
+    matters:
       - plan_id: p-trip
-        task_id: task-1
-        title: 预订上海分部会议室
-        domain: meeting
-        missing_fields: [room_id]
+        tasks:
+          - task_id: task-1
+            title: 预订上海分部会议室
+            domain: meeting
+            status: waiting_input
+            missing_fields: [room_id]
     expect_task_planning: true
     expect_turn_relation: continue
     note: 只有一个数字的回复，必须认出是在给待补充的会议室任务做选择
@@ -194,12 +202,14 @@ context_cases:
         content: 还需要补充出差结束日期和出差事由。
       - role: user
         content: 对了，我还剩几天年假？
-    open_tasks:
+    matters:
       - plan_id: p-trip
-        task_id: task-1
-        title: 提交上海差旅申请
-        domain: travel
-        missing_fields: [end_date, purpose]
+        tasks:
+          - task_id: task-1
+            title: 提交上海差旅申请
+            domain: travel
+            status: waiting_input
+            missing_fields: [end_date, purpose]
     expect_task_planning: true
     expect_turn_relation: new
     expect_keywords: ["年假"]
@@ -213,12 +223,14 @@ context_cases:
         content: 还需要补充出差结束日期和出差事由。
       - role: user
         content: 好的，我问一下再告诉你
-    open_tasks:
+    matters:
       - plan_id: p-trip
-        task_id: task-1
-        title: 提交上海差旅申请
-        domain: travel
-        missing_fields: [end_date, purpose]
+        tasks:
+          - task_id: task-1
+            title: 提交上海差旅申请
+            domain: travel
+            status: waiting_input
+            missing_fields: [end_date, purpose]
     expect_task_planning: false
     expect_turn_relation: new
     note: 没有提供任何信息，续跑只会让差旅 Agent 再问一遍同样的问题
@@ -231,12 +243,14 @@ context_cases:
         content: 还需要补充出差结束日期和出差事由。
       - role: user
         content: 算了，这趟不去了
-    open_tasks:
+    matters:
       - plan_id: p-trip
-        task_id: task-1
-        title: 提交上海差旅申请
-        domain: travel
-        missing_fields: [end_date, purpose]
+        tasks:
+          - task_id: task-1
+            title: 提交上海差旅申请
+            domain: travel
+            status: waiting_input
+            missing_fields: [end_date, purpose]
     expect_task_planning: false
     expect_turn_relation: cancel
     expect_target_plan_id: p-trip
@@ -254,13 +268,15 @@ context_cases:
         content: 您当前年假余额为 5 天。
       - role: user
         content: 好，继续刚才的出差申请，周五回来，去做客户交流
-    open_tasks:
+    matters:
       - plan_id: p-trip
-        task_id: task-1
-        title: 提交上海差旅申请
-        domain: travel
-        missing_fields: [end_date, purpose]
         shelved: true
+        tasks:
+          - task_id: task-1
+            title: 提交上海差旅申请
+            domain: travel
+            status: waiting_input
+            missing_fields: [end_date, purpose]
     expect_task_planning: true
     expect_turn_relation: continue
     expect_target_plan_id: p-trip
@@ -279,18 +295,22 @@ context_cases:
         content: 查到两间空闲会议室：1. BJ-201（6 人）2. BJ-202（12 人），请选择一间。
       - role: user
         content: 第二间
-    open_tasks:
+    matters:
       - plan_id: p-room
-        task_id: task-1
-        title: 预订北京分部会议室
-        domain: meeting
-        missing_fields: [room_id]
+        tasks:
+          - task_id: task-1
+            title: 预订北京分部会议室
+            domain: meeting
+            status: waiting_input
+            missing_fields: [room_id]
       - plan_id: p-trip
-        task_id: task-1
-        title: 提交上海差旅申请
-        domain: travel
-        missing_fields: [end_date, purpose]
         shelved: true
+        tasks:
+          - task_id: task-1
+            title: 提交上海差旅申请
+            domain: travel
+            status: waiting_input
+            missing_fields: [end_date, purpose]
     expect_task_planning: true
     expect_turn_relation: continue
     forbid_target_plan_ids: [p-trip]
@@ -298,6 +318,37 @@ context_cases:
     note: |
       短回复补充的是当前事项（会议室），target_plan_id 可以留空或填 p-room，
       但绝不能是被搁置的差旅——那需要用户明确提起。
+
+  - id: ctx-completed-task-is-not-an-approval
+    conversation:
+      - role: user
+        content: 申请 10 月 4 号从北京去上海开会，单程，顺便订个当天下午的会议室
+      - role: assistant
+        content: 差旅申请已提交，单号 TRV-20261002-7C3B1E。
+        tools: [create_travel_application]
+      - role: assistant
+        content: 会议室还需要确认会议主题和参会人数。
+        tools: [request_information]
+      - role: user
+        content: 出差申请批下来了吗？
+    matters:
+      - plan_id: p-trip
+        tasks:
+          - task_id: task-1
+            title: 提交上海出差申请
+            domain: travel
+            status: completed
+          - task_id: task-2
+            title: 预订出差当天下午的会议室
+            domain: meeting
+            status: waiting_input
+            missing_fields: [会议主题, 参会人数]
+    expect_task_planning: true
+    expect_turn_relation: new
+    expect_domains: [travel]
+    note: |
+      事项里差旅任务是 completed，只说明申请已提交。审批状态只有执行环节查得到，
+      不能凭 completed 直接回复"已经批了"；也不是在补充会议室，判成 continue 会把会议室再问一遍。
 
   - id: ctx-revoking-a-submitted-form-is-not-cancel
     conversation:

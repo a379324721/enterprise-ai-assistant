@@ -11,11 +11,11 @@ from enterprise_ai_assistant.agents.domain_runtime import DomainRuntimeProvider
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.api import routes
 from enterprise_ai_assistant.api.schemas import ConfirmationRequest
+from enterprise_ai_assistant.core.matters import OpenMatter
 from enterprise_ai_assistant.core.models import (
     AgentName,
     ContextResolution,
     DomainTaskRequest,
-    OpenTask,
     PendingConfirmation,
     PlannedTask,
     TaskPlan,
@@ -41,7 +41,7 @@ class StubPlanningService:
         self,
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
-        open_tasks: Sequence[OpenTask] = (),
+        matters: Sequence[OpenMatter] = (),
         recent_actions: Sequence[str] = (),
         user_name: str = "",
     ) -> ContextResolution:
@@ -80,7 +80,7 @@ class DirectPlanningService:
         self,
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
-        open_tasks: Sequence[OpenTask] = (),
+        matters: Sequence[OpenMatter] = (),
         recent_actions: Sequence[str] = (),
         user_name: str = "",
     ) -> ContextResolution:
@@ -547,7 +547,7 @@ class LeavePlanningService:
         self,
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
-        open_tasks: Sequence[OpenTask] = (),
+        matters: Sequence[OpenMatter] = (),
         recent_actions: Sequence[str] = (),
         user_name: str = "",
     ) -> ContextResolution:
@@ -1048,7 +1048,7 @@ class RecordingPlanningService:
         self,
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
-        open_tasks: Sequence[OpenTask] = (),
+        matters: Sequence[OpenMatter] = (),
         recent_actions: Sequence[str] = (),
         user_name: str = "",
     ) -> ContextResolution:
@@ -1189,7 +1189,7 @@ async def test_digest_entry_is_truncated() -> None:
             self,
             conversation: list[dict[str, str]],
             memory_keys: Sequence[str] = (),
-            open_tasks: Sequence[OpenTask] = (),
+            matters: Sequence[OpenMatter] = (),
             recent_actions: Sequence[str] = (),
             user_name: str = "",
         ) -> ContextResolution:

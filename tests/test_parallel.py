@@ -13,11 +13,11 @@ from enterprise_ai_assistant.agents.domain_runtime import DomainRuntimeProvider
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.api import routes
 from enterprise_ai_assistant.api.schemas import ConfirmationRequest
+from enterprise_ai_assistant.core.matters import OpenMatter
 from enterprise_ai_assistant.core.models import (
     AgentName,
     ContextResolution,
     MemoryExtraction,
-    OpenTask,
     PlannedTask,
     TaskOutline,
     TaskPlan,
@@ -59,11 +59,11 @@ class TwoTasks(PlanningService):
         self,
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
-        open_tasks: Sequence[OpenTask] = (),
+        matters: Sequence[OpenMatter] = (),
         recent_actions: Sequence[str] = (),
         user_name: str = "",
     ) -> ContextResolution:
-        del conversation, memory_keys, open_tasks, recent_actions, user_name
+        del conversation, memory_keys, matters, recent_actions, user_name
         return ContextResolution(
             standalone_request="申请上海出差，另外报销打车费 58 元",
             intent_summary="出差并报销",

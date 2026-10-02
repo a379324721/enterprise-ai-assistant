@@ -128,7 +128,7 @@ class EvalHarness:
     async def run_context_case(self, case: ContextCase) -> CaseResult:
         conversation = [turn.rendered() for turn in case.conversation]
         resolution = await self._planning.resolve_context(
-            conversation, open_tasks=case.open_tasks, recent_actions=case.recent_actions
+            conversation, matters=case.matters, recent_actions=case.recent_actions
         )
         problems: list[str] = []
         if resolution.requires_task_planning != case.expect_task_planning:

@@ -1,7 +1,7 @@
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
@@ -12,7 +12,6 @@ from langgraph.types import Command
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response, StreamingResponse
 
-from enterprise_ai_assistant.api.matters import project_matters
 from enterprise_ai_assistant.api.schemas import (
     ActionListResponse,
     AssistantResponse,
@@ -24,13 +23,13 @@ from enterprise_ai_assistant.api.schemas import (
     DemoAuthResponse,
     DevTokenRequest,
     HealthResponse,
-    Matter,
     MemoryListResponse,
     MessageFeedbackRequest,
     TokenResponse,
     TurnStep,
 )
 from enterprise_ai_assistant.core.config import Settings, get_settings
+from enterprise_ai_assistant.core.matters import Matter, project_matters
 from enterprise_ai_assistant.core.metrics import BUDGET_REJECTIONS, REGISTRY
 from enterprise_ai_assistant.core.models import (
     DomainTaskResult,
@@ -57,6 +56,7 @@ from enterprise_ai_assistant.core.security import (
     Identity,
     create_access_token,
 )
+from enterprise_ai_assistant.graph.state import current_plan, shelved_plans
 from enterprise_ai_assistant.graph.workflow import (
     STEPS_KEY,
     TASK_KEY,
@@ -321,6 +321,21 @@ def _settled_results(snapshot: Any) -> list[DomainTaskResult]:
     return results
 
 
+def _matters(
+    values: Mapping[str, Any],
+    *,
+    running: bool,
+    tasks: list[PlannedTask] | None = None,
+    pending: PendingConfirmation | None = None,
+) -> list[Matter]:
+    """右栏事项。tasks 只有快照调用方给：快照里能读到已跑完、还没归并的分支，调用方据此
+    修正了任务状态；检查点事件里没有这些。"""
+    current = current_plan(values)
+    if tasks is not None:
+        current = current.model_copy(update={"tasks": tasks})
+    return project_matters(current, shelved_plans(values), running=running, pending=pending)
+
+
 async def _response(
     app: Any, conversation_id: UUID, user_id: str, *, running: bool | None = None
 ) -> AssistantResponse:
@@ -377,7 +392,7 @@ async def _response(
         artifacts=values.get("artifacts", {}),
         tool_results=tool_results,
         pending_confirmation=pending,
-        matters=project_matters(values, running=running, tasks=tasks, pending=pending),
+        matters=_matters(values, running=running, tasks=tasks, pending=pending),
         steps=_steps(tool_results, tasks),
     )
 
@@ -626,7 +641,7 @@ async def _execute_run(
                 # 子图的检查点只有领域 Agent 的私有状态，计划和事项都在根图上。
                 if not part["ns"]:
                     values = part["data"]["values"]
-                    await matters.publish(project_matters(values, running=True))
+                    await matters.publish(_matters(values, running=True))
             elif part["type"] == "tasks":
                 task = part["data"]
                 # 同一个任务开始和结束各发一次，结束那次带 result/error。只认开始。

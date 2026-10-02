@@ -2,10 +2,10 @@ from collections.abc import Sequence
 
 from langsmith import traceable
 
+from enterprise_ai_assistant.core.matters import OpenMatter
 from enterprise_ai_assistant.core.models import (
     ContextResolution,
     MemoryExtraction,
-    OpenTask,
     PlannedTask,
     TaskPlan,
     TaskStatus,
@@ -24,12 +24,12 @@ class SupervisorAgent:
         self,
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
-        open_tasks: Sequence[OpenTask] = (),
+        matters: Sequence[OpenMatter] = (),
         recent_actions: Sequence[str] = (),
         user_name: str = "",
     ) -> ContextResolution:
         return await self._planning.resolve_context(
-            conversation, memory_keys, open_tasks, recent_actions, user_name
+            conversation, memory_keys, matters, recent_actions, user_name
         )
 
     async def plan(self, context: ContextResolution) -> TaskPlan:

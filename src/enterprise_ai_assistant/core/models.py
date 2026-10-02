@@ -136,22 +136,6 @@ class TurnRelation(StrEnum):
     CANCEL = "cancel"
 
 
-class OpenTask(BaseModel):
-    """交给 Context Supervisor 的待补充任务摘要。
-
-    只有标题和缺失字段的名称，没有任何字段值：Supervisor 需要知道"刚才在问什么"
-    才能认出"当天往返""1"这种短回复在补充谁，但拿到值就有了补写领域字段的材料。
-    """
-
-    plan_id: str
-    task_id: str
-    title: str
-    domain: AgentName
-    missing_fields: list[str] = Field(default_factory=list)
-    # false 是当前事项，true 是用户换话题时被搁置的事项。
-    shelved: bool = False
-
-
 class DraftField(BaseModel):
     """领域 Agent 在追问时报告的一个已知字段。"""
 
@@ -227,7 +211,6 @@ class ContextResolution(BaseModel):
     intent_summary: str = Field(min_length=1, max_length=1000)
     requires_task_planning: bool
     explicit_constraints: list[str] = Field(default_factory=list)
-    referenced_task_ids: list[str] = Field(default_factory=list)
     unresolved_references: list[str] = Field(default_factory=list)
     # 用户本轮使用的语言。下游节点不读原始消息，只能靠这里保持语言一致。
     user_language: str = Field(default="简体中文", min_length=1, max_length=32)

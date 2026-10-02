@@ -10,12 +10,12 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
+from enterprise_ai_assistant.core.matters import open_matters
 from enterprise_ai_assistant.core.models import (
     ContextResolution,
     DialogueTurn,
     DomainTaskRequest,
     DomainTaskResult,
-    OpenTask,
     Plan,
     PlannedTask,
     TaskDraft,
@@ -31,6 +31,7 @@ from enterprise_ai_assistant.graph.state import (
     DomainTaskInput,
     current_plan,
     plan_update,
+    shelved_plans,
 )
 from enterprise_ai_assistant.repositories.memories import MemoryRepository
 from enterprise_ai_assistant.tools.registry import TOOL_LABELS
@@ -345,23 +346,6 @@ class Workflow:
         ]
 
     @staticmethod
-    def _open_tasks_of(plan: Plan, *, shelved: bool) -> list[OpenTask]:
-        return [
-            OpenTask(
-                plan_id=plan.plan_id,
-                task_id=task.id,
-                title=task.title,
-                domain=task.domain,
-                missing_fields=(
-                    plan.drafts[task.id].missing_fields if task.id in plan.drafts else []
-                ),
-                shelved=shelved,
-            )
-            for task in plan.tasks
-            if task.status == TaskStatus.WAITING_INPUT
-        ]
-
-    @staticmethod
     def _requeue_waiting(plan: Plan) -> Plan:
         return plan.model_copy(
             update={
@@ -378,7 +362,7 @@ class Workflow:
     def _target(
         context: ContextResolution,
         current: Plan,
-        current_open: list[OpenTask],
+        current_open: bool,
         shelved: list[Plan],
     ) -> Plan | None:
         """解析 continue / cancel 指向的事项；指不到任何未办完的事项时返回 None。"""
@@ -400,18 +384,16 @@ class Workflow:
         current = current.model_copy(
             update={"tasks": recover_interrupted(current.tasks, current.drafts)}
         )
-        shelved = list(state.get("shelved_plans", []))
-        current_open = self._open_tasks_of(current, shelved=False)
-        open_tasks = [
-            *current_open,
-            *(item for plan in shelved for item in self._open_tasks_of(plan, shelved=True)),
-        ]
+        shelved = shelved_plans(state)
+        # 和上一轮结束后右栏显示的是同一份事项：当前计划出现在里面，就是它还有事在等用户。
+        matters = open_matters(current, shelved)
+        current_open = any(not matter.shelved for matter in matters)
         # 只给 key 不给 value：Supervisor 做的是相关性筛选，不读取记忆内容，
         # 也就无从用它补写领域字段。代价是直接回复不做基于档案的个性化。
         context = await self.supervisor.resolve_context(
             self._conversation(state),
             [record.key for record in state.get("memories", [])],
-            open_tasks,
+            matters,
             [action.render() for action in state.get("recent_actions", [])],
             state.get("user_name", ""),
         )
@@ -654,7 +636,7 @@ class Workflow:
             # 执行步骤原本只随整轮结束的 done 下发。确认之后还有后续任务时，前端要等后续任务
             # 也跑完才知道这个任务做了什么，只能把所有步骤和回答攒到最后一起画。这里每归并
             # 一个任务就推一次，界面可以按任务依次呈现。转交出去的任务没有回答，不推。
-            # 右栏不靠这个事件：它跟着检查点走（api/matters.py），这里不带计划数据。
+            # 右栏不靠这个事件：它跟着检查点走（core/matters.py），这里不带计划数据。
             write(
                 {
                     "task_done": result.task_id,

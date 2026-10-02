@@ -10,7 +10,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
-from enterprise_ai_assistant.core.models import AgentName, OpenTask, TurnRelation
+from enterprise_ai_assistant.core.matters import OpenMatter
+from enterprise_ai_assistant.core.models import AgentName, TurnRelation
 from enterprise_ai_assistant.graph.workflow import render_reply
 
 DATASET_PATH = Path(__file__).with_name("cases.yaml")
@@ -42,7 +43,7 @@ class ContextCase(BaseModel):
     # 实体（"杭州"），也可以引用更精确的业务单号（"TR-001"）。
     expect_any_keywords: list[str] = Field(default_factory=list)
     # 上一轮停在待补充的任务。补充信息的短回复只有放在它们下面才能认出来。
-    open_tasks: list[OpenTask] = Field(default_factory=list)
+    matters: list[OpenMatter] = Field(default_factory=list)
     recent_actions: list[str] = Field(default_factory=list)
     # 留空表示不断言。
     expect_turn_relation: TurnRelation | None = None

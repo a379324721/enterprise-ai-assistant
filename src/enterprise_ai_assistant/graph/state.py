@@ -84,6 +84,11 @@ def current_plan(values: Mapping[str, Any]) -> Plan:
     )
 
 
+def shelved_plans(values: Mapping[str, Any]) -> list[Plan]:
+    # 检查点事件流里的值不一定是模型实例，统一校验一遍。
+    return [Plan.model_validate(item) for item in values.get("shelved_plans") or []]
+
+
 def plan_update(plan: Plan) -> dict[str, Any]:
     """把一个 Plan 写回成当前计划的状态更新。"""
     return {

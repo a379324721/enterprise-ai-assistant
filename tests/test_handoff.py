@@ -12,12 +12,12 @@ from langgraph.checkpoint.memory import InMemorySaver
 from enterprise_ai_assistant.agents.domain_runtime import DomainRuntimeProvider
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.api.routes import _execute_run
+from enterprise_ai_assistant.core.matters import OpenMatter
 from enterprise_ai_assistant.core.models import (
     AgentName,
     ContextResolution,
     DomainTaskRequest,
     MemoryExtraction,
-    OpenTask,
     PlannedTask,
     TaskOutline,
     TaskPlan,
@@ -45,11 +45,11 @@ class OnePlan(PlanningService):
         self,
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
-        open_tasks: Sequence[OpenTask] = (),
+        matters: Sequence[OpenMatter] = (),
         recent_actions: Sequence[str] = (),
         user_name: str = "",
     ) -> ContextResolution:
-        del conversation, memory_keys, open_tasks, recent_actions, user_name
+        del conversation, memory_keys, matters, recent_actions, user_name
         return ContextResolution(
             standalone_request="报销上周打车费",
             intent_summary="报销打车费",

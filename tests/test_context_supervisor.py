@@ -4,9 +4,9 @@ import pytest
 from pydantic import ValidationError
 
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
+from enterprise_ai_assistant.core.matters import OpenMatter
 from enterprise_ai_assistant.core.models import (
     ContextResolution,
-    OpenTask,
     TaskPlan,
     TurnRelation,
 )
@@ -20,7 +20,7 @@ class CapturingPlanningService:
         self,
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
-        open_tasks: Sequence[OpenTask] = (),
+        matters: Sequence[OpenMatter] = (),
         recent_actions: Sequence[str] = (),
         user_name: str = "",
     ) -> ContextResolution:
@@ -29,7 +29,6 @@ class CapturingPlanningService:
             standalone_request="将上一条差旅申请的开始日期改为下周三",
             intent_summary="修改差旅日期",
             requires_task_planning=True,
-            referenced_task_ids=["task-1"],
         )
 
     async def plan(self, context: ContextResolution) -> TaskPlan:
@@ -49,7 +48,7 @@ async def test_supervisor_receives_complete_conversation() -> None:
     result = await supervisor.resolve_context(conversation)
 
     assert planning.conversation == conversation
-    assert result.referenced_task_ids == ["task-1"]
+    assert result.standalone_request == "将上一条差旅申请的开始日期改为下周三"
     assert not hasattr(result, "inferred_slots")
 
 

@@ -11,10 +11,10 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from enterprise_ai_assistant.agents.domain_runtime import DomainRuntimeProvider
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
+from enterprise_ai_assistant.core.matters import OpenMatter, OpenMatterTask
 from enterprise_ai_assistant.core.models import (
     AgentName,
     ContextResolution,
-    OpenTask,
     PlannedTask,
     TaskOutline,
     TaskPlan,
@@ -37,19 +37,19 @@ class ScriptedPlanning:
 
     def __init__(self, resolutions: list[ContextResolution]) -> None:
         self._resolutions = list(resolutions)
-        self.seen_open_tasks: list[list[OpenTask]] = []
+        self.seen_matters: list[list[OpenMatter]] = []
         self.plan_calls = 0
 
     async def resolve_context(
         self,
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
-        open_tasks: Sequence[OpenTask] = (),
+        matters: Sequence[OpenMatter] = (),
         recent_actions: Sequence[str] = (),
         user_name: str = "",
     ) -> ContextResolution:
         del conversation, memory_keys, recent_actions, user_name
-        self.seen_open_tasks.append(list(open_tasks))
+        self.seen_matters.append(list(matters))
         return self._resolutions.pop(0)
 
     async def plan(self, context: ContextResolution) -> TaskPlan:
@@ -207,16 +207,27 @@ async def test_supplement_resumes_the_waiting_task_without_replanning() -> None:
     second = await _turn(graph, "当天往返")
 
     assert planning.plan_calls == 1
-    # Supervisor 只拿到标题和缺失字段名，拿不到字段值。
-    assert [item.model_dump(exclude={"plan_id"}) for item in planning.seen_open_tasks[1]] == [
-        OpenTask(
-            plan_id="",
-            task_id="task-1",
-            title="查询差旅制度",
-            domain=AgentName.TRAVEL,
-            missing_fields=["end_date"],
-        ).model_dump(exclude={"plan_id"})
-    ]
+    # Supervisor 看到的和右栏一样是整件事：排在后面的任务也在，免得用户提到它时认不出来。
+    # 只有标题、状态和缺失字段名，拿不到字段值。
+    [matter] = planning.seen_matters[1]
+    assert matter.model_dump(exclude={"plan_id"}) == {
+        "shelved": False,
+        "tasks": [
+            OpenMatterTask(
+                task_id="task-1",
+                title="查询差旅制度",
+                domain=AgentName.TRAVEL,
+                status=TaskStatus.WAITING_INPUT,
+                missing_fields=["end_date"],
+            ).model_dump(),
+            OpenMatterTask(
+                task_id="task-2",
+                title="查询通用制度",
+                domain=AgentName.POLICY,
+                status=TaskStatus.PENDING,
+            ).model_dump(),
+        ],
+    }
     assert _statuses(second) == [
         ("task-1", TaskStatus.COMPLETED),
         ("task-2", TaskStatus.COMPLETED),
@@ -472,7 +483,7 @@ async def test_continue_without_a_waiting_task_falls_back_to_planning() -> None:
     state = await _turn(graph, "差旅制度")
 
     assert planning.plan_calls == 1
-    assert planning.seen_open_tasks == [[]]
+    assert planning.seen_matters == [[]]
     assert _statuses(state)[0] == ("task-1", TaskStatus.WAITING_INPUT)
 
 
@@ -527,7 +538,11 @@ async def test_a_resume_that_crashed_can_be_resumed_again() -> None:
     retried = await _turn(graph, "单程")
 
     # 重发时 Supervisor 仍然看得到那件待补充的事，于是续跑而不是重新规划。
-    assert [item.task_id for item in planning.seen_open_tasks[2]] == ["task-1"]
+    [matter] = planning.seen_matters[2]
+    assert [(task.task_id, task.status) for task in matter.tasks] == [
+        ("task-1", TaskStatus.WAITING_INPUT),
+        ("task-2", TaskStatus.PENDING),
+    ]
     assert planning.plan_calls == 1
     assert _statuses(retried) == [
         ("task-1", TaskStatus.COMPLETED),

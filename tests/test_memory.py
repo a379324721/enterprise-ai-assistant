@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.api import routes
 from enterprise_ai_assistant.core.config import Settings
+from enterprise_ai_assistant.core.matters import OpenMatter
 from enterprise_ai_assistant.core.models import (
     AgentName,
     ContextResolution,
@@ -23,7 +24,6 @@ from enterprise_ai_assistant.core.models import (
     MemoryExtraction,
     MemoryKind,
     MemoryRecord,
-    OpenTask,
     PlannedTask,
     RecentAction,
     TaskPlan,
@@ -61,7 +61,7 @@ class MemoryPlanningService(PlanningService):
         self,
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
-        open_tasks: Sequence[OpenTask] = (),
+        matters: Sequence[OpenMatter] = (),
         recent_actions: Sequence[str] = (),
         user_name: str = "",
     ) -> ContextResolution:

@@ -12,12 +12,13 @@ import pytest
 from langchain_core.messages import AIMessage, BaseMessage
 
 from enterprise_ai_assistant.agents.domain_runtime import DomainRuntimeProvider
+from enterprise_ai_assistant.core.matters import OpenMatter, OpenMatterTask
 from enterprise_ai_assistant.core.models import (
     AgentName,
     ContextResolution,
-    OpenTask,
     PlannedTask,
     TaskPlan,
+    TaskStatus,
     TurnRelation,
 )
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
@@ -37,7 +38,7 @@ class StubPlanning:
         self,
         conversation: list[dict[str, str]],
         memory_keys: Sequence[str] = (),
-        open_tasks: Sequence[OpenTask] = (),
+        matters: Sequence[OpenMatter] = (),
         recent_actions: Sequence[str] = (),
         user_name: str = "",
     ) -> ContextResolution:
@@ -216,29 +217,38 @@ async def test_context_case_fails_when_no_anaphora_form_matches() -> None:
 
 
 @pytest.mark.asyncio
-async def test_context_case_passes_open_tasks_and_checks_turn_relation() -> None:
+async def test_context_case_passes_matters_and_checks_turn_relation() -> None:
     class CapturingPlanning(StubPlanning):
-        seen: list[OpenTask] = []
+        seen: list[OpenMatter] = []
 
         async def resolve_context(
             self,
             conversation: list[dict[str, str]],
             memory_keys: Sequence[str] = (),
-            open_tasks: Sequence[OpenTask] = (),
+            matters: Sequence[OpenMatter] = (),
             recent_actions: Sequence[str] = (),
             user_name: str = "",
         ) -> ContextResolution:
-            self.seen = list(open_tasks)
-            return await super().resolve_context(conversation, memory_keys, open_tasks)
+            self.seen = list(matters)
+            return await super().resolve_context(conversation, memory_keys, matters)
 
-    open_task = OpenTask(
-        plan_id="p-1", task_id="task-1", title="差旅申请", domain=AgentName.TRAVEL, missing_fields=["end_date"]
+    open_task = OpenMatter(
+        plan_id="p-1",
+        tasks=[
+            OpenMatterTask(
+                task_id="task-1",
+                title="差旅申请",
+                domain=AgentName.TRAVEL,
+                status=TaskStatus.WAITING_INPUT,
+                missing_fields=["end_date"],
+            )
+        ],
     )
     case = ContextCase(
         id="c5",
         conversation=[{"role": "user", "content": "当天往返"}],
         expect_task_planning=True,
-        open_tasks=[open_task],
+        matters=[open_task],
         expect_turn_relation=TurnRelation.CONTINUE,
     )
     planning = CapturingPlanning(_resolution(True, "上海差旅当天往返"))
@@ -419,7 +429,7 @@ async def test_run_suites_isolates_case_level_failures() -> None:
             self,
             conversation: list[dict[str, str]],
             memory_keys: Sequence[str] = (),
-            open_tasks: Sequence[OpenTask] = (),
+            matters: Sequence[OpenMatter] = (),
         ) -> ContextResolution:
             raise RuntimeError("模型服务不可用")
 
