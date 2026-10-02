@@ -32,8 +32,13 @@ from enterprise_ai_assistant.agents.domain_runtime import (
 from enterprise_ai_assistant.agents.supervisor import SupervisorAgent
 from enterprise_ai_assistant.core.models import (
     AgentName,
+    DialogueTurn,
+    DomainTaskRequest,
     PlannedTask,
+    TaskBrief,
+    TaskStatus,
 )
+from enterprise_ai_assistant.graph.domain import domain_input
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
 from enterprise_ai_assistant.services.llm import build_chat_model
@@ -302,9 +307,30 @@ class EvalHarness:
 
 
     async def run_domain_answer_case(self, case: DomainAnswerCase) -> CaseResult:
-        """喂进既定的工具结果，只考察最终回答的措辞。"""
+        """喂进既定的工具结果，只考察最终回答的措辞。
+
+        第一条消息和线上一样由 domain_input 拼出：原先只给一句用户原话，线上却是带着整件事的
+        改写、其他任务和会话原文的 JSON，差旅 Agent 指路"会议室不归这边"在线上出现、评测里测不出。
+        """
         runtime = self._runtime(case.domain, case.id)
-        messages: list[Any] = [HumanMessage(content=case.user_goal)]
+        request = DomainTaskRequest(
+            user_id="eval-user",
+            conversation_id=self._conversation_id,
+            request_id=uuid4(),
+            user_goal=case.user_goal,
+            task=PlannedTask(
+                id=case.id, title=case.objective, domain=case.domain, objective=case.objective
+            ),
+            other_tasks=[
+                TaskBrief(title=title, status=TaskStatus.PENDING) for title in case.other_tasks
+            ],
+            recent_messages=[
+                DialogueTurn.model_validate(turn.rendered()) for turn in case.recent_messages
+            ],
+        )
+        messages: list[Any] = [
+            HumanMessage(content=json.dumps(domain_input(request), ensure_ascii=False))
+        ]
         for index, result in enumerate(case.tool_results):
             call_id = f"{case.id}-tool-{index}"
             messages.append(

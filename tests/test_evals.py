@@ -1,9 +1,11 @@
+
 """评测框架自身的离线测试。
 
 真实评测需要模型服务，只能手动或定时触发；这里用桩件验证数据集完整性
 和判定逻辑，保证 CI 每次都能发现"评测本身写错了"的问题。
 """
 
+import json
 from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
@@ -25,7 +27,14 @@ from enterprise_ai_assistant.repositories.actions import InMemoryActionRepositor
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
 from enterprise_ai_assistant.tools import LocalEnterpriseToolProvider, ToolContext
 from enterprise_ai_assistant.tools.registry import DomainToolRegistry, RegisteredTool
-from evals.dataset import ContextCase, GuardrailCase, PlanningCase, ToolChoiceCase, load_dataset
+from evals.dataset import (
+    ContextCase,
+    DomainAnswerCase,
+    GuardrailCase,
+    PlanningCase,
+    ToolChoiceCase,
+    load_dataset,
+)
 from evals.runner import CaseResult, EvalHarness, SuiteReport, format_report, run_suites
 
 
@@ -486,3 +495,48 @@ async def test_context_case_checks_revised_and_cancelled_task_ids() -> None:
     assert cancelled.passed is False
     assert "target_task_ids=[]" in cancelled.detail
     assert "revisions 更正了 []" in revised.detail
+
+
+@pytest.mark.asyncio
+async def test_domain_answer_case_feeds_the_same_input_as_production() -> None:
+    """评测只给一句用户原话时，线上带着整件事的改写才会出现的越界说法测不出来。"""
+    seen: list[list[BaseMessage]] = []
+
+    class CapturingRuntime(StubRuntime):
+        async def decide(
+            self,
+            task_objective: str,
+            messages: list[BaseMessage],
+            *,
+            task_id: str,
+            answering: bool = False,
+        ) -> AIMessage:
+            seen.append(list(messages))
+            return AIMessage(content="差旅申请已提交。会议室不归这边处理，可以走会议室那边。")
+
+    class CapturingProvider(StubRuntimeProvider):
+        def create(self, agent: AgentName, context: ToolContext) -> StubRuntime:
+            return CapturingRuntime(agent, self._registry.for_agent(agent, context), self._response)
+
+    case = DomainAnswerCase(
+        id="d-1",
+        domain=AgentName.TRAVEL,
+        objective="提交上海出差申请",
+        user_goal="提交上海出差申请，并预订当天下午的会议室",
+        other_tasks=["预订当天下午的会议室"],
+        recent_messages=[{"role": "user", "content": "去上海出差，顺便订个会议室"}],
+        tool_results=['{"tool":"create_travel_application","success":true}'],
+        forbid_phrases=["会议室"],
+    )
+    harness = EvalHarness(
+        planning=StubPlanning(_resolution(True)),
+        domains=CapturingProvider(AIMessage(content="")),
+    )
+
+    result = await harness.run_domain_answer_case(case)
+
+    assert result.passed is False
+    payload = json.loads(str(seen[0][0].content))
+    assert payload["standalone_request"] == case.user_goal
+    assert payload["other_tasks"] == [{"title": "预订当天下午的会议室", "status": "pending"}]
+    assert payload["recent_messages"] == [{"role": "user", "content": "去上海出差，顺便订个会议室"}]

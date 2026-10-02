@@ -59,7 +59,7 @@ FastAPI + LangGraph 的多 Agent 系统。`graph/workflow.py` 是调度父图，
 
 ### 父图与子图只通过两个契约通信
 
-- 两者之间只有 `DomainTaskRequest` 和 `DomainTaskResult`。`domain_messages`、工具决策、确认状态是子图私有状态；后续任务只能经 `artifacts[task_id]` 拿前置任务的产物。人工确认经 interrupt payload（`PendingConfirmation`）暴露，API 层不依赖子图节点名。
+- 两者之间只有 `DomainTaskRequest` 和 `DomainTaskResult`。`domain_messages`、工具决策、确认状态是子图私有状态；后续任务只能经 `artifacts[task_id]` 拿前置任务的产物；`other_tasks` 只告诉领域 Agent 同一计划里还有哪些任务（标题和状态），让它知道 `standalone_request` 里别的部分有人办，不要往里加字段或产物。评测的领域回答用例经 `graph/domain.py` 的 `domain_input` 拼输入，和线上同一份。人工确认经 interrupt payload（`PendingConfirmation`）暴露，API 层不依赖子图节点名。
 - 派错领域时领域 Agent 调 `handoff_task`，父图 `_reroute` 用代码改派（任务 id 不变、回到 `PENDING`），**不回 Supervisor 重新理解**——同一段会话大概率再分错。去过的领域不再去，最多 `MAX_HANDOFFS` 次，执行过写操作的任务不能转交。
 
 ### 未办完的事项

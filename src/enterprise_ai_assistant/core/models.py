@@ -419,6 +419,13 @@ class DialogueTurn(BaseModel):
     content: str
 
 
+class TaskBrief(BaseModel):
+    """同一计划里的另一个任务，只有标题和状态。"""
+
+    title: str
+    status: TaskStatus
+
+
 class DomainTaskRequest(BaseModel):
     """父图交给领域子图的稳定输入契约。"""
 
@@ -441,6 +448,11 @@ class DomainTaskRequest(BaseModel):
     # 丢信息或解析错，领域 Agent 没有原话就发现不了；也不知道用户追问的"为什么"指什么。
     # 字段来源的底线改由 prompt 规则和确认卡守住：写工具的每个参数都在卡上逐项给用户过目。
     recent_messages: list[DialogueTurn] = Field(default_factory=list, max_length=50)
+    # 同一计划里的其他任务。standalone_request 和会话原文讲的是整件事，领域 Agent 看不到其中
+    # 别的部分已经拆给别的 Agent，就会替用户指路："会议室不归这边处理，可以走会议室那边"——
+    # 实际上会议室任务紧接着就办。只给标题和状态，不给字段和产物：后续任务拿前置任务的产物
+    # 仍然只经 dependency_results。
+    other_tasks: list[TaskBrief] = Field(default_factory=list, max_length=20)
 
 
 class DomainTaskResult(BaseModel):

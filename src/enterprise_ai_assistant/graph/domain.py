@@ -34,6 +34,39 @@ from enterprise_ai_assistant.tools.registry import HANDOFF_TOOL
 logger = structlog.get_logger()
 
 
+def domain_input(request: DomainTaskRequest) -> dict[str, Any]:
+    """领域 Agent 第一条消息的内容。评测也用它拼输入，和线上看到的是同一份。"""
+    payload: dict[str, Any] = {
+        "standalone_request": request.user_goal,
+        "task": request.task.model_dump(mode="json", exclude={"supplements"}),
+        "dependency_results": request.dependency_results,
+    }
+    # 记忆单独成键，和用户当前请求区分开：模型必须能分辨哪些是本轮说的、
+    # 哪些只是历史档案给出的建议值。
+    if request.user_name:
+        payload["user_name"] = request.user_name
+    if request.memories:
+        payload["user_memory"] = list(request.memories)
+    if request.recent_actions:
+        payload["recent_actions"] = [
+            item.render() for item in request.recent_actions
+        ]
+    # 续跑时带回上一轮追问留下的草稿。和记忆一样单独成键：用户本轮的补充和更正
+    # 在 standalone_request 里，两者冲突时以本轮为准。
+    if request.draft is not None:
+        payload["previous_draft"] = request.draft.model_dump(mode="json")
+    # 任务排队期间用户针对它说过的原话。会话原文只给最近几条，前面的任务多问几轮就滑出去了。
+    if request.task.supplements:
+        payload["task_supplements"] = list(request.task.supplements)
+    if request.other_tasks:
+        payload["other_tasks"] = [item.model_dump(mode="json") for item in request.other_tasks]
+    if request.recent_messages:
+        payload["recent_messages"] = [
+            turn.model_dump() for turn in request.recent_messages
+        ]
+    return payload
+
+
 class DomainTaskWorkflow:
     """执行单个领域任务；内部循环和临时状态不泄漏到调度图。"""
 
@@ -82,36 +115,10 @@ class DomainTaskWorkflow:
 
     async def initialize(self, state: DomainTaskState) -> dict[str, Any]:
         request = self._request(state)
-        domain_input: dict[str, Any] = {
-            "standalone_request": request.user_goal,
-            "task": request.task.model_dump(mode="json", exclude={"supplements"}),
-            "dependency_results": request.dependency_results,
-        }
-        # 记忆单独成键，和用户当前请求区分开：模型必须能分辨哪些是本轮说的、
-        # 哪些只是历史档案给出的建议值。
-        if request.user_name:
-            domain_input["user_name"] = request.user_name
-        if request.memories:
-            domain_input["user_memory"] = list(request.memories)
-        if request.recent_actions:
-            domain_input["recent_actions"] = [
-                item.render() for item in request.recent_actions
-            ]
-        # 续跑时带回上一轮追问留下的草稿。和记忆一样单独成键：用户本轮的补充和更正
-        # 在 standalone_request 里，两者冲突时以本轮为准。
-        if request.draft is not None:
-            domain_input["previous_draft"] = request.draft.model_dump(mode="json")
-        # 任务排队期间用户针对它说过的原话。会话原文只给最近几条，前面的任务多问几轮就滑出去了。
-        if request.task.supplements:
-            domain_input["task_supplements"] = list(request.task.supplements)
-        if request.recent_messages:
-            domain_input["recent_messages"] = [
-                turn.model_dump() for turn in request.recent_messages
-            ]
         return {
             "domain_result": None,
             "domain_messages": [
-                HumanMessage(content=json.dumps(domain_input, ensure_ascii=False))
+                HumanMessage(content=json.dumps(domain_input(request), ensure_ascii=False))
             ],
             "domain_iterations": 0,
             "domain_waiting_input": False,

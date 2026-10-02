@@ -124,6 +124,9 @@ class DomainAnswerCase(BaseModel):
     expect_next_tool: str = ""
     # 回答里必须出现的内容，比较时忽略空白（"8 天"和"8天"都算）。
     expect_phrases: list[str] = Field(default_factory=list)
+    # 同一计划里其他任务的标题（按排队处理）和最近的会话原文，和线上交给领域 Agent 的一样。
+    other_tasks: list[str] = Field(default_factory=list)
+    recent_messages: list[ConversationTurn] = Field(default_factory=list)
     note: str = ""
 
 

@@ -911,3 +911,25 @@ async def test_planner_output_cannot_carry_user_supplements() -> None:
     state = await _turn(graph, "去上海出差，顺便查下考勤制度")
 
     assert all(task.supplements == [] for task in state["tasks"])
+
+
+@pytest.mark.asyncio
+async def test_domain_agents_see_the_other_tasks_of_their_plan() -> None:
+    """standalone_request 讲的是整件事。不告诉领域 Agent 别的部分有人办，它会替用户指路，
+    说"会议室不归这边处理"。"""
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差并查考勤制度"),
+            _resolution("当天往返", relation=TurnRelation.CONTINUE),
+        ]
+    )
+    graph, runtimes = _build(planning)
+    await _turn(graph, "去上海出差，顺便查下考勤制度")
+    await _turn(graph, "当天往返")
+
+    first, resumed = _payloads(runtimes, "task-1")
+    [policy] = _payloads(runtimes, "task-2")
+    assert first["other_tasks"] == [{"title": "查询通用制度", "status": "pending"}]
+    assert resumed["other_tasks"] == first["other_tasks"]
+    # 只有标题和状态，不带对方的字段和产物。
+    assert policy["other_tasks"] == [{"title": "查询差旅制度", "status": "completed"}]

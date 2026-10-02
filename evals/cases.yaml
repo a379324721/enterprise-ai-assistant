@@ -876,8 +876,18 @@ domain_answer_cases:
 
   - id: domain-answer-stays-on-its-own-task
     domain: travel
-    objective: 根据用户请求创建差旅申请
-    user_goal: 申请后天去上海出差，顺便订个当天下午的会议室
+    objective: 为用户提交 2026-09-16 前往上海的出差申请
+    # 续跑轮的改写讲的是整件事，会议室也在里面；线上就是这样交给差旅 Agent 的。
+    user_goal: 提交 2026-09-16 从北京出发、当天往返、事由为培训的上海出差申请，并预订当天下午的会议室
+    other_tasks: [预订出差当天下午的会议室]
+    recent_messages:
+      - role: user
+        content: 申请后天去上海出差，顺便订个当天下午的会议室
+      - role: assistant
+        content: 还需要补充：1）从哪个城市出发？2）出差事由是什么？3）哪天返程？
+        tools: [request_information]
+      - role: user
+        content: 北京，当天往返，培训
     tool_results:
       - '{"tool":"create_travel_application","success":true,"status":"submitted","data":{"status":"recorded","destination":"上海","start_date":"2026-09-16","end_date":"2026-09-16","purpose":"培训"}}'
     forbid_phrases:
@@ -885,6 +895,7 @@ domain_answer_cases:
     note: |
       会议室是同一轮里的另一个任务，由 meeting 领域处理，系统完全做得到。
       实测差旅 Agent 会补一句"预订会议室不在差旅申请范围内，我无法为您办理"，
+      或者"会议室不归这边处理，可以走会议室那边"，
       用户以为这件事被拒，下一轮就不再提——回答里出现"会议室"就是越界。
 
   - id: domain-answer-balance-before-leave-confirmation

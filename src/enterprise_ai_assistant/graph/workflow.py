@@ -18,6 +18,7 @@ from enterprise_ai_assistant.core.models import (
     DomainTaskResult,
     Plan,
     PlannedTask,
+    TaskBrief,
     TaskDraft,
     TaskStatus,
     ToolResult,
@@ -706,6 +707,11 @@ class Workflow:
                     recent_actions=list(state.get("recent_actions", [])),
                     draft=drafts.get(task.id),
                     recent_messages=recent_messages,
+                    other_tasks=[
+                        TaskBrief(title=item.title, status=item.status)
+                        for item in tasks
+                        if item.id != task.id
+                    ],
                 )
                 for task in runnable
             ],
