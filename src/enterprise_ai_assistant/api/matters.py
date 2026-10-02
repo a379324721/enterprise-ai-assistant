@@ -16,8 +16,8 @@ from enterprise_ai_assistant.api.schemas import Matter, MatterStatus, MatterTask
 from enterprise_ai_assistant.core.models import (
     DraftField,
     PendingConfirmation,
+    Plan,
     PlannedTask,
-    ShelvedPlan,
     TaskDraft,
     TaskStatus,
     recover_interrupted,
@@ -58,7 +58,7 @@ def project_matters(
         running=running,
     )
     # 最近搁置的排在前面：用户最可能想接着办的是刚放下的那件。
-    parked = [ShelvedPlan.model_validate(item) for item in values.get("shelved_plans") or []]
+    parked = [Plan.model_validate(item) for item in values.get("shelved_plans") or []]
     cards = [
         _card(plan.plan_id, plan.tasks, plan.drafts, pending=None, shelved=True, running=False)
         for plan in reversed(parked)

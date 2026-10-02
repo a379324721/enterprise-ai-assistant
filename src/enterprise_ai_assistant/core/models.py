@@ -196,17 +196,23 @@ def recover_interrupted(tasks: list[PlannedTask], drafts: Mapping[str, Any]) -> 
     ]
 
 
-class ShelvedPlan(BaseModel):
-    """用户换话题时被搁置的未办完计划，原样保存，恢复时整体换回当前计划。
+class Plan(BaseModel):
+    """一件事：规划出的任务 DAG，以及执行它攒下的产物和草稿。
 
-    不自动过期：半截的事是用户自己的工作，只有用户说"继续"或"不办了"才会离开这里。
+    当前计划和搁置的计划是同一种东西，只是所处的位置不同：换话题时当前计划整体移进
+    shelved_plans，用户说"继续刚才那个"时再整体换回来，id、产物和草稿都不变。搁置的计划
+    不自动过期：半截的事是用户自己的工作，只有用户说"继续"或"不办了"才会离开那里。
     """
 
     plan_id: str
-    user_goal: str
-    tasks: list[PlannedTask]
+    user_goal: str = ""
+    tasks: list[PlannedTask] = Field(default_factory=list)
     artifacts: dict[str, Any] = Field(default_factory=dict)
     drafts: dict[str, TaskDraft] = Field(default_factory=dict)
+
+
+#: 已有检查点里的搁置计划按这个类名序列化，反序列化时要能按名字找到类。
+ShelvedPlan = Plan
 
 
 class ContextResolution(BaseModel):

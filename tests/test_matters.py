@@ -10,8 +10,8 @@ from enterprise_ai_assistant.core.models import (
     ConfirmationField,
     DraftField,
     PendingConfirmation,
+    Plan,
     PlannedTask,
-    ShelvedPlan,
     TaskDraft,
     TaskStatus,
     ToolResult,
@@ -140,7 +140,7 @@ def test_leftovers_of_a_failed_run_are_not_shown_as_in_progress() -> None:
 
 def test_topic_change_keeps_the_shelved_plan_while_the_new_one_runs() -> None:
     """换话题那一轮，被搁置的事项和新计划必须同时在：两者来自同一份状态、同一次投影。"""
-    shelved = ShelvedPlan(
+    shelved = Plan(
         plan_id="p-old",
         user_goal="出差",
         tasks=[_task("task-1", "上海出差申请", TaskStatus.WAITING_INPUT, AgentName.TRAVEL)],
@@ -160,7 +160,7 @@ def test_topic_change_keeps_the_shelved_plan_while_the_new_one_runs() -> None:
 
 
 def test_shelved_plan_without_a_stuck_task_is_not_a_card() -> None:
-    shelved = ShelvedPlan(
+    shelved = Plan(
         plan_id="p-old",
         user_goal="出差",
         tasks=[_task("task-1", "差旅申请", TaskStatus.PENDING, AgentName.TRAVEL)],
@@ -171,12 +171,12 @@ def test_shelved_plan_without_a_stuck_task_is_not_a_card() -> None:
 
 def test_shelved_plans_follow_the_current_one_most_recent_first() -> None:
     current = [_task("task-1", "请假申请", TaskStatus.WAITING_CONFIRMATION, AgentName.HR)]
-    older = ShelvedPlan(
+    older = Plan(
         plan_id="p-old",
         user_goal="出差",
         tasks=[_task("task-1", "差旅申请", TaskStatus.WAITING_INPUT, AgentName.TRAVEL)],
     )
-    newer = ShelvedPlan(
+    newer = Plan(
         plan_id="p-new",
         user_goal="订会议室",
         tasks=[_task("task-1", "预订会议室", TaskStatus.WAITING_INPUT, AgentName.MEETING)],

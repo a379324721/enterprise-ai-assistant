@@ -14,12 +14,14 @@ from pydantic import BaseModel
 from enterprise_ai_assistant.core import models
 
 
-def _state_types() -> list[type]:
+def _state_types() -> list[tuple[str, str]]:
     # 按模块自动收集，而不是手写清单：新增一个进状态的模型时忘了登记，只有在严格模式下
     # 恢复会话才会暴露，测试和评测默认都不开严格模式。
+    # 按模块里的名字登记而不是类自己的 __name__：改名后留下的别名（ShelvedPlan）是旧检查点
+    # 里写着的类名，只登记新名字，严格模式下旧检查点就读不出来。
     return [
-        value
-        for _, value in inspect.getmembers(models, inspect.isclass)
+        (models.__name__, name)
+        for name, value in inspect.getmembers(models, inspect.isclass)
         if value.__module__ == models.__name__ and issubclass(value, (BaseModel, Enum))
     ]
 

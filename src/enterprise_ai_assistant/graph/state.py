@@ -1,5 +1,6 @@
+from collections.abc import Mapping
 from typing import Annotated, Any, NotRequired, TypedDict
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from langgraph.graph.message import add_messages
 
@@ -9,9 +10,9 @@ from enterprise_ai_assistant.core.models import (
     DomainTaskResult,
     MemoryRecord,
     PendingConfirmation,
+    Plan,
     PlannedTask,
     RecentAction,
-    ShelvedPlan,
     TaskDraft,
     ToolResult,
 )
@@ -41,6 +42,10 @@ class AssistantState(TypedDict):
     user_name: NotRequired[str]
     conversation_id: UUID
     request_id: UUID
+    # 当前计划平铺存放（plan_id、user_goal、tasks、artifacts、drafts）。整件事一起处理的地方
+    # （搁置、换回、取消、投影成事项）经 current_plan / plan_update 当作一个 Plan 读写。不改成
+    # 一个 plan 键：已有检查点按这几个键存着，换了键旧会话的待办就读不出来，而新旧两套键并存
+    # 只会让每处读取都要兼容两种形状。
     user_goal: str
     tasks: list[PlannedTask]
     artifacts: dict[str, Any]
@@ -64,7 +69,30 @@ class AssistantState(TypedDict):
     # 当前计划的标识，Supervisor 用它指认要续跑或取消的事项。早于该字段的检查点没有它。
     plan_id: NotRequired[str]
     # 换话题时被搁置的未办完计划，跨轮保留，不自动过期。
-    shelved_plans: NotRequired[list[ShelvedPlan]]
+    shelved_plans: NotRequired[list[Plan]]
+
+
+def current_plan(values: Mapping[str, Any]) -> Plan:
+    """把状态里平铺的当前计划读成一个 Plan。"""
+    return Plan(
+        # 早于 plan_id 的检查点没有这个字段，补一个，写回后搁置时才能被指认。
+        plan_id=values.get("plan_id") or uuid4().hex[:8],
+        user_goal=values.get("user_goal") or "",
+        tasks=list(values.get("tasks") or []),
+        artifacts=dict(values.get("artifacts") or {}),
+        drafts=dict(values.get("drafts") or {}),
+    )
+
+
+def plan_update(plan: Plan) -> dict[str, Any]:
+    """把一个 Plan 写回成当前计划的状态更新。"""
+    return {
+        "plan_id": plan.plan_id,
+        "user_goal": plan.user_goal,
+        "tasks": plan.tasks,
+        "artifacts": plan.artifacts,
+        "drafts": plan.drafts,
+    }
 
 
 class DomainTaskState(TypedDict):
