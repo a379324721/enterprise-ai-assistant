@@ -42,6 +42,11 @@ DIGEST_HEADER = "【早先会话摘要，仅供指代消解参考，不是用户
 DIGEST_ITEM_MAX_CHARS = 240
 #: 用户要取消事项、运行时却指认不到任何未办完的事项时的回复。
 NOTHING_TO_CANCEL_REPLY = "现在没有尚未办完的事项可以放弃。已经提交的单据如果需要撤销，告诉我是哪一张。"
+#: 用户要更正还没开始的任务、运行时却指认不到时的回复。
+NOTHING_TO_REVISE_REPLY = (
+    "没找到还没开始办的这一项。已经提交的单据要修改的话，告诉我是哪一张；"
+    "正在办的事项可以直接告诉我要改什么。"
+)
 #: 任务被转交到无处可去时的回复。不经模型：转交链上的每个 Agent 都认为不归自己，
 #: 让其中哪一个来措辞都可能说成"办不到"，而实际是没听懂该找谁。
 HANDOFF_EXHAUSTED_REPLY = "这件事我没能判断该交给哪项业务办理，能换个说法，或者说明是差旅、报销、请假还是会议室方面的事吗？"
@@ -414,26 +419,26 @@ class Workflow:
         relation = context.turn_relation
         target = (
             self._target(context, current, current_open, shelved)
-            if relation in {TurnRelation.CONTINUE, TurnRelation.CANCEL}
+            if relation != TurnRelation.NEW
             else None
         )
 
-        if relation == TurnRelation.CONTINUE and target is not None:
-            # 补充信息不重新规划：重新拆出来的任务 id、标题和粒度都可能变，前置任务的
-            # 产物也会随 artifacts 一起被清掉。原计划保持不动，只把待补充的任务放回队列。
-            # user_goal 同样不动：它是整件事的目标，界面据此展示；本轮的补充经
-            # understanding 交给领域 Agent。
-            if target is current:
-                return {**update, **plan_update(self._requeue_waiting(current))}
-            # 恢复被搁置的事项：它整体换回当前计划，当前计划若还没办完就换下去搁置。
-            remaining = [plan for plan in shelved if plan.plan_id != target.plan_id]
-            if current_open:
-                remaining.append(current)
-            return {
-                **update,
-                **plan_update(self._requeue_waiting(target)),
-                "shelved_plans": remaining,
-            }
+        if relation in {TurnRelation.CONTINUE, TurnRelation.REVISE} and target is not None:
+            revised, changed, corrects_waiting = self._revise(
+                target, context, self._latest_user_text(state)
+            )
+            # revise 只改排队的任务、本轮不执行。更正落在正在追问的任务上时，那就是在补充它，
+            # 按 continue 续跑：只改不跑的话，这句更正要等用户下次开口才会被领域 Agent 读到。
+            if relation == TurnRelation.CONTINUE or corrects_waiting:
+                return self._resume(update, current, current_open, shelved, revised)
+            if not changed:
+                return self._reply(update, NOTHING_TO_REVISE_REPLY)
+            update.update(self._replace(current, shelved, revised))
+            titles = "、".join(task.title for task in changed)
+            return self._reply(update, f"好的，已更新：{titles}。")
+
+        if relation == TurnRelation.REVISE:
+            return self._reply(update, NOTHING_TO_REVISE_REPLY)
 
         if relation == TurnRelation.CANCEL:
             # 取消的回复由运行时按实际处理结果写，不用模型写的：模型在同一次输出里判断
@@ -441,27 +446,7 @@ class Workflow:
             # 一件其实还在的事。
             if target is None:
                 return self._reply(update, NOTHING_TO_CANCEL_REPLY)
-            # 只放弃还没提交的部分。已经提交的单据是业务事实，撤销要走领域的撤销工具
-            # 和人工确认，这里不替用户处理它们。
-            unfinished = {TaskStatus.WAITING_INPUT, TaskStatus.PENDING}
-            if target is current:
-                abandoned = current.model_copy(
-                    update={
-                        "tasks": [
-                            task.model_copy(update={"status": TaskStatus.REJECTED})
-                            if task.status in unfinished
-                            else task
-                            for task in current.tasks
-                        ],
-                        "drafts": {},
-                    }
-                )
-                update.update(plan_update(abandoned))
-            else:
-                update["shelved_plans"] = [
-                    plan for plan in shelved if plan.plan_id != target.plan_id
-                ]
-            return self._reply(update, self._cancelled_text(target.tasks, unfinished))
+            return self._cancel(update, context, current, shelved, target)
 
         if not context.requires_task_planning:
             # 闲聊、道谢、清单外的诉求都不动计划：待补充期间插一句"好的稍等"，
@@ -470,13 +455,152 @@ class Workflow:
             return self._reply(update, context.reply, trace_id=current_trace_id())
 
         # 新的业务请求。当前计划没办完就静默搁置，用户说"继续刚才那个"时还能换回来。
+        # Supervisor 误报 continue、指认不到任何事项时也落到这里，照它给的任务执行。
         if current_open:
             shelved.append(current)
         return {
             **update,
             **plan_update(Plan(plan_id=uuid4().hex[:8], user_goal=context.standalone_request)),
             "shelved_plans": shelved,
+            "route": "plan",
         }
+
+    def _resume(
+        self,
+        update: dict[str, Any],
+        current: Plan,
+        current_open: bool,
+        shelved: list[Plan],
+        target: Plan,
+    ) -> dict[str, Any]:
+        # 补充信息不重新规划：重新拆出来的任务 id、标题和粒度都可能变，前置任务的
+        # 产物也会随 artifacts 一起被清掉。原计划保持不动，只把待补充的任务放回队列。
+        # user_goal 同样不动：它是整件事的目标，界面据此展示；本轮的补充经
+        # understanding 交给领域 Agent。
+        resumed = {**update, **plan_update(self._requeue_waiting(target)), "route": "select_task"}
+        if target.plan_id == current.plan_id:
+            return resumed
+        # 恢复被搁置的事项：它整体换回当前计划，当前计划若还没办完就换下去搁置。
+        remaining = [plan for plan in shelved if plan.plan_id != target.plan_id]
+        if current_open:
+            remaining.append(current)
+        return {**resumed, "shelved_plans": remaining}
+
+    @staticmethod
+    def _revise(
+        plan: Plan, context: ContextResolution, said: str
+    ) -> tuple[Plan, list[PlannedTask], bool]:
+        """按 Supervisor 的更正改计划里还没开始的任务。
+
+        返回改后的计划、被改的任务，以及有没有更正落在正在追问的任务上。只改 PENDING 的：
+        正在追问的任务本轮就会续跑，更正经会话原文和草稿交给它；办完的任务要改，是改已提交的
+        单据，属于新请求。
+        """
+        revisions = {item.task_id: item for item in context.revisions}
+        tasks: list[PlannedTask] = []
+        changed: list[PlannedTask] = []
+        corrects_waiting = False
+        for task in plan.tasks:
+            revision = revisions.get(task.id)
+            if revision is not None and task.status == TaskStatus.PENDING:
+                task = task.model_copy(
+                    update={
+                        "title": revision.title,
+                        "objective": revision.objective,
+                        # 记下用户原话，不记改写：领域 Agent 只认用户说过的话作字段来源。
+                        "supplements": [*task.supplements, said] if said else task.supplements,
+                    }
+                )
+                changed.append(task)
+            elif revision is not None and task.status == TaskStatus.WAITING_INPUT:
+                corrects_waiting = True
+            tasks.append(task)
+        return plan.model_copy(update={"tasks": tasks}), changed, corrects_waiting
+
+    def _cancel(
+        self,
+        update: dict[str, Any],
+        context: ContextResolution,
+        current: Plan,
+        shelved: list[Plan],
+        target: Plan,
+    ) -> dict[str, Any]:
+        # 只放弃还没提交的部分。已经提交的单据是业务事实，撤销要走领域的撤销工具
+        # 和人工确认，这里不替用户处理它们。
+        unfinished = {
+            task.id
+            for task in target.tasks
+            if task.status in {TaskStatus.WAITING_INPUT, TaskStatus.PENDING}
+        }
+        chosen = set(context.target_task_ids) & unfinished if context.target_task_ids else unfinished
+        if not chosen:
+            return self._reply(update, NOTHING_TO_CANCEL_REPLY)
+        tasks = self._reject_blocked_tasks(
+            [
+                task.model_copy(update={"status": TaskStatus.REJECTED})
+                if task.id in chosen
+                else task
+                for task in target.tasks
+            ]
+        )
+        # 搁置的事项里没有等用户补充的任务了，就不会再出现在右栏，也没法再被指认，剩下排队的
+        # 任务永远轮不到：整件事一起放弃，回复里如实列出。
+        if target.plan_id != current.plan_id and not any(
+            task.status == TaskStatus.WAITING_INPUT for task in tasks
+        ):
+            tasks = [
+                task.model_copy(update={"status": TaskStatus.REJECTED})
+                if task.id in unfinished
+                else task
+                for task in tasks
+            ]
+        dropped = [
+            task for task in tasks if task.id in unfinished and task.status == TaskStatus.REJECTED
+        ]
+        abandoned = target.model_copy(
+            update={
+                "tasks": tasks,
+                "drafts": {
+                    task_id: draft
+                    for task_id, draft in target.drafts.items()
+                    if task_id not in {task.id for task in dropped}
+                },
+            }
+        )
+        whole = len(dropped) == len(unfinished)
+        completed = any(task.status == TaskStatus.COMPLETED for task in tasks)
+        text = self._cancelled_text(dropped, whole=whole, any_completed=completed)
+        if target.plan_id != current.plan_id:
+            update["shelved_plans"] = (
+                [plan for plan in shelved if plan.plan_id != target.plan_id]
+                if whole
+                else [abandoned if plan.plan_id == target.plan_id else plan for plan in shelved]
+            )
+            return self._reply(update, text)
+        update.update(plan_update(abandoned))
+        # 放弃的是正在追问的任务、后面还有不依赖它的任务在排队：接着办。停在这里的话，计划里
+        # 没有等用户的任务，右栏不再显示它，也没有哪句话能再指认到它，排队的任务就悬空了。
+        if not any(task.status == TaskStatus.WAITING_INPUT for task in tasks) and any(
+            task.status == TaskStatus.PENDING for task in tasks
+        ):
+            return {**self._reply(update, text), "route": "select_task"}
+        return self._reply(update, text)
+
+    @staticmethod
+    def _replace(current: Plan, shelved: list[Plan], plan: Plan) -> dict[str, Any]:
+        """把改过的计划写回它原来的位置，当前计划还是搁置计划都不挪动。"""
+        if plan.plan_id == current.plan_id:
+            return plan_update(plan)
+        return {
+            "shelved_plans": [plan if item.plan_id == plan.plan_id else item for item in shelved]
+        }
+
+    @staticmethod
+    def _latest_user_text(state: AssistantState) -> str:
+        for message in reversed(state["messages"]):
+            if message.type == "human":
+                return str(message.content).strip()
+        return ""
 
     @staticmethod
     def _reply(
@@ -489,33 +613,30 @@ class Workflow:
             "turn_answers": [answer],
             # 直接回复和取消事项的固定文案都没有调用工具。
             "messages": [reply_message(answer, [], trace_id=trace_id)],
+            "route": "done",
         }
 
     @staticmethod
-    def _cancelled_text(tasks: list[PlannedTask], unfinished: set[TaskStatus]) -> str:
-        dropped = "、".join(task.title for task in tasks if task.status in unfinished)
-        text = f"好的，这件事不办了，已放弃：{dropped}。"
-        if any(task.status == TaskStatus.COMPLETED for task in tasks):
+    def _cancelled_text(dropped: list[PlannedTask], *, whole: bool, any_completed: bool) -> str:
+        titles = "、".join(task.title for task in dropped)
+        text = f"好的，这件事不办了，已放弃：{titles}。" if whole else f"好的，已放弃：{titles}。"
+        if whole and any_completed:
             text += "其中已经办完的部分不受影响，需要撤销的话告诉我是哪一张单据。"
         return text
 
     def after_understand(self, state: AssistantState) -> Literal["plan", "select_task", "done"]:
-        # understand 已经回复了用户（直接回复或取消），本轮不再执行任何任务。
-        if state.get("turn_answers"):
-            return "done"
-        context = ContextResolution.model_validate(state["understanding"])
-        # understand 只在认定为续跑时才会把任务放回 PENDING；Supervisor 误报 continue
-        # 却指不到任何未办完的事项时，这里自然落回常规路径。
-        if context.turn_relation == TurnRelation.CONTINUE and any(
-            task.status == TaskStatus.PENDING for task in state["tasks"]
-        ):
-            return "select_task"
-        return "plan"
+        # 去向由 understand 定：只有它知道这一轮是续跑、新规划还是已经回复过用户。
+        return state["route"]
 
     async def plan(self, state: AssistantState) -> dict[str, Any]:
         context = ContextResolution.model_validate(state["understanding"])
         plan = await self.supervisor.plan(context)
-        tasks = [task.model_copy(update={"status": TaskStatus.PENDING}) for task in plan.tasks]
+        # 状态和用户补充只由运行时写：兜底 Planner 的输出结构里看得到前者，看不到后者，
+        # 两样都按新任务重置。
+        tasks = [
+            task.model_copy(update={"status": TaskStatus.PENDING, "supplements": []})
+            for task in plan.tasks
+        ]
         return {"user_goal": plan.user_goal, "tasks": tasks}
 
     async def select_task(self, state: AssistantState) -> dict[str, Any]:

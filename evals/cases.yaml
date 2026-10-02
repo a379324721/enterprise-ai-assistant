@@ -350,6 +350,86 @@ context_cases:
       事项里差旅任务是 completed，只说明申请已提交。审批状态只有执行环节查得到，
       不能凭 completed 直接回复"已经批了"；也不是在补充会议室，判成 continue 会把会议室再问一遍。
 
+  - id: ctx-revise-a-queued-task
+    conversation:
+      - role: user
+        content: 申请后天去上海出差，顺便订个当天下午的会议室
+      - role: assistant
+        content: 好的，帮您提交这次去上海的差旅申请。还需要补充：①出发地是哪里？②出差事由是什么？
+        tools: [request_information]
+      - role: user
+        content: 会议室改成上午吧
+    matters:
+      - plan_id: p-trip
+        tasks:
+          - task_id: task-1
+            title: 提交上海出差申请
+            domain: travel
+            status: waiting_input
+            missing_fields: [出发地, 出差事由]
+          - task_id: task-2
+            title: 预订出差当天下午的会议室
+            domain: meeting
+            status: pending
+    expect_task_planning: false
+    expect_turn_relation: revise
+    expect_revised_task_ids: [task-2]
+    note: |
+      只更正排队的会议室，没有回答出差的追问。判成 continue 会续跑出差、把同一个问题再问一遍；
+      不填 revisions 的话，这句话只留在会话里，会议室真正执行时可能早已滑出窗口。
+
+  - id: ctx-answer-and-revise-in-one-turn
+    conversation:
+      - role: user
+        content: 申请后天去上海出差，顺便订个当天下午的会议室
+      - role: assistant
+        content: 好的，帮您提交这次去上海的差旅申请。还需要补充：①出发地是哪里？②出差事由是什么？
+        tools: [request_information]
+      - role: user
+        content: 北京出发，去开会。会议室改成上午
+    matters:
+      - plan_id: p-trip
+        tasks:
+          - task_id: task-1
+            title: 提交上海出差申请
+            domain: travel
+            status: waiting_input
+            missing_fields: [出发地, 出差事由]
+          - task_id: task-2
+            title: 预订出差当天下午的会议室
+            domain: meeting
+            status: pending
+    expect_task_planning: true
+    expect_turn_relation: continue
+    expect_revised_task_ids: [task-2]
+    note: 回答了出差的追问，同时更正了排队的会议室：续跑出差，会议室一并更正
+
+  - id: ctx-cancel-one-task-of-a-matter
+    conversation:
+      - role: user
+        content: 申请后天去上海出差，顺便订个当天下午的会议室
+      - role: assistant
+        content: 好的，帮您提交这次去上海的差旅申请。还需要补充：①出发地是哪里？②出差事由是什么？
+        tools: [request_information]
+      - role: user
+        content: 会议室不用订了
+    matters:
+      - plan_id: p-trip
+        tasks:
+          - task_id: task-1
+            title: 提交上海出差申请
+            domain: travel
+            status: waiting_input
+            missing_fields: [出发地, 出差事由]
+          - task_id: task-2
+            title: 预订出差当天下午的会议室
+            domain: meeting
+            status: pending
+    expect_task_planning: false
+    expect_turn_relation: cancel
+    expect_target_task_ids: [task-2]
+    note: 只放弃会议室，出差还要办。target_task_ids 留空会把整件事一起放弃
+
   - id: ctx-revoking-a-submitted-form-is-not-cancel
     conversation:
       - role: user

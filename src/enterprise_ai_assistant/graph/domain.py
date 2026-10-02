@@ -84,7 +84,7 @@ class DomainTaskWorkflow:
         request = self._request(state)
         domain_input: dict[str, Any] = {
             "standalone_request": request.user_goal,
-            "task": request.task.model_dump(mode="json"),
+            "task": request.task.model_dump(mode="json", exclude={"supplements"}),
             "dependency_results": request.dependency_results,
         }
         # 记忆单独成键，和用户当前请求区分开：模型必须能分辨哪些是本轮说的、
@@ -101,6 +101,9 @@ class DomainTaskWorkflow:
         # 在 standalone_request 里，两者冲突时以本轮为准。
         if request.draft is not None:
             domain_input["previous_draft"] = request.draft.model_dump(mode="json")
+        # 任务排队期间用户针对它说过的原话。会话原文只给最近几条，前面的任务多问几轮就滑出去了。
+        if request.task.supplements:
+            domain_input["task_supplements"] = list(request.task.supplements)
         if request.recent_messages:
             domain_input["recent_messages"] = [
                 turn.model_dump() for turn in request.recent_messages

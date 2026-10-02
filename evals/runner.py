@@ -156,6 +156,17 @@ class EvalHarness:
                 f"domains={[item.value for item in resolution.domains]}"
                 f"，期望 {[item.value for item in case.expect_domains]}"
             )
+        revised = sorted(item.task_id for item in resolution.revisions)
+        if case.expect_revised_task_ids is not None and revised != sorted(
+            case.expect_revised_task_ids
+        ):
+            problems.append(f"revisions 更正了 {revised}，期望 {case.expect_revised_task_ids}")
+        if case.expect_target_task_ids is not None and sorted(
+            resolution.target_task_ids
+        ) != sorted(case.expect_target_task_ids):
+            problems.append(
+                f"target_task_ids={resolution.target_task_ids}，期望 {case.expect_target_task_ids}"
+            )
         if resolution.target_plan_id in case.forbid_target_plan_ids:
             problems.append(f"target_plan_id 指向了不该恢复的事项 {resolution.target_plan_id}")
         missing = [

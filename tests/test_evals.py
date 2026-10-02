@@ -454,3 +454,35 @@ def test_format_report_renders_accuracy_and_failures() -> None:
 
     assert "50.0%" in text
     assert "p2: 领域路由错误" in text
+
+
+@pytest.mark.asyncio
+async def test_context_case_checks_revised_and_cancelled_task_ids() -> None:
+    # 判对了关系却没填任务 id：运行时什么都改不了、或者把整件事一起放弃，必须判失败。
+    revise = ContextCase(
+        id="c-revise",
+        conversation=[{"role": "user", "content": "会议室改成上午"}],
+        expect_task_planning=False,
+        expect_turn_relation=TurnRelation.CONTINUE,
+        expect_revised_task_ids=["task-2"],
+    )
+    cancel = ContextCase(
+        id="c-cancel",
+        conversation=[{"role": "user", "content": "会议室不用订了"}],
+        expect_task_planning=False,
+        expect_turn_relation=TurnRelation.CANCEL,
+        expect_target_task_ids=["task-2"],
+    )
+    resolution = ContextResolution(
+        standalone_request="会议室不用订了",
+        intent_summary="放弃",
+        requires_task_planning=False,
+        turn_relation=TurnRelation.CANCEL,
+    )
+
+    cancelled = await _harness(resolution).run_context_case(cancel)
+    revised = await _harness(resolution).run_context_case(revise)
+
+    assert cancelled.passed is False
+    assert "target_task_ids=[]" in cancelled.detail
+    assert "revisions 更正了 []" in revised.detail

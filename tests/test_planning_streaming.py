@@ -14,6 +14,8 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatResult
 from pydantic import ValidationError
 
+from enterprise_ai_assistant.core.matters import OpenMatter, OpenMatterTask
+from enterprise_ai_assistant.core.models import AgentName, TaskStatus
 from enterprise_ai_assistant.services.planning import LLMPlanningService
 
 
@@ -141,3 +143,39 @@ async def test_a_text_reply_without_the_tool_call_is_sent_back_too() -> None:
     *_, wrong, feedback = CALLS[1]
     assert wrong.content == "好的"
     assert "没有通过校验" in str(feedback.content)
+
+
+@pytest.mark.asyncio
+async def test_matters_are_sent_without_default_values() -> None:
+    """事项每轮都发，省掉默认值；省掉的只能是默认值，状态和缺失字段名都得在。"""
+    CALLS.clear()
+    model = RecordingModel(messages=iter([_tool_reply(_resolution([]))]))
+    service = LLMPlanningService(model)  # type: ignore[arg-type]
+    matter = OpenMatter(
+        plan_id="p-1",
+        tasks=[
+            OpenMatterTask(
+                task_id="task-1",
+                title="出差申请",
+                domain=AgentName.TRAVEL,
+                status=TaskStatus.WAITING_INPUT,
+                missing_fields=["出差事由"],
+            ),
+            OpenMatterTask(
+                task_id="task-2",
+                title="预订会议室",
+                domain=AgentName.MEETING,
+                status=TaskStatus.PENDING,
+            ),
+        ],
+    )
+
+    await service.resolve_context([{"role": "user", "content": "开会"}], matters=[matter])
+
+    sent = str(CALLS[0][-1].content)
+    assert (
+        '[{"plan_id":"p-1","tasks":['
+        '{"task_id":"task-1","title":"出差申请","domain":"travel","status":"waiting_input",'
+        '"missing_fields":["出差事由"]},'
+        '{"task_id":"task-2","title":"预订会议室","domain":"meeting","status":"pending"}]}]'
+    ) in sent

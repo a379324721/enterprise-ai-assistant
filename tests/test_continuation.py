@@ -18,12 +18,18 @@ from enterprise_ai_assistant.core.models import (
     PlannedTask,
     TaskOutline,
     TaskPlan,
+    TaskRevision,
     TaskStatus,
     TurnRelation,
     recover_interrupted,
 )
 from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow
-from enterprise_ai_assistant.graph.workflow import NOTHING_TO_CANCEL_REPLY, Workflow, build_graph
+from enterprise_ai_assistant.graph.workflow import (
+    NOTHING_TO_CANCEL_REPLY,
+    NOTHING_TO_REVISE_REPLY,
+    Workflow,
+    build_graph,
+)
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
 from enterprise_ai_assistant.tools import LocalEnterpriseToolProvider, ToolContext
@@ -147,6 +153,8 @@ def _resolution(
     relation: TurnRelation = TurnRelation.NEW,
     target: str | None = None,
     domains: Sequence[AgentName] = (),
+    revisions: Sequence[TaskRevision] = (),
+    task_ids: Sequence[str] = (),
 ) -> ContextResolution:
     return ContextResolution(
         standalone_request=request,
@@ -155,7 +163,13 @@ def _resolution(
         turn_relation=relation,
         target_plan_id=target,
         tasks=[TaskOutline(title=request, domain=domain, objective=request) for domain in domains],
-        reply="" if planning or relation == TurnRelation.CANCEL else "不客气",
+        revisions=list(revisions),
+        target_task_ids=list(task_ids),
+        reply=(
+            ""
+            if planning or relation in {TurnRelation.CANCEL, TurnRelation.REVISE}
+            else "不客气"
+        ),
     )
 
 
@@ -593,3 +607,307 @@ async def test_independent_tasks_wait_while_an_earlier_one_asks_for_input() -> N
         ("task-2", TaskStatus.COMPLETED),
     ]
     assert [task_id for task_id, _ in runtimes.seen] == ["task-1", "task-1", "task-2"]
+
+
+# -- 更正排队的任务、只放弃其中几个任务 ------------------------------------------
+
+_OVERTIME = TaskRevision(task_id="task-2", title="查询加班制度", objective="查询加班相关制度")
+
+
+def _payloads(runtimes: DraftAwareRuntimeFactory, task_id: str) -> list[dict[str, Any]]:
+    return [payload for seen_id, payload in runtimes.seen if seen_id == task_id]
+
+
+@pytest.mark.asyncio
+async def test_revising_a_queued_task_changes_it_without_running_anything() -> None:
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差并查考勤制度"),
+            _resolution(
+                "把考勤制度改成查加班制度",
+                planning=False,
+                relation=TurnRelation.REVISE,
+                revisions=[_OVERTIME],
+            ),
+        ]
+    )
+    graph, runtimes = _build(planning)
+    first = await _turn(graph, "去上海出差，顺便查下考勤制度")
+
+    revised = await _turn(graph, "考勤那个改成查加班的")
+
+    # 正在追问的差旅不续跑：用户没回答它，续跑只会把同一个问题再问一遍。
+    assert _statuses(revised) == _statuses(first)
+    assert [task_id for task_id, _ in runtimes.seen] == ["task-1"]
+    assert planning.plan_calls == 1
+    task = revised["tasks"][1]
+    assert (task.title, task.objective) == ("查询加班制度", "查询加班相关制度")
+    # 记下的是用户原话，不是改写。
+    assert task.supplements == ["考勤那个改成查加班的"]
+    assert revised["last_answer"] == "好的，已更新：查询加班制度。"
+    assert "trace_id" not in revised["messages"][-1].additional_kwargs
+
+
+@pytest.mark.asyncio
+async def test_revised_task_hands_the_users_words_to_its_agent() -> None:
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差并查考勤制度"),
+            _resolution(
+                "把考勤制度改成查加班制度",
+                planning=False,
+                relation=TurnRelation.REVISE,
+                revisions=[_OVERTIME],
+            ),
+            _resolution("当天往返", relation=TurnRelation.CONTINUE),
+        ]
+    )
+    graph, runtimes = _build(planning)
+    await _turn(graph, "去上海出差，顺便查下考勤制度")
+    await _turn(graph, "考勤那个改成查加班的")
+
+    done = await _turn(graph, "当天往返")
+
+    assert _statuses(done) == [("task-1", TaskStatus.COMPLETED), ("task-2", TaskStatus.COMPLETED)]
+    [payload] = _payloads(runtimes, "task-2")
+    assert payload["task_supplements"] == ["考勤那个改成查加班的"]
+    assert payload["task"]["objective"] == "查询加班相关制度"
+    # 只出现在单独的键里，不跟着任务再出现一遍。
+    assert "supplements" not in payload["task"]
+    # 没被更正过的任务不带这个键。
+    assert all("task_supplements" not in item for item in _payloads(runtimes, "task-1"))
+
+
+@pytest.mark.asyncio
+async def test_answering_and_revising_in_one_turn_does_both() -> None:
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差并查考勤制度"),
+            _resolution(
+                "当天往返，考勤制度改成查加班制度",
+                relation=TurnRelation.CONTINUE,
+                revisions=[_OVERTIME],
+            ),
+        ]
+    )
+    graph, runtimes = _build(planning)
+    await _turn(graph, "去上海出差，顺便查下考勤制度")
+
+    done = await _turn(graph, "当天往返，考勤那个改成查加班的")
+
+    assert _statuses(done) == [("task-1", TaskStatus.COMPLETED), ("task-2", TaskStatus.COMPLETED)]
+    assert done["tasks"][1].title == "查询加班制度"
+    [payload] = _payloads(runtimes, "task-2")
+    assert payload["task_supplements"] == ["当天往返，考勤那个改成查加班的"]
+
+
+@pytest.mark.asyncio
+async def test_revising_the_task_being_asked_about_resumes_it() -> None:
+    """更正落在正在追问的任务上就是在补充它：只改不跑的话，这句话要等下一轮才被读到。"""
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差并查考勤制度"),
+            _resolution(
+                "出差改成去杭州",
+                planning=False,
+                relation=TurnRelation.REVISE,
+                revisions=[
+                    TaskRevision(task_id="task-1", title="查询杭州差旅制度", objective="查询差旅制度")
+                ],
+            ),
+        ]
+    )
+    graph, runtimes = _build(planning)
+    await _turn(graph, "去上海出差，顺便查下考勤制度")
+
+    resumed = await _turn(graph, "出差改成去杭州")
+
+    assert _statuses(resumed)[0] == ("task-1", TaskStatus.COMPLETED)
+    # 正在追问的任务标题不跟着改：它的补充经会话原文和草稿交给领域 Agent。
+    assert resumed["tasks"][0].title == "查询差旅制度"
+    assert [task_id for task_id, _ in runtimes.seen][:2] == ["task-1", "task-1"]
+
+
+@pytest.mark.asyncio
+async def test_revising_something_that_is_not_queued_says_so() -> None:
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差并查考勤制度"),
+            _resolution(
+                "改一下",
+                planning=False,
+                relation=TurnRelation.REVISE,
+                revisions=[TaskRevision(task_id="task-9", title="不存在", objective="不存在")],
+            ),
+        ]
+    )
+    graph, _ = _build(planning)
+    first = await _turn(graph, "去上海出差，顺便查下考勤制度")
+
+    state = await _turn(graph, "改一下")
+
+    assert state["last_answer"] == NOTHING_TO_REVISE_REPLY
+    assert state["tasks"] == first["tasks"]
+
+
+@pytest.mark.asyncio
+async def test_revise_with_nothing_open_says_so() -> None:
+    planning = ScriptedPlanning(
+        [
+            _resolution(
+                "会议室改成上午",
+                planning=False,
+                relation=TurnRelation.REVISE,
+                revisions=[_OVERTIME],
+            )
+        ]
+    )
+    graph, _ = _build(planning)
+
+    state = await _turn(graph, "会议室改成上午")
+
+    assert state["last_answer"] == NOTHING_TO_REVISE_REPLY
+
+
+@pytest.mark.asyncio
+async def test_cancelling_one_queued_task_keeps_the_rest_waiting() -> None:
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差并查考勤制度"),
+            _resolution(
+                "考勤制度不用查了",
+                planning=False,
+                relation=TurnRelation.CANCEL,
+                task_ids=["task-2"],
+            ),
+        ]
+    )
+    graph, runtimes = _build(planning)
+    await _turn(graph, "去上海出差，顺便查下考勤制度")
+
+    state = await _turn(graph, "考勤制度不用查了")
+
+    assert _statuses(state) == [
+        ("task-1", TaskStatus.WAITING_INPUT),
+        ("task-2", TaskStatus.REJECTED),
+    ]
+    # 还在追问的差旅草稿保留，用户回过头补充时接着用。
+    assert state["drafts"]["task-1"].missing_fields == ["end_date"]
+    assert state["last_answer"] == "好的，已放弃：查询通用制度。"
+    assert [task_id for task_id, _ in runtimes.seen] == ["task-1"]
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_task_also_drops_the_ones_that_need_it() -> None:
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差并查考勤制度"),
+            _resolution(
+                "出差不去了", planning=False, relation=TurnRelation.CANCEL, task_ids=["task-1"]
+            ),
+        ]
+    )
+    graph, _ = _build(planning)
+    await _turn(graph, "去上海出差，顺便查下考勤制度")
+
+    state = await _turn(graph, "出差不去了")
+
+    # task-2 依赖 task-1，前置放弃了它也办不成。
+    assert _statuses(state) == [
+        ("task-1", TaskStatus.REJECTED),
+        ("task-2", TaskStatus.REJECTED),
+    ]
+    assert state["drafts"] == {}
+    assert state["last_answer"] == "好的，这件事不办了，已放弃：查询差旅制度、查询通用制度。"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_asked_task_moves_on_to_independent_ones() -> None:
+    """放弃正在追问的任务后，不依赖它的任务接着办：停下的话计划里没有等用户的任务，
+    右栏不再显示它，也没有哪句话能再指认到它。"""
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差，顺便查考勤制度", domains=[AgentName.TRAVEL, AgentName.POLICY]),
+            _resolution(
+                "出差不去了", planning=False, relation=TurnRelation.CANCEL, task_ids=["task-1"]
+            ),
+        ]
+    )
+    graph, runtimes = _build(planning)
+    await _turn(graph, "去上海出差，顺便查考勤制度")
+
+    state = await _turn(graph, "出差不去了")
+
+    assert _statuses(state) == [
+        ("task-1", TaskStatus.REJECTED),
+        ("task-2", TaskStatus.COMPLETED),
+    ]
+    assert [task_id for task_id, _ in runtimes.seen] == ["task-1", "task-2"]
+    cancelled = "好的，已放弃：去上海出差，顺便查考勤制度。"
+    assert state["turn_answers"][0] == cancelled
+    assert state["messages"][-2].content == cancelled
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_last_waiting_task_of_a_shelved_plan_drops_the_whole_plan() -> None:
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差并查考勤制度"),
+            _resolution("查询考勤制度", domains=[AgentName.POLICY]),
+        ]
+    )
+    graph, _ = _build(planning)
+    trip = await _turn(graph, "去上海出差，顺便查下考勤制度")
+    await _turn(graph, "考勤怎么规定的")
+    planning._resolutions.append(
+        _resolution(
+            "出差不去了",
+            planning=False,
+            relation=TurnRelation.CANCEL,
+            target=trip["plan_id"],
+            task_ids=["task-1"],
+        )
+    )
+
+    state = await _turn(graph, "出差那个不去了")
+
+    assert state["shelved_plans"] == []
+    assert state["last_answer"] == "好的，这件事不办了，已放弃：查询差旅制度、查询通用制度。"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_finished_task_is_not_possible() -> None:
+    planning = ScriptedPlanning(
+        [
+            _resolution("去上海出差，顺便查考勤制度", domains=[AgentName.POLICY, AgentName.TRAVEL]),
+        ]
+    )
+    graph, _ = _build(planning)
+    first = await _turn(graph, "查考勤制度，顺便去上海出差")
+    assert _statuses(first) == [
+        ("task-1", TaskStatus.COMPLETED),
+        ("task-2", TaskStatus.WAITING_INPUT),
+    ]
+    planning._resolutions.append(
+        _resolution("考勤不查了", planning=False, relation=TurnRelation.CANCEL, task_ids=["task-1"])
+    )
+
+    state = await _turn(graph, "考勤不查了")
+
+    assert state["last_answer"] == NOTHING_TO_CANCEL_REPLY
+    assert _statuses(state) == _statuses(first)
+
+
+@pytest.mark.asyncio
+async def test_planner_output_cannot_carry_user_supplements() -> None:
+    class SupplementingPlanning(ScriptedPlanning):
+        async def plan(self, context: ContextResolution) -> TaskPlan:
+            plan = await super().plan(context)
+            plan.tasks[0].supplements = ["用户说过去杭州"]
+            return plan
+
+    graph, _ = _build(SupplementingPlanning([_resolution("去上海出差并查考勤制度")]))
+
+    state = await _turn(graph, "去上海出差，顺便查下考勤制度")
+
+    assert all(task.supplements == [] for task in state["tasks"])

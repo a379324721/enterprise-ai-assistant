@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import Annotated, Any, NotRequired, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 from uuid import UUID, uuid4
 
 from langgraph.graph.message import add_messages
@@ -70,6 +70,8 @@ class AssistantState(TypedDict):
     plan_id: NotRequired[str]
     # 换话题时被搁置的未办完计划，跨轮保留，不自动过期。
     shelved_plans: NotRequired[list[Plan]]
+    # understand 定下的去向：重新规划、执行队列里的任务，还是已经回复、本轮结束。
+    route: NotRequired[Literal["plan", "select_task", "done"]]
 
 
 def current_plan(values: Mapping[str, Any]) -> Plan:

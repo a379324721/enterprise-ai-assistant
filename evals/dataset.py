@@ -50,6 +50,9 @@ class ContextCase(BaseModel):
     expect_target_plan_id: str | None = None
     # 指向这些事项即判失败，用于"可以留空、但绝不能指错"的场景。
     forbid_target_plan_ids: list[str] = Field(default_factory=list)
+    # 留空表示不断言。revisions 更正的任务、cancel 只放弃的任务。
+    expect_revised_task_ids: list[str] | None = None
+    expect_target_task_ids: list[str] | None = None
     # 留空表示不断言。只在 requires_task_planning 为 true 时有意义：领域归错了，
     # 单领域快路径会把请求交给没有对应工具的 Agent。
     expect_domains: list[AgentName] = Field(default_factory=list)

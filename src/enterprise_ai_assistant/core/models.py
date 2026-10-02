@@ -5,6 +5,7 @@ from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 
 class TaskStatus(StrEnum):
@@ -42,12 +43,25 @@ class PlannedTask(BaseModel):
     # 这个任务被领域 Agent 转交过的领域，按先后顺序。改派不回到这里的领域，
     # 次数也有上限，否则两个 Agent 可以把同一个任务来回踢。
     handed_off_from: list[AgentName] = Field(default_factory=list)
+    # 任务还在排队时，用户针对它说过的话（更正"会议室改成上午"那一轮的原文），由运行时记下，
+    # 执行时交给领域 Agent 作为字段来源。只靠会话原文的话，前面的任务多追问几轮，这句话就滑出
+    # 领域 Agent 的会话窗口了；改写过的 objective 不能当字段来源，那等于让 Supervisor 填字段。
+    # 不进模型可见的 schema：Planner 输出 TaskPlan 时要是填了它，就凭空多出一句"用户说过的话"。
+    supplements: SkipJsonSchema[list[str]] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def reject_supervisor_domain(self) -> "PlannedTask":
         if self.domain == AgentName.SUPERVISOR:
             raise ValueError("domain 不能是 supervisor，只能是 travel、expense、hr、meeting、policy")
         return self
+
+
+class TaskRevision(BaseModel):
+    """Supervisor 对一个还没开始的任务的更正。"""
+
+    task_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=200)
+    objective: str = Field(min_length=1, max_length=2000)
 
 
 class TaskPlan(BaseModel):
@@ -134,6 +148,8 @@ class TurnRelation(StrEnum):
     NEW = "new"
     CONTINUE = "continue"
     CANCEL = "cancel"
+    # 只更正还没开始的任务，本轮不执行。
+    REVISE = "revise"
 
 
 class DraftField(BaseModel):
@@ -220,8 +236,12 @@ class ContextResolution(BaseModel):
     # continue 表示本轮在补充上一轮停在待补充的任务：不重新规划，原任务续跑。
     # 没有待补充任务时，运行时会忽略这里的 continue。
     turn_relation: TurnRelation = TurnRelation.NEW
-    # continue / cancel 指向的事项。补充当前事项时可以留空；恢复或取消被搁置的事项时必填。
+    # continue / revise / cancel 指向的事项。当前事项可以留空；被搁置的事项必填。
     target_plan_id: str | None = None
+    # 对目标事项里还没开始的任务的更正，revise 必填，continue 时用户顺带更正了也填。
+    revisions: list[TaskRevision] = Field(default_factory=list, max_length=20)
+    # cancel 只放弃其中几个任务时写它们的 id；留空表示整件事不办了。
+    target_task_ids: list[str] = Field(default_factory=list, max_length=20)
     # 新的业务请求拆出的任务 DAG。原先由单独的 Planner 调用产出，但它的输入只有这份理解
     # 结果，领域归类也已经在这里做完，多一次调用只多出依赖关系这点信息。并进同一次输出后，
     # 每个需要执行的轮次省一次模型调用。只描述领域、目标和依赖，不是字段抽取。
@@ -254,11 +274,11 @@ class ContextResolution(BaseModel):
         # 抛错交给结构化输出的重试，而不是在运行时拿兜底文案糊过去。
         if (
             not self.requires_task_planning
-            and self.turn_relation != TurnRelation.CANCEL
+            and self.turn_relation not in {TurnRelation.CANCEL, TurnRelation.REVISE}
             and not self.reply.strip()
         ):
             raise ValueError(
-                "requires_task_planning 为 false 且 turn_relation 不是 cancel 时必须写 reply："
+                "requires_task_planning 为 false 且 turn_relation 不是 cancel、revise 时必须写 reply："
                 "这一轮没有别的环节会回复用户"
             )
         # continue 必然续跑原任务，运行时不看 requires_task_planning，reply 会被静默丢掉。
@@ -270,6 +290,24 @@ class ContextResolution(BaseModel):
                 "continue 会续跑未办完的任务，由领域 Agent 回复用户。"
                 "如果本轮不该续跑、只需直接回复，turn_relation 改为 new"
             )
+        # revise 和 cancel 一样由运行时按实际处理结果回复，不执行任务。
+        if self.turn_relation == TurnRelation.REVISE and (
+            self.requires_task_planning or not self.revisions
+        ):
+            raise ValueError(
+                "turn_relation 为 revise 时 requires_task_planning 必须为 false，revisions 至少写一项："
+                "revise 只更正还没开始的任务、本轮不执行。用户同时回答了正在追问的问题时，"
+                "turn_relation 改为 continue 并保留 revisions"
+            )
+        if self.revisions and self.turn_relation not in {
+            TurnRelation.CONTINUE,
+            TurnRelation.REVISE,
+        }:
+            raise ValueError(
+                "只有 turn_relation 为 continue 或 revise 时才写 revisions，其余情况留空数组"
+            )
+        if self.target_task_ids and self.turn_relation != TurnRelation.CANCEL:
+            raise ValueError("只有 turn_relation 为 cancel 时才写 target_task_ids，其余情况留空数组")
         return self
 
 

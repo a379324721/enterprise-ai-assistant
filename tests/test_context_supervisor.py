@@ -8,6 +8,7 @@ from enterprise_ai_assistant.core.matters import OpenMatter
 from enterprise_ai_assistant.core.models import (
     ContextResolution,
     TaskPlan,
+    TaskRevision,
     TurnRelation,
 )
 
@@ -81,3 +82,40 @@ def test_cancel_and_task_turns_need_no_reply() -> None:
         turn_relation=TurnRelation.CANCEL,
     )
     ContextResolution(standalone_request="查年假", intent_summary="查询", requires_task_planning=True)
+
+
+def test_revise_must_carry_revisions_and_run_nothing() -> None:
+    with pytest.raises(ValidationError, match="revisions 至少写一项"):
+        ContextResolution(
+            standalone_request="会议室改成上午",
+            intent_summary="更正",
+            requires_task_planning=False,
+            turn_relation=TurnRelation.REVISE,
+        )
+    with pytest.raises(ValidationError, match="改为 continue"):
+        ContextResolution(
+            standalone_request="会议室改成上午",
+            intent_summary="更正",
+            requires_task_planning=True,
+            turn_relation=TurnRelation.REVISE,
+            revisions=[TaskRevision(task_id="task-2", title="会议室", objective="订上午")],
+        )
+
+
+def test_revisions_and_task_ids_only_go_with_their_relations() -> None:
+    """运行时只在对应的关系下读这两个字段，写在别处会被静默丢掉。"""
+    with pytest.raises(ValidationError, match="才写 revisions"):
+        ContextResolution(
+            standalone_request="订会议室",
+            intent_summary="新请求",
+            requires_task_planning=True,
+            revisions=[TaskRevision(task_id="task-2", title="会议室", objective="订上午")],
+        )
+    with pytest.raises(ValidationError, match="才写 target_task_ids"):
+        ContextResolution(
+            standalone_request="当天往返",
+            intent_summary="补充",
+            requires_task_planning=True,
+            turn_relation=TurnRelation.CONTINUE,
+            target_task_ids=["task-2"],
+        )
