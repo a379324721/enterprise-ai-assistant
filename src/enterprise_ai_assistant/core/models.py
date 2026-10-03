@@ -241,7 +241,7 @@ class ContextResolution(BaseModel):
     # 对目标事项里还没开始的任务的更正，revise 必填，continue 时用户顺带更正了也填。
     revisions: list[TaskRevision] = Field(default_factory=list, max_length=20)
     # cancel 只放弃其中几个任务时写它们的 id；留空表示整件事不办了。
-    target_task_ids: list[str] = Field(default_factory=list, max_length=20)
+    cancel_task_ids: list[str] = Field(default_factory=list, max_length=20)
     # 新的业务请求拆出的任务 DAG。原先由单独的 Planner 调用产出，但它的输入只有这份理解
     # 结果，领域归类也已经在这里做完，多一次调用只多出依赖关系这点信息。并进同一次输出后，
     # 每个需要执行的轮次省一次模型调用。只描述领域、目标和依赖，不是字段抽取。

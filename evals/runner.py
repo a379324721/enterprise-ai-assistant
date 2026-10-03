@@ -168,11 +168,11 @@ class EvalHarness:
             case.expect_revised_task_ids
         ):
             problems.append(f"revisions 更正了 {revised}，期望 {case.expect_revised_task_ids}")
-        if case.expect_target_task_ids is not None and sorted(
-            resolution.target_task_ids
-        ) != sorted(case.expect_target_task_ids):
+        if case.expect_cancel_task_ids is not None and sorted(
+            resolution.cancel_task_ids
+        ) != sorted(case.expect_cancel_task_ids):
             problems.append(
-                f"target_task_ids={resolution.target_task_ids}，期望 {case.expect_target_task_ids}"
+                f"cancel_task_ids={resolution.cancel_task_ids}，期望 {case.expect_cancel_task_ids}"
             )
         if resolution.target_plan_id in case.forbid_target_plan_ids:
             problems.append(f"target_plan_id 指向了不该恢复的事项 {resolution.target_plan_id}")

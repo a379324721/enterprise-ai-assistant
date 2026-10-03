@@ -67,7 +67,7 @@ FastAPI + LangGraph 的多 Agent 系统。`graph/workflow.py` 是调度父图，
 - 缺字段时 `request_information` 让任务停在 `WAITING_INPUT`。当前计划跨轮保留，换话题时整体移进 `shelved_plans`，不过期。**不要改回每轮清空再规划**：重拆的任务 id 和产物会丢。
 - 当前计划和搁置计划都是 `Plan`。当前计划在状态里平铺成 `plan_id`、`user_goal`、`tasks`、`artifacts`、`drafts` 几个键（已有检查点按这些键存），整件事一起处理时经 `graph/state.py` 的 `current_plan` / `plan_update` 读写。`ShelvedPlan` 是旧检查点里的类名，别名不能删。
 - "未办完的事项"只有一份投影：`core/matters.py` 的 `project_matters`。右栏用它；Supervisor 每轮开头经 `open_matters` 拿同一份（`running=False`，即上一轮结束后右栏的样子），包括计划里排队、已完成的任务。`OpenMatter` 只有标题、状态和缺失字段**名**，不要加字段值和 `user_goal`——有值它就能补写领域字段。
-- `continue` 续跑待补充的任务，草稿经 `DomainTaskRequest.draft` 交还；`cancel` 由运行时放弃事项并用固定文案回复（不用模型的 `reply`），`target_task_ids` 只放弃其中几个，依赖它们的连带放弃；撤销已提交单据是 `new`，走 `revoke_*`。指向规则在 `Workflow._target`，多件搁置时不猜。去向（规划、执行、结束）由 `understand` 写进 `route`，`after_understand` 只读它。
+- `continue` 续跑待补充的任务，草稿经 `DomainTaskRequest.draft` 交还；`cancel` 由运行时放弃事项并用固定文案回复（不用模型的 `reply`），`cancel_task_ids` 只放弃其中几个，依赖它们的连带放弃；撤销已提交单据是 `new`，走 `revoke_*`。指向规则在 `Workflow._target`，多件搁置时不猜。去向（规划、执行、结束）由 `understand` 写进 `route`，`after_understand` 只读它。
 - `revise` 只更正 `PENDING` 的任务、不执行（`continue` 顺带更正时同样填 `revisions`）：改标题和 objective，并把用户原话追加到 `PlannedTask.supplements`，执行时作为 `task_supplements` 交给领域 Agent。objective 是改写，**不能当字段来源**，那等于让 Supervisor 填字段；只靠会话原文的话，前面的任务多问几轮这句话就滑出窗口了。`supplements` 不进模型可见的 schema，`plan` 节点会重置它。更正落在正在追问的任务上按 `continue` 续跑。
 - 右栏"进行中"：执行中随根图 `checkpoints` 流推 `matters` 事件，`done` 和页面加载从快照投影，前端整体替换。"是否在执行"看 `RunManager`，没有运行时停在 RUNNING 的任务按 `recover_interrupted` 解读。**不要为某个时机或某个读者另写投影路径**，两套算法的差异就是 bug：模型看到的和用户看到的对不上，用户提到右栏上的任务时它认不出来。
 

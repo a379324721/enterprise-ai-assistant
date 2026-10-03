@@ -553,7 +553,7 @@ class Workflow:
             for task in target.tasks
             if task.status in {TaskStatus.WAITING_INPUT, TaskStatus.PENDING}
         }
-        chosen = set(context.target_task_ids) & unfinished if context.target_task_ids else unfinished
+        chosen = set(context.cancel_task_ids) & unfinished if context.cancel_task_ids else unfinished
         if not chosen:
             return self._reply(update, NOTHING_TO_CANCEL_REPLY)
         tasks = self._reject_blocked_tasks(

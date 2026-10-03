@@ -427,8 +427,8 @@ context_cases:
             status: pending
     expect_task_planning: false
     expect_turn_relation: cancel
-    expect_target_task_ids: [task-2]
-    note: 只放弃会议室，出差还要办。target_task_ids 留空会把整件事一起放弃
+    expect_cancel_task_ids: [task-2]
+    note: 只放弃会议室，出差还要办。cancel_task_ids 留空会把整件事一起放弃
 
   - id: ctx-revoking-a-submitted-form-is-not-cancel
     conversation:

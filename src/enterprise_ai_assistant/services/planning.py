@@ -244,7 +244,7 @@ completed 已执行（不代表审批通过），rejected 已放弃，failed 失
 - revise：只更正 pending 任务（"会议室改成上午"），不执行。revisions 按 task_id 写改后的 title、objective。
   改 completed 的任务是修改已提交的单据，属于 new。
 - cancel：用户明确说某件事不办了，填 target_plan_id，不执行。只放弃其中几个任务（"会议室不要了"）时
-  target_task_ids 写它们的 task_id。撤销已提交的单据是 new。
+  cancel_task_ids 写它们的 task_id。撤销已提交的单据是 new。
 - new：其余情况。"好的""稍等""我问一下再告诉你"这类没有提供信息、也没有做出选择的回应也是 new，
   不执行——续跑只会把同一个问题再问一遍。
   拿不准时，这句话脱离上一轮追问还能独立成立就是 new。没有未办完的事项时一律 new。

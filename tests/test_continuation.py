@@ -164,7 +164,7 @@ def _resolution(
         target_plan_id=target,
         tasks=[TaskOutline(title=request, domain=domain, objective=request) for domain in domains],
         revisions=list(revisions),
-        target_task_ids=list(task_ids),
+        cancel_task_ids=list(task_ids),
         reply=(
             ""
             if planning or relation in {TurnRelation.CANCEL, TurnRelation.REVISE}

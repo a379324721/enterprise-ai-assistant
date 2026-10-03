@@ -480,7 +480,7 @@ async def test_context_case_checks_revised_and_cancelled_task_ids() -> None:
         conversation=[{"role": "user", "content": "会议室不用订了"}],
         expect_task_planning=False,
         expect_turn_relation=TurnRelation.CANCEL,
-        expect_target_task_ids=["task-2"],
+        expect_cancel_task_ids=["task-2"],
     )
     resolution = ContextResolution(
         standalone_request="会议室不用订了",
@@ -493,7 +493,7 @@ async def test_context_case_checks_revised_and_cancelled_task_ids() -> None:
     revised = await _harness(resolution).run_context_case(revise)
 
     assert cancelled.passed is False
-    assert "target_task_ids=[]" in cancelled.detail
+    assert "cancel_task_ids=[]" in cancelled.detail
     assert "revisions 更正了 []" in revised.detail
 
 
