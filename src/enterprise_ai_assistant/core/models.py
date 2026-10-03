@@ -306,8 +306,6 @@ class ContextResolution(BaseModel):
             raise ValueError(
                 "只有 turn_relation 为 continue 或 revise 时才写 revisions，其余情况留空数组"
             )
-        if self.target_task_ids and self.turn_relation != TurnRelation.CANCEL:
-            raise ValueError("只有 turn_relation 为 cancel 时才写 target_task_ids，其余情况留空数组")
         return self
 
 

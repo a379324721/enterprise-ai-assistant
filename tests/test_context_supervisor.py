@@ -102,20 +102,12 @@ def test_revise_must_carry_revisions_and_run_nothing() -> None:
         )
 
 
-def test_revisions_and_task_ids_only_go_with_their_relations() -> None:
-    """运行时只在对应的关系下读这两个字段，写在别处会被静默丢掉。"""
+def test_revisions_only_go_with_their_relations() -> None:
+    """运行时只在 continue / revise 下读 revisions，写在别处会被静默丢掉。"""
     with pytest.raises(ValidationError, match="才写 revisions"):
         ContextResolution(
             standalone_request="订会议室",
             intent_summary="新请求",
             requires_task_planning=True,
             revisions=[TaskRevision(task_id="task-2", title="会议室", objective="订上午")],
-        )
-    with pytest.raises(ValidationError, match="才写 target_task_ids"):
-        ContextResolution(
-            standalone_request="当天往返",
-            intent_summary="补充",
-            requires_task_planning=True,
-            turn_relation=TurnRelation.CONTINUE,
-            target_task_ids=["task-2"],
         )
