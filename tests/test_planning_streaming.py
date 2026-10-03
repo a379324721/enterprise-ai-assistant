@@ -37,7 +37,7 @@ BOUND: list[dict[str, Any]] = []
 def test_every_structured_stage_disables_streaming() -> None:
     SEEN.clear()
     BOUND.clear()
-    LLMPlanningService(SpyModel(messages=iter([])))  # type: ignore[arg-type]
+    LLMPlanningService(SpyModel(messages=iter([])), force_tool_choice=True)  # type: ignore[arg-type]
 
     assert [name for name, _ in SEEN] == [
         "ContextResolution",
@@ -51,7 +51,7 @@ def test_schema_is_a_forced_tool_without_length_limits_and_all_fields_required()
     """强制调用时参数 schema 带字符串长度限制，deepseek-v4-flash 会一直不返回；
     不在 required 里的字段它一律不写。"""
     BOUND.clear()
-    LLMPlanningService(SpyModel(messages=iter([])))  # type: ignore[arg-type]
+    LLMPlanningService(SpyModel(messages=iter([])), force_tool_choice=True)  # type: ignore[arg-type]
 
     context = BOUND[0]
     assert context["tool_choice"] == {
@@ -108,7 +108,7 @@ def _tool_reply(output: str) -> AIMessage:
 async def _resolve(outputs: list[AIMessage]) -> Any:
     CALLS.clear()
     model = RecordingModel(messages=iter(outputs))
-    service = LLMPlanningService(model)  # type: ignore[arg-type]
+    service = LLMPlanningService(model, force_tool_choice=True)  # type: ignore[arg-type]
     return await service.resolve_context([{"role": "user", "content": "1 嗯"}])
 
 
@@ -150,7 +150,7 @@ async def test_matters_are_sent_without_default_values() -> None:
     """事项每轮都发，省掉默认值；省掉的只能是默认值，状态和缺失字段名都得在。"""
     CALLS.clear()
     model = RecordingModel(messages=iter([_tool_reply(_resolution([]))]))
-    service = LLMPlanningService(model)  # type: ignore[arg-type]
+    service = LLMPlanningService(model, force_tool_choice=True)  # type: ignore[arg-type]
     matter = OpenMatter(
         plan_id="p-1",
         tasks=[
@@ -179,3 +179,21 @@ async def test_matters_are_sent_without_default_values() -> None:
         '"missing_fields":["出差事由"]},'
         '{"task_id":"task-2","title":"预订会议室","domain":"meeting","status":"pending"}]}]'
     ) in sent
+
+
+@pytest.mark.asyncio
+async def test_without_forcing_the_tool_is_offered_and_asked_for() -> None:
+    """只能开思考的模型不支持强制 tool_choice：改用 auto，并在末尾提示必须调工具。"""
+    BOUND.clear()
+    LLMPlanningService(SpyModel(messages=iter([])), force_tool_choice=False)  # type: ignore[arg-type]
+    assert BOUND[0]["tool_choice"] == "auto"
+
+    CALLS.clear()
+    model = RecordingModel(messages=iter([AIMessage(content="你好"), _tool_reply(_resolution([]))]))
+    service = LLMPlanningService(model, force_tool_choice=False)  # type: ignore[arg-type]
+    result = await service.resolve_context([{"role": "user", "content": "1 嗯"}])
+
+    assert result.turn_relation == "continue"
+    assert "调用 ContextResolution 工具" in str(CALLS[0][-1].content)
+    # 直接回了正文就和校验失败一样交还模型。
+    assert "没有通过校验" in str(CALLS[1][-1].content)

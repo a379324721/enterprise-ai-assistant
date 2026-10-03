@@ -75,7 +75,7 @@ def wired(monkeypatch: pytest.MonkeyPatch) -> tuple[FakePool, FakeRedis, FakeMil
     monkeypatch.setattr(main, "build_embeddings", lambda settings: object())
     # 模型客户端与规划链的构造会真实建连/编译 prompt，这里替换成占位对象。
     monkeypatch.setattr(main, "build_chat_model", lambda role="domain": object())
-    monkeypatch.setattr(main, "LLMPlanningService", lambda model: object())
+    monkeypatch.setattr(main, "LLMPlanningService", lambda model, **kwargs: object())
     return pool, redis, milvus
 
 

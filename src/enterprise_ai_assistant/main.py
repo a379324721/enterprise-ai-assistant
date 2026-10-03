@@ -33,7 +33,11 @@ from enterprise_ai_assistant.repositories.policies import (
 )
 from enterprise_ai_assistant.repositories.users import PostgresDemoUserRepository
 from enterprise_ai_assistant.services.feedback import build_feedback_sync
-from enterprise_ai_assistant.services.llm import build_chat_model, build_embeddings
+from enterprise_ai_assistant.services.llm import (
+    build_chat_model,
+    build_embeddings,
+    can_force_tool_choice,
+)
 from enterprise_ai_assistant.services.planning import LLMPlanningService
 from enterprise_ai_assistant.tools import LocalEnterpriseToolProvider
 from enterprise_ai_assistant.tools.registry import DomainToolRegistry
@@ -67,7 +71,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.exception("policy_bootstrap_failed", policy_vector_uri=settings.policy_vector_uri)
         policies = CachedMilvusPolicyRepository(milvus, redis, embeddings)
         actions = PostgresActionRepository(db_pool)
-        supervisor = SupervisorAgent(LLMPlanningService(build_chat_model("supervisor")))
+        supervisor = SupervisorAgent(
+            LLMPlanningService(
+                build_chat_model("supervisor"), force_tool_choice=can_force_tool_choice(settings)
+            )
+        )
         provider = LocalEnterpriseToolProvider(actions, policies)
         memories = PostgresMemoryRepository(db_pool)
         workflow = Workflow(

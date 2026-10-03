@@ -56,22 +56,43 @@ class _StructuredStage[T: BaseModel]:
     字段名全靠读 prompt 猜（实测把 turn_relation 写成嵌套对象、漏掉必填字段）；
     工具参数它是按 schema 生成的，领域 Agent 也一直走工具。结果自己校验，不交给 SDK，
     才拿得到原输出去反馈。校验器的报错会原样进 prompt，所以要写成模型能照着改的说明。
+
+    能否强制调用这个工具取决于模型（见 services/llm.py 的 can_force_tool_choice）：DashScope
+    在思考模式下强制 tool_choice 直接 400。不能强制时用 auto，并在末尾提示必须调工具；
+    模型仍然直接回了正文，就走和校验失败一样的反馈重来。
     """
 
-    def __init__(self, model: ChatOpenAI, schema: type[T], prompt: ChatPromptTemplate) -> None:
+    def __init__(
+        self,
+        model: ChatOpenAI,
+        schema: type[T],
+        prompt: ChatPromptTemplate,
+        *,
+        force_tool_choice: bool,
+    ) -> None:
         self._schema = schema
         self._prompt = prompt
         tool = convert_to_openai_tool(schema)
         tool["function"]["parameters"] = _tool_parameters(tool["function"]["parameters"])
+        name = tool["function"]["name"]
+        self._reminder = (
+            None
+            if force_tool_choice
+            else HumanMessage(content=f"调用 {name} 工具给出结果，不要直接回复正文。")
+        )
         # 网络和服务端错误的重试沿用 with_retry；校验错误在 ainvoke 里带着说明重试。
         self._model = model.bind(
             tools=[tool],
-            tool_choice={"type": "function", "function": {"name": tool["function"]["name"]}},
+            tool_choice=(
+                {"type": "function", "function": {"name": name}} if force_tool_choice else "auto"
+            ),
             parallel_tool_calls=False,
         ).with_retry(stop_after_attempt=2)
 
     async def ainvoke(self, variables: dict[str, Any]) -> T:
         messages = await self._prompt.aformat_messages(**variables)
+        if self._reminder is not None:
+            messages = [*messages, self._reminder]
         for attempt in range(1, _STRUCTURED_ATTEMPTS + 1):
             reply = await self._model.ainvoke(messages)
             output = _tool_output(reply)
@@ -170,7 +191,7 @@ class PlanningService(Protocol):
 class LLMPlanningService(PlanningService):
     """通过两阶段 LLM 推理，避免路由退化为关键词意图匹配。"""
 
-    def __init__(self, model: ChatOpenAI) -> None:
+    def __init__(self, model: ChatOpenAI, *, force_tool_choice: bool) -> None:
         # 结构化输出一律不走流式。原先走 response_format 时，DashScope 边流边生成 JSON，
         # 模型一跑偏就整段中断（InternalError.Algo.InvalidParameter），400 不在 SDK 的
         # 重试范围内，整轮对话直接失败；改走工具后这三个节点的输出仍不面向用户，流式
@@ -248,7 +269,9 @@ completed 已执行（不代表审批通过），rejected 已放弃，failed 失
         ).partial(
             capabilities=_CAPABILITIES, domain_routing=_DOMAIN_ROUTING
         )
-        self._context_resolver = _StructuredStage(structured, ContextResolution, context_prompt)
+        self._context_resolver = _StructuredStage(
+            structured, ContextResolution, context_prompt, force_tool_choice=force_tool_choice
+        )
         # 任务通常由 Context Supervisor 在理解结果里直接给出，这条链只是兜底：理解结果
         # 需要执行、模型却漏写了任务时才会调用。
         planner_prompt = ChatPromptTemplate.from_messages(
@@ -275,7 +298,9 @@ completed 已执行（不代表审批通过），rejected 已放弃，failed 失
         ).partial(
             capabilities=_CAPABILITIES, domain_routing=_DOMAIN_ROUTING
         )
-        self._planner = _StructuredStage(structured, TaskPlan, planner_prompt)
+        self._planner = _StructuredStage(
+            structured, TaskPlan, planner_prompt, force_tool_choice=force_tool_choice
+        )
         memory_prompt = ChatPromptTemplate.from_messages(
             [
                 (
@@ -308,7 +333,9 @@ value 用简短中文陈述，不超过 200 字。
                 ),
             ]
         )
-        self._memory_extractor = _StructuredStage(structured, MemoryExtraction, memory_prompt)
+        self._memory_extractor = _StructuredStage(
+            structured, MemoryExtraction, memory_prompt, force_tool_choice=force_tool_choice
+        )
 
     @traceable(name="context-supervisor", run_type="chain")
     async def resolve_context(

@@ -88,7 +88,7 @@ FastAPI + LangGraph 的多 Agent 系统。`graph/workflow.py` 是调度父图，
 
 ### 结构化输出
 
-理解、兜底规划、记忆抽取共用 `_StructuredStage`：schema 以强制调用的工具下发，**不要改回 `response_format`**（DashScope 上的 DeepSeek 不按它生成，字段全靠猜）；下发的 schema 去掉 `maxLength`/`minLength`（强制调用时 DeepSeek 会一直不返回），长度由 pydantic 本地校验；关流式；校验失败时把原输出和错误说明交还模型修正，最多三次。校验器的报错会进 prompt，要写成模型能照着改的中文。
+理解、兜底规划、记忆抽取共用 `_StructuredStage`：schema 以强制调用的工具下发（模型开着思考时 DashScope 不支持强制，退回 `auto` 并提示必须调工具，见下面的模型登记），**不要改回 `response_format`**（DashScope 上的 DeepSeek 不按它生成，字段全靠猜）；下发的 schema 去掉 `maxLength`/`minLength`（强制调用时 DeepSeek 会一直不返回），长度由 pydantic 本地校验；关流式；校验失败时把原输出和错误说明交还模型修正，最多三次。校验器的报错会进 prompt，要写成模型能照着改的中文。
 
 ### 可信上下文与工具风险
 
@@ -119,6 +119,7 @@ FastAPI + LangGraph 的多 Agent 系统。`graph/workflow.py` 是调度父图，
 
 - 所有配置经 `core/config.py` 的 `Settings` 校验，敏感项不设默认值，`.env.example` 是权威列表。生产必须配 `JWT_SECRET`（HS* 至少 32 字节）。
 - 模型按角色配思考和温度：Supervisor 关思考、温度 0（分类要稳定）；领域 Agent 开思考、预算 2000、温度 0.6（关思考或预算太小会缺字段直接提交，不限预算会长时间推理）。
+- 角色配置只是期望，实际下发的思考参数由 `services/llm.py` 的 `_PROFILES` 按模型决定：模型对参数的支持各不相同，下发不认的参数是 400、整轮失败。换模型先在这里登记（实测它对 `enable_thinking=false` 和强制 `tool_choice` 的反应），**不要为某个模型加配置开关**；没登记的模型不下发思考参数、不强制工具。
 - 部署前先读 `docs/deployment.md`。
 - `POLICY_VECTOR_URI` 是本地文件路径时走 Milvus Lite，同一个文件只能被一个进程打开：别的进程要读制度向量时先停服务，多副本改用 Milvus 服务。
 - 制度语料在 `repositories/policies.py` 的 `POLICY_DOCUMENTS`，Milvus 和内存实现共用。启动时按内容哈希（含 embedding 模型名）同步：只重算增改的条目、删掉语料里没有的，维度变了整个重建。改条款沿用原 id；`POLICY_REBUILD` 只在向量本身坏了时临时打开。DashScope 的 embedding 一批最多 10 条，`build_embeddings` 的 `chunk_size` 不要调大。

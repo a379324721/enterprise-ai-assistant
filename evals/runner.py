@@ -41,7 +41,7 @@ from enterprise_ai_assistant.core.models import (
 from enterprise_ai_assistant.graph.domain import domain_input
 from enterprise_ai_assistant.repositories.actions import InMemoryActionRepository
 from enterprise_ai_assistant.repositories.policies import InMemoryPolicyRepository
-from enterprise_ai_assistant.services.llm import build_chat_model
+from enterprise_ai_assistant.services.llm import build_chat_model, can_force_tool_choice
 from enterprise_ai_assistant.services.planning import LLMPlanningService, PlanningService
 from enterprise_ai_assistant.tools import LocalEnterpriseToolProvider, ToolContext, ToolRisk
 from enterprise_ai_assistant.tools.registry import DomainToolRegistry
@@ -120,7 +120,9 @@ class EvalHarness:
             provider = LocalEnterpriseToolProvider(
                 InMemoryActionRepository(), InMemoryPolicyRepository()
             )
-            planning = planning or LLMPlanningService(build_chat_model("supervisor"))
+            planning = planning or LLMPlanningService(
+                build_chat_model("supervisor"), force_tool_choice=can_force_tool_choice()
+            )
             domains = domains or DomainRuntimeFactory(
                 build_chat_model("domain"), DomainToolRegistry(provider)
             )
