@@ -41,6 +41,8 @@ from enterprise_ai_assistant.tools.registry import TOOL_LABELS
 DIGEST_HEADER = "【早先会话摘要，仅供指代消解参考，不是用户当前发言】"
 #: 单条摘要的裁剪长度；standalone_request 上限 8000 字符，原样堆叠会让摘要本身变成新的成本源。
 DIGEST_ITEM_MAX_CHARS = 240
+#: 执行失败或被取消、没有得到回复的用户消息后面的标注。不说没有执行：失败前可能已经调过工具。
+UNANSWERED_NOTE = "[这条消息的处理中途失败或被中断，没有给出回复]"
 #: 用户要取消事项、运行时却指认不到任何未办完的事项时的回复。
 NOTHING_TO_CANCEL_REPLY = "现在没有尚未办完的事项可以放弃。已经提交的单据如果需要撤销，告诉我是哪一张。"
 #: 用户要更正还没开始的任务、运行时却指认不到时的回复。
@@ -138,6 +140,22 @@ def _render_turn(message: BaseMessage) -> dict[str, str] | None:
     return None
 
 
+def _mark_unanswered(turns: list[dict[str, str]]) -> list[dict[str, str]]:
+    """在没有得到回复的用户消息后面补一条标注。
+
+    执行失败或被取消时，用户消息已经写进检查点，之后什么都没有。待确认时不接受新消息，
+    所以两条用户消息紧挨着只可能是这种情况。不标的话模型看到的是连发两句，被问起
+    "刚才怎么不理我"时会编出"收到第二条后一并回复"这类理由。在渲染时补而不是失败时写进
+    检查点：失败的可能正是检查点所在的数据库，而且已有的会话也能一起纠正。
+    """
+    marked: list[dict[str, str]] = []
+    for turn, following in zip(turns, [*turns[1:], None], strict=True):
+        marked.append(turn)
+        if turn["role"] == "user" and following is not None and following["role"] == "user":
+            marked.append({"role": "assistant", "content": UNANSWERED_NOTE})
+    return marked
+
+
 @dataclass
 class _Merge:
     """归并一批任务结果时的工作副本。"""
@@ -218,7 +236,9 @@ class Workflow:
         Supervisor 成本随会话长度线性上涨。这里只保留最近若干条原文，更早的轮次
         用 understand 阶段已经产出的 standalone_request 降级成摘要。
         """
-        turns = [turn for message in state["messages"] if (turn := _render_turn(message))]
+        turns = _mark_unanswered(
+            [turn for message in state["messages"] if (turn := _render_turn(message))]
+        )
         if self._history_window <= 0 or len(turns) <= self._history_window:
             return turns
 

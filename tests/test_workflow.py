@@ -25,6 +25,7 @@ from enterprise_ai_assistant.graph.domain import DomainTaskWorkflow, build_domai
 from enterprise_ai_assistant.graph.state import DomainTaskState
 from enterprise_ai_assistant.graph.workflow import (
     DIGEST_HEADER,
+    UNANSWERED_NOTE,
     Workflow,
     build_graph,
     decision_message,
@@ -1111,6 +1112,28 @@ def test_assistant_turns_tell_the_model_whether_a_tool_was_called() -> None:
         "[调用了：查询差旅申请]\n查到一张差旅申请。",
     ]
     assert conversation[-1]["content"] == "旧回答"
+
+
+def test_unanswered_user_messages_are_marked_for_the_model() -> None:
+    """失败的一轮只留下用户消息。不标的话模型看到连发两句，会编出"一并回复"的理由。"""
+    workflow = Workflow(SupervisorAgent(RecordingPlanningService()))
+    messages: list[BaseMessage] = [
+        HumanMessage(content="你好"),
+        HumanMessage(content="？"),
+        reply_message("你好！", []),
+        HumanMessage(content="我说你好的时候，你为什么没有回答？"),
+    ]
+
+    conversation = workflow._conversation(_context_state(messages, []))
+
+    assert conversation == [
+        {"role": "user", "content": "你好"},
+        {"role": "assistant", "content": UNANSWERED_NOTE},
+        {"role": "user", "content": "？"},
+        {"role": "assistant", "content": "[未调用工具]\n你好！"},
+        # 本轮的消息还在等回复，不算没答。
+        {"role": "user", "content": "我说你好的时候，你为什么没有回答？"},
+    ]
 
 
 def test_confirmation_decisions_reach_the_model_as_assistant_side_notes() -> None:
